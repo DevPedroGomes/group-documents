@@ -1,0 +1,16 @@
+fastapi==0.115.0
+uvicorn[standard]==0.30.0
+python-multipart==0.0.9
+sqlalchemy==2.0.32
+psycopg2-binary==2.9.9
+pgvector==0.2.5
+pydantic==2.8.2
+pypdf==5.0.1
+python-magic==0.4.27
+openai>=2.11.0
+httpx>=0.28
+pyjwt==2.9.0
+supabase==2.4.0
+agno==2.2.13
+langfuse==2.39.0
+python-dotenv==1.0.1
