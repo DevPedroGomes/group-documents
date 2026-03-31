@@ -13,36 +13,36 @@ interface ChatHeaderProps {
 
 export function ChatHeader({ documentCount, onReset, hasMessages }: ChatHeaderProps) {
   return (
-    <header className="sticky top-0 z-10 flex items-center justify-between border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 px-4 py-3">
-      <div className="flex items-center gap-3">
-        <Link href="/">
-          <Button variant="ghost" size="icon" className="h-9 w-9 rounded-xl">
-            <ArrowLeft className="h-4 w-4" />
-          </Button>
-        </Link>
+    <header className="sticky top-0 z-10 border-b border-white/20 glass-panel">
+      <div className="flex items-center justify-between px-4 py-3">
+        <div className="flex items-center gap-3">
+          <Link href="/">
+            <Button variant="ghost" size="icon" className="h-9 w-9 rounded-full">
+              <ArrowLeft className="h-4 w-4" />
+            </Button>
+          </Link>
 
-        <div className="flex flex-col">
-          <h1 className="text-lg font-semibold">AI Assistant</h1>
-          <div className="flex items-center gap-2">
-            <Badge variant="secondary" className="gap-1 text-xs">
+          <div className="flex flex-col">
+            <h1 className="text-lg font-semibold text-zinc-900 tracking-tight">AI Assistant</h1>
+            <Badge variant="secondary" className="gap-1 text-[10px] uppercase tracking-widest w-fit">
               <FileText className="h-3 w-3" />
-              {documentCount} {documentCount === 1 ? 'document' : 'documents'}
+              {documentCount} {documentCount === 1 ? 'doc' : 'docs'}
             </Badge>
           </div>
         </div>
-      </div>
 
-      {hasMessages && (
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={onReset}
-          className="gap-2 text-muted-foreground hover:text-foreground"
-        >
-          <RotateCcw className="h-4 w-4" />
-          New chat
-        </Button>
-      )}
+        {hasMessages && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onReset}
+            className="gap-2 text-zinc-400 hover:text-zinc-900"
+          >
+            <RotateCcw className="h-4 w-4" />
+            New chat
+          </Button>
+        )}
+      </div>
     </header>
   )
 }

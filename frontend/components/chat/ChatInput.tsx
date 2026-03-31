@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
-import { Send, Square, Paperclip } from 'lucide-react'
+import { Send, Square } from 'lucide-react'
 
 interface ChatInputProps {
   onSend: (message: string) => void
@@ -23,7 +23,6 @@ export function ChatInput({
   const [input, setInput] = useState('')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
-  // Auto-resize textarea
   useEffect(() => {
     const textarea = textareaRef.current
     if (textarea) {
@@ -49,9 +48,9 @@ export function ChatInput({
   }
 
   return (
-    <div className="border-t bg-background p-4">
+    <div className="border-t border-zinc-200 glass-panel p-4">
       <div className="mx-auto max-w-3xl">
-        <div className="relative flex items-end gap-2 rounded-2xl border bg-background p-2 shadow-sm focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2">
+        <div className="relative flex items-end gap-2 rounded-2xl border border-zinc-200 bg-white p-2 shadow-genlabs focus-within:ring-2 focus-within:ring-orange-400/50 focus-within:border-orange-300 transition-all">
           <textarea
             ref={textareaRef}
             value={input}
@@ -61,7 +60,7 @@ export function ChatInput({
             disabled={disabled}
             rows={1}
             className={cn(
-              'flex-1 resize-none bg-transparent px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none disabled:cursor-not-allowed disabled:opacity-50',
+              'flex-1 resize-none bg-transparent px-3 py-2 text-sm text-zinc-900 placeholder:text-zinc-400 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50',
               'min-h-[40px] max-h-[200px]'
             )}
           />
@@ -73,7 +72,7 @@ export function ChatInput({
                 size="icon"
                 variant="ghost"
                 onClick={onStop}
-                className="h-9 w-9 rounded-xl hover:bg-destructive/10 hover:text-destructive"
+                className="h-9 w-9 rounded-xl hover:bg-red-50 hover:text-red-600"
               >
                 <Square className="h-4 w-4 fill-current" />
               </Button>
@@ -91,8 +90,8 @@ export function ChatInput({
           </div>
         </div>
 
-        <p className="mt-2 text-center text-xs text-muted-foreground">
-          Press Enter to send, Shift+Enter for new line
+        <p className="mt-2 text-center text-[10px] text-zinc-400 uppercase tracking-widest font-medium">
+          Enter to send · Shift+Enter for new line
         </p>
       </div>
     </div>

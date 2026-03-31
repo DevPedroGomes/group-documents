@@ -93,7 +93,8 @@ function ChatPageContent() {
   if (!session) return null
 
   return (
-    <div className="flex h-dvh flex-col bg-background">
+    <div className="flex h-dvh flex-col bg-zinc-400/80">
+      <div className="flex flex-col h-full xl:max-w-[1000px] xl:mx-auto xl:my-4 glass-panel xl:rounded-[2rem] xl:border xl:border-white/20 xl:shadow-2xl overflow-hidden">
       <ChatHeader
         documentCount={documentIds.length}
         onReset={resetChat}
@@ -148,6 +149,7 @@ function ChatPageContent() {
             : 'Ask a question about your documents...'
         }
       />
+      </div>
     </div>
   )
 }
@@ -166,12 +168,12 @@ function EmptyState({ onSuggestionClick }: { onSuggestionClick: (msg: string) =>
       animate={{ opacity: 1, y: 0 }}
       className="flex flex-col items-center justify-center px-4 py-16"
     >
-      <div className="mb-6 rounded-full bg-primary/10 p-4">
-        <Sparkles className="h-8 w-8 text-primary" />
+      <div className="mb-6 rounded-full btn-primary-gradient shadow-orange-glow p-4">
+        <Sparkles className="h-8 w-8 text-zinc-900" />
       </div>
 
-      <h2 className="mb-2 text-xl font-semibold">Start a Conversation</h2>
-      <p className="mb-8 text-center text-muted-foreground max-w-md">
+      <h2 className="mb-2 text-xl font-semibold text-zinc-900 tracking-tight">Start a Conversation</h2>
+      <p className="mb-8 text-center text-zinc-500 text-sm font-medium max-w-md leading-relaxed">
         Ask questions about your selected documents. The AI will search through them and provide answers with citations.
       </p>
 
@@ -180,11 +182,11 @@ function EmptyState({ onSuggestionClick }: { onSuggestionClick: (msg: string) =>
           <Button
             key={idx}
             variant="outline"
-            className="justify-start text-left h-auto py-3 px-4"
+            className="justify-start text-left h-auto py-3 px-4 bg-white"
             onClick={() => onSuggestionClick(suggestion)}
           >
-            <MessageSquare className="h-4 w-4 mr-2 shrink-0 text-muted-foreground" />
-            <span className="text-sm">{suggestion}</span>
+            <MessageSquare className="h-4 w-4 mr-2 shrink-0 text-zinc-400" />
+            <span className="text-sm text-zinc-600">{suggestion}</span>
           </Button>
         ))}
       </div>
