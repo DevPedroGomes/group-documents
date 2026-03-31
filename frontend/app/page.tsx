@@ -40,10 +40,10 @@ export default function Page() {
 
   if (loading) {
     return (
-      <main className="min-h-dvh flex items-center justify-center bg-background">
+      <main className="min-h-dvh flex items-center justify-center bg-zinc-400/80">
         <div className="flex flex-col items-center gap-4">
-          <Skeleton className="h-12 w-12 rounded-xl" />
-          <Skeleton className="h-4 w-32" />
+          <Skeleton className="h-12 w-12 rounded-full" />
+          <Skeleton className="h-4 w-32 rounded-full" />
         </div>
       </main>
     )
@@ -51,20 +51,20 @@ export default function Page() {
 
   if (!session) {
     return (
-      <main className="min-h-dvh flex items-center justify-center bg-muted/30 p-4">
-        <Card className="w-full max-w-md">
+      <main className="min-h-dvh flex items-center justify-center bg-zinc-400/80 p-4">
+        <Card className="w-full max-w-md glass-panel border-white/20">
           <CardHeader className="text-center">
-            <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-primary text-primary-foreground">
+            <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full btn-primary-gradient shadow-orange-glow">
               <FileStack className="h-6 w-6" />
             </div>
-            <CardTitle className="text-2xl">Document Hub</CardTitle>
+            <CardTitle className="text-2xl tracking-tighter">Document Hub</CardTitle>
             <CardDescription>
               Sign in to manage your documents and chat with AI
             </CardDescription>
           </CardHeader>
           <CardContent>
             {authError && (
-              <div className="mb-4 p-3 bg-destructive/10 border border-destructive/20 rounded-lg text-destructive text-sm">
+              <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-xl text-red-700 text-sm">
                 {authError}
               </div>
             )}
@@ -76,8 +76,9 @@ export default function Page() {
   }
 
   return (
-    <main className="h-dvh flex flex-col">
-      <Topbar
+    <main className="h-dvh flex flex-col bg-zinc-400/80">
+      <div className="flex flex-col h-full xl:max-w-[1400px] xl:mx-auto xl:my-4 glass-panel xl:rounded-[2rem] xl:border xl:border-white/20 xl:shadow-2xl overflow-hidden">
+        <Topbar
         email={session.user.email}
         onSignOut={() => supabase.auth.signOut()}
       />
@@ -86,6 +87,7 @@ export default function Page() {
           (await supabase.auth.getSession()).data.session?.access_token
         }
       />
+      </div>
     </main>
   )
 }
@@ -180,19 +182,19 @@ function AuthForm() {
           className={`text-sm p-3 rounded-lg ${
             status === 'error'
               ? 'bg-destructive/10 text-destructive'
-              : 'bg-green-50 text-green-700'
+              : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
           }`}
         >
           {msg}
         </div>
       )}
 
-      <div className="relative">
+      <div className="relative my-2">
         <div className="absolute inset-0 flex items-center">
-          <div className="w-full border-t" />
+          <div className="w-full border-t border-zinc-200" />
         </div>
         <div className="relative flex justify-center text-xs uppercase">
-          <span className="bg-card px-2 text-muted-foreground">or</span>
+          <span className="bg-white px-2 text-zinc-400 tracking-widest font-medium">or</span>
         </div>
       </div>
 
@@ -223,7 +225,7 @@ function AuthForm() {
         Continue with Google
       </Button>
 
-      <p className="text-center text-sm text-muted-foreground">
+      <p className="text-center text-sm text-zinc-500">
         {mode === 'login' ? (
           <>
             Don&apos;t have an account?{' '}
