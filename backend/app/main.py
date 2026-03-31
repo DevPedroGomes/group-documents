@@ -84,6 +84,11 @@ async def ingest(request: Request, body: IngestBody, background_tasks: Backgroun
         if not validate_storage_path(body.storage_path):
             raise HTTPException(400, 'Caminho de arquivo inválido')
 
+        # Validate that storage path belongs to the authenticated user
+        path_user_id = body.storage_path.split('/')[0]
+        if path_user_id != user_id:
+            raise HTTPException(403, 'Storage path does not belong to this user')
+
         # Cria o registro "pending" no banco
         try:
             with engine.begin() as conn:

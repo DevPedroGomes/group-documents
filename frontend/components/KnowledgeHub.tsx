@@ -124,7 +124,7 @@ export default function KnowledgeHub({ getToken }: KnowledgeHubProps) {
   const uploadSingleFile = async (file: File, user: any, token: string): Promise<Document | null> => {
     try {
       const ext = file.name.split('.').pop()
-      const path = `${user.id}/${crypto.randomUUID()}.${ext}`
+      const path = `${user.id}/docs/${crypto.randomUUID()}.${ext}`
 
       const { error: uploadError } = await supabase.storage
         .from('docs')
