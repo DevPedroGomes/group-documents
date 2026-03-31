@@ -176,49 +176,53 @@ def create_document_agent(user_id: str, document_ids: List[str] | None = None) -
 # INTERFACE PÚBLICA
 # ==========================================
 
-def format_history_for_agent(history: List[Dict]) -> str:
+def build_agent_messages(history: list[dict]) -> list[dict]:
     """
-    Formata o histórico de conversação para incluir no contexto do agente.
+    Convert thread history to Agno message format.
+    Each message gets a clear role boundary that prevents injection.
     """
     if not history:
-        return ""
+        return []
 
-    formatted = ["=== HISTÓRICO DA CONVERSA ==="]
+    agent_messages = []
     for msg in history:
-        role = "Usuário" if msg['role'] == 'user' else "Assistente"
-        formatted.append(f"{role}: {msg['content']}")
-    formatted.append("=== FIM DO HISTÓRICO ===\n")
-
-    return "\n".join(formatted)
+        role = "user" if msg["role"] == "user" else "assistant"
+        agent_messages.append({"role": role, "content": msg["content"]})
+    return agent_messages
 
 
 def run_agent(
     user_id: str,
     message: str,
-    document_ids: List[str] | None = None,
-    history: List[Dict] | None = None
-) -> Dict:
+    document_ids: list[str] | None = None,
+    history: list[dict] | None = None
+) -> dict:
     """
     Executa o agente para responder uma pergunta, opcionalmente filtrada por documentos.
-    Agora com suporte a histórico de conversação para manter contexto.
+    Suporta histórico de conversação via mensagens estruturadas.
     """
     try:
-        # Criar agente com filtro
         agent, context = create_document_agent(user_id, document_ids)
 
-        # Construir mensagem com contexto histórico
+        # Build structured messages from history + current message
+        messages = build_agent_messages(history) if history else []
+        messages.append({"role": "user", "content": message})
+
         if history:
-            history_context = format_history_for_agent(history)
-            full_message = f"{history_context}\nMensagem atual do usuário: {message}"
-            print(f"[AGENT] Executando com {len(history)} mensagens de histórico")
+            print(f"[AGENT] Running with {len(history)} history messages")
         else:
-            full_message = message
-            print("[AGENT] Executando sem histórico (nova conversa)")
+            print("[AGENT] Running without history (new conversation)")
 
-        # Executar agente com contexto completo
-        response = agent.run(full_message)
+        # Execute agent - try structured messages first, fall back to single message
+        try:
+            response = agent.run(messages=messages)
+        except TypeError:
+            # Agno version may not support messages= parameter
+            # Fall back to single message (loses history but prevents injection)
+            print("[AGENT] Falling back to single message (messages= not supported)")
+            response = agent.run(message)
 
-        # Extrair citações
+        # Extract citations
         search_results = context.get('last_search_results', [])
         citations = []
         if search_results:
@@ -237,4 +241,4 @@ def run_agent(
 
     except Exception as e:
         print(f"Agent error: {e}")
-        raise  # Let the caller handle it with a sanitized HTTP response
+        raise

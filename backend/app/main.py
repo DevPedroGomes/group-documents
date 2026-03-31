@@ -6,14 +6,14 @@ load_dotenv()
 from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from sqlalchemy import create_engine, insert, text as sqltext
+from sqlalchemy import insert, text as sqltext
 from .models import documents, chunks, threads, messages
 from .auth import require_user
 from .observability import start_trace, end_trace
 from .supabase_client import create_signed_url
 from .ingest import extract_pages_from_pdf, chunk_text
 from .rag import embed_texts
-from .agno_agent import run_agent
+from .agno_agent import run_agent, engine
 import httpx
 
 # Constantes
@@ -33,9 +33,6 @@ def validate_storage_path(path: str) -> bool:
     # Valida formato: uuid/docs/filename.ext
     pattern = r'^[a-f0-9-]+/docs/[^/]+\.(pdf|png|jpg|jpeg|gif|webp|mp3|mp4|wav|webm)$'
     return bool(re.match(pattern, path, re.IGNORECASE))
-
-DB_URL = os.getenv('SUPABASE_DB_URL')
-engine = create_engine(DB_URL, pool_pre_ping=True)
 
 app = FastAPI(title='Hub Docs + Agente')
 
@@ -136,7 +133,7 @@ async def process_ingestion_task(doc_id: str, user_id: str, storage_path: str):
             conn.execute(sqltext("UPDATE documents SET status = 'processing' WHERE id = :id"), {'id': doc_id})
 
         # Download com streaming e validação de tamanho
-        url = await create_signed_url(storage_path, 600)
+        url = create_signed_url(storage_path, 600)
         async with httpx.AsyncClient(timeout=300) as client:
             async with client.stream('GET', url) as r:
                 r.raise_for_status()
@@ -484,5 +481,5 @@ async def preview(request: Request, doc_id: str):
     with engine.begin() as conn:
         row = conn.execute(sqltext('select storage_path from documents where id=:id'), {'id': doc_id}).first()
     if not row: raise HTTPException(404, 'Documento não encontrado')
-    url = await create_signed_url(row[0], 600)
+    url = create_signed_url(row[0], 600)
     return {'signed_url': url}
