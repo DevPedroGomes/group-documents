@@ -1,405 +1,264 @@
-# 🚀 Hub Agno + Supabase - Document Q&A with RAG
+# Document Hub
 
-Sistema completo de gerenciamento e consulta de documentos usando RAG (Retrieval-Augmented Generation) com **Agno Agent Framework**, **Supabase** e **Next.js 14**.
+A collaborative document Q&A system using Retrieval-Augmented Generation. Users upload PDFs, images, audio, and video files. The system extracts content, generates vector embeddings, and enables semantic search with AI-powered question answering that always cites its sources.
 
----
+## Tech Stack
 
-## 📋 Stack Tecnológica
+**Backend:** FastAPI, Agno Framework 2.2.13, OpenAI (GPT-4o-mini for chat, text-embedding-3-small for embeddings), Google Gemini (multimodal processing), Supabase (PostgreSQL + pgvector), SQLAlchemy, Langfuse (optional observability)
 
-### Backend
+**Frontend:** Next.js 14 (App Router), React 18, TypeScript, Tailwind CSS, Framer Motion, Supabase Auth + Storage
 
-- **FastAPI** - API REST
-- **Agno 2.2.13** - Framework de agents com tools customizados
-- **OpenAI GPT-4o-mini** - Modelo de linguagem
-- **Supabase (PostgreSQL + pgvector)** - Database e vector search
-- **SQLAlchemy** - ORM
-- **Langfuse** (opcional) - Observabilidade
+**Database:** PostgreSQL with pgvector extension, HNSW indexing for vector similarity search, Row Level Security policies
 
-### Frontend
+**Design:** Genlabs visual language -- Inter font, zinc color palette, glass morphism panels, orange accent system, layered shadow system
 
-- **Next.js 14** (App Router)
-- **React 18**
-- **Supabase Auth + Storage**
-- **Tailwind CSS**
-- **TypeScript**
+## Architecture
 
----
+```
+frontend/                         backend/
+Next.js 14 (App Router)           FastAPI
 
-## ✨ Funcionalidades
+app/page.tsx ---- Auth -----> Supabase Auth (JWT)
+                                    |
+components/                         v
+  KnowledgeHub.tsx               main.py
+    Upload --> Supabase Storage     |-- POST /ingest
+    Search --> GET /documents       |-- GET  /documents
+    Chat   --> POST /chat           |-- POST /chat
+                                    |-- GET  /document/{id}/preview
+app/chat/page.tsx                   |
+  useChat hook                      v
+  ChatMessage                    agno_agent.py
+  ChatInput                        Agno Agent (GPT-4o-mini)
+                                   +-- search_tool (pgvector)
+                                   +-- list_tool (SQL)
+                                        |
+                                        v
+                                   PostgreSQL + pgvector
+                                   (documents, chunks, threads, messages)
+```
 
-- ✅ **Upload de PDFs** no Supabase Storage
-- ✅ **Ingestão automática** - Extração de texto, chunking e geração de embeddings
-- ✅ **Busca semântica** com pgvector (cosine similarity)
-- ✅ **Chat RAG inteligente** usando Agno Agent Framework
-- ✅ **Citações automáticas** - O agente sempre cita documento e página
-- ✅ **Autenticação** com Supabase Auth
-- ✅ **RLS (Row Level Security)** - Isolamento total entre usuários
-- ✅ **Preview de documentos** com signed URLs
-- ✅ **Error handling robusto** - Validações e mensagens claras
+The frontend communicates with the backend through Next.js API routes that proxy requests to FastAPI. This avoids CORS issues in production and keeps the backend URL server-side.
 
----
+### Backend Modules
 
-## 🚀 Setup Rápido
+| Module | Responsibility |
+|--------|---------------|
+| `main.py` | FastAPI app, all HTTP endpoints, document ingestion pipeline, thread/message management |
+| `agno_agent.py` | Agno Agent configuration, `search_tool` (semantic search via pgvector), `list_tool` (document listing), DB engine |
+| `rag.py` | OpenAI embedding generation with error propagation |
+| `ingest.py` | PDF text extraction (pypdf) and sentence-boundary chunking |
+| `multimodal.py` | Image/audio/video processing via Google Gemini API |
+| `auth.py` | Supabase JWT validation and user extraction |
+| `models.py` | SQLAlchemy table definitions (documents, chunks, threads, messages) |
+| `supabase_client.py` | Singleton Supabase clients, signed URL generation |
+| `observability.py` | Langfuse tracing integration (optional) |
 
-### 1. Pré-requisitos
+### Frontend Structure
+
+| Path | Responsibility |
+|------|---------------|
+| `app/page.tsx` | Root page -- auth form (email/password + Google OAuth) or app shell |
+| `app/chat/page.tsx` | Chat interface with document context |
+| `app/auth/callback/route.ts` | OAuth callback handler |
+| `app/api/*/route.ts` | Proxy routes to backend (chat, ingest, documents, preview) |
+| `components/KnowledgeHub.tsx` | Document grid, upload, semantic search, preview modal |
+| `components/Topbar.tsx` | Glass-panel navigation bar |
+| `components/chat/*` | ChatHeader, ChatMessage, ChatInput |
+| `components/ui/*` | Design system primitives (button, card, badge, input, etc.) |
+| `hooks/useChat.ts` | Chat state management with thread persistence and abort |
+| `lib/api-proxy.ts` | Shared proxy helper for API routes |
+| `lib/supabase/client.ts` | Supabase browser client |
+
+### Database Schema
+
+Four tables with RLS policies:
+
+- **documents** -- uploaded files metadata, status tracking (pending/processing/completed/failed)
+- **chunks** -- text chunks with 1536-dimension vector embeddings, linked to documents via CASCADE
+- **threads** -- chat conversations, private per user
+- **messages** -- chat messages with role (user/assistant/system) and metadata (citations)
+
+Documents and chunks are shared across all authenticated users (Team Hub mode). Threads and messages are private per user.
+
+## Data Flow
+
+```mermaid
+flowchart TD
+    A[User uploads file] --> B[Frontend sends to Supabase Storage]
+    B --> C[Frontend calls POST /ingest]
+    C --> D[Backend creates document record - status: pending]
+    D --> E[Background task starts - status: processing]
+
+    E --> F{File type?}
+    F -->|PDF| G[pypdf extracts text per page]
+    F -->|Image| H[Gemini describes image]
+    F -->|Audio| I[Gemini transcribes audio]
+    F -->|Video| J[Gemini transcribes + describes video]
+
+    G --> K[Chunk text by sentence boundaries - max 700 tokens]
+    H --> K
+    I --> K
+    J --> K
+
+    K --> L[OpenAI generates embeddings - batch of 64]
+    L --> M[Store chunks + vectors in PostgreSQL]
+    M --> N[Update document status: completed]
+
+    style A fill:#fff,stroke:#d4d4d8
+    style N fill:#d1fae5,stroke:#6ee7b7
+```
+
+```mermaid
+flowchart TD
+    A[User sends chat message] --> B[POST /chat with message + document_ids + thread_id]
+    B --> C{Thread exists?}
+    C -->|No| D[Create new thread]
+    C -->|Yes| E[Validate thread ownership]
+    D --> F[Load thread history]
+    E --> F
+
+    F --> G[Save user message to thread]
+    G --> H[Agno Agent receives message + history]
+
+    H --> I[Agent calls search_tool]
+    I --> J[Generate query embedding via OpenAI]
+    J --> K[pgvector cosine similarity search]
+    K --> L[Return top matching chunks with scores]
+
+    L --> M[Agent generates answer using GPT-4o-mini]
+    M --> N[Extract citations from search results]
+    N --> O[Save assistant message + citations to thread]
+    O --> P[Return answer + citations + thread_id]
+
+    style A fill:#fff,stroke:#d4d4d8
+    style P fill:#d1fae5,stroke:#6ee7b7
+```
+
+```mermaid
+flowchart LR
+    A[User types in search bar] --> B[Debounce 400ms]
+    B --> C[GET /documents?semantic_query=...]
+    C --> D[Generate query embedding]
+    D --> E[pgvector finds chunks above threshold]
+    E --> F[Group by document_id, rank by max similarity]
+    F --> G[Return ordered document list]
+    G --> H[Frontend displays ranked results]
+
+    style A fill:#fff,stroke:#d4d4d8
+    style H fill:#d1fae5,stroke:#6ee7b7
+```
+
+## Setup
+
+### Prerequisites
 
 - Node.js 18+
 - Python 3.12+
-- Conta no Supabase
-- OpenAI API Key
+- Supabase project
+- OpenAI API key
+- Google API key (for multimodal processing)
 
-### 2. Configurar Supabase
+### 1. Database
 
-**Siga o guia completo:** [`SUPABASE_SETUP.md`](./SUPABASE_SETUP.md)
+Run `sql/schema_complete.sql` in the Supabase SQL Editor. This creates all tables, indexes (including HNSW for vector search), RLS policies, and the `search_similar_chunks` RPC function.
 
-Resumo:
+Create a `docs` bucket in Supabase Storage (private) with RLS policies allowing authenticated users to upload, download, and delete.
 
-1. Criar projeto no Supabase
-2. Executar SQL completo em `sql/schema_complete.sql`
-3. Criar bucket `docs` no Storage
-4. Configurar policies de RLS
-
-### 3. Configurar Variáveis de Ambiente
-
-#### Backend (`backend/.env`)
+### 2. Backend
 
 ```bash
-# Supabase
+cd backend
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+Create `backend/.env`:
+
+```
 SUPABASE_URL=https://xxx.supabase.co
 SUPABASE_ANON_KEY=eyJ...
 SUPABASE_SERVICE_ROLE_KEY=eyJ...
 SUPABASE_JWT_SECRET=your-jwt-secret
 SUPABASE_DB_URL=postgresql://postgres:password@db.xxx.supabase.co:5432/postgres
-
-# Storage
-STORAGE_BUCKET=docs
-
-# OpenAI
-OPENAI_API_KEY=sk-proj-...
+OPENAI_API_KEY=sk-...
+GOOGLE_API_KEY=AI...
 MODEL=gpt-4o-mini
 EMB_MODEL=text-embedding-3-small
 SIM_THRESHOLD=0.2
-
-# CORS
 CORS_ORIGINS=http://localhost:3000
-
-# Langfuse (opcional)
+STORAGE_BUCKET=docs
 LANGFUSE_ENABLED=false
 ```
 
-#### Frontend (`frontend/.env.local`)
+### 3. Frontend
 
 ```bash
+cd frontend
+npm install
+```
+
+Create `frontend/.env.local`:
+
+```
 NEXT_PUBLIC_SUPABASE_URL=https://xxx.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJ...
 NEXT_PUBLIC_API_URL=http://localhost:8000
 ```
 
-### 4. Instalar Dependências
+### 4. Run
+
+Terminal 1:
 
 ```bash
-# Backend
-cd backend
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-
-# Frontend
-cd frontend
-npm install
+cd backend && source .venv/bin/activate && uvicorn app.main:app --reload --port 8000
 ```
 
-### 5. Rodar o Projeto
-
-#### Opção 1: Rodar tudo junto (recomendado)
+Terminal 2:
 
 ```bash
-# Na raiz do projeto
-npm run dev
+cd frontend && npm run dev
 ```
 
-Isso inicia:
+The app is available at `http://localhost:3000`.
 
-- Backend: http://localhost:8000
-- Frontend: http://localhost:3000
+## API Endpoints
 
-#### Opção 2: Rodar separadamente
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| POST | `/ingest` | JWT | Upload document for processing. Accepts `storage_path`, `title`, `mime`. Returns 202 with `document_id`. |
+| GET | `/documents` | JWT | List all hub documents. Optional `semantic_query` param for vector-ranked results. |
+| POST | `/chat` | JWT | Send message to RAG agent. Accepts `message`, optional `document_ids` and `thread_id`. Returns `answer`, `citations`, `thread_id`. |
+| GET | `/document/{id}/preview` | JWT | Get signed URL for document preview. |
 
-Terminal 1 (Backend):
+All endpoints require a valid Supabase JWT in the `Authorization: Bearer <token>` header.
 
-```bash
-cd backend
-source .venv/bin/activate
-uvicorn app.main:app --reload --port 8000
-```
+## Key Design Decisions
 
-Terminal 2 (Frontend):
+**Team Hub model.** All documents are shared among authenticated users. Chat threads remain private. This is enforced at both the application layer and the database layer via RLS policies.
 
-```bash
-cd frontend
-npm run dev
-```
+**Background ingestion.** Document processing (download, text extraction, embedding generation) runs in FastAPI BackgroundTasks. The endpoint returns 202 immediately. The frontend polls document status every 3 seconds until processing completes.
 
----
+**Structured chat history.** Chat history is passed to the Agno Agent as structured message objects with explicit role boundaries, preventing prompt injection attacks where users could manipulate the agent by crafting messages that mimic history delimiters.
 
-## 📖 Como Usar
+**Error propagation over silent failure.** The embedding module raises exceptions on failure rather than returning empty results. This ensures documents are correctly marked as "failed" instead of silently completing with missing embeddings.
 
-### 1. Criar Conta
+**Proxy architecture.** Frontend API routes proxy all requests to the backend. This keeps the backend URL out of client-side code and sidesteps CORS configuration in production.
 
-1. Acesse http://localhost:3000
-2. Clique em "Sign Up"
-3. Crie sua conta com email e senha
+**Single DB engine.** One SQLAlchemy engine instance in `agno_agent.py`, imported by `main.py`. Avoids duplicate connection pools.
 
-### 2. Fazer Upload de PDF
+## Supported File Types
 
-1. Faça login
-2. Clique em "Enviar Documento"
-3. Selecione um PDF (máximo 10MB)
-4. Aguarde o processamento (extração + embeddings)
+| Type | Processing | Notes |
+|------|-----------|-------|
+| PDF | pypdf text extraction, page-aware chunking | Primary use case |
+| Images (JPEG, PNG, WebP) | Gemini vision description | Converts visual content to searchable text |
+| Audio (MP3, WAV, MP4) | Gemini transcription + summary | Full transcription with key points |
+| Video (MP4, WebM) | Gemini transcription + visual description | Audio transcription + frame-by-frame key moments |
 
-### 3. Fazer Perguntas
+All files are limited to 20MB. Content is chunked at sentence boundaries with a maximum of 700 tokens per chunk.
 
-1. Digite sua pergunta no chat
-2. O agente Agno buscará semanticamente nos seus documentos
-3. Receberá resposta com citações (documento + página)
+## License
 
----
-
-## 🔧 Arquivos Importantes
-
-### Backend
-
-| Arquivo                     | Descrição                                        |
-| --------------------------- | ------------------------------------------------ |
-| `backend/app/main.py`       | API FastAPI com endpoints e CORS configurado     |
-| `backend/app/agno_agent.py` | **Agent Agno com custom tools** para RAG         |
-| `backend/app/rag.py`        | Geração de embeddings (OpenAI)                   |
-| `backend/app/ingest.py`     | Extração de texto de PDF e chunking              |
-| `backend/app/auth.py`       | Validação de JWT do Supabase                     |
-| `backend/app/models.py`     | Models SQLAlchemy (documents, chunks)            |
-| `backend/requirements.txt`  | Dependências Python (incluindo **agno==2.2.13**) |
-
-### Frontend
-
-| Arquivo                                | Descrição                    |
-| -------------------------------------- | ---------------------------- |
-| `frontend/app/page.tsx`                | Página principal (Login/Hub) |
-| `frontend/app/layout.tsx`              | Layout raiz com metadata     |
-| `frontend/components/KnowledgeHub.tsx` | UI principal (upload + chat) |
-
-### SQL & Docs
-
-| Arquivo                   | Descrição                                                            |
-| ------------------------- | -------------------------------------------------------------------- |
-| `sql/schema_complete.sql` | **Schema SQL completo** (tabelas, índices, RLS, triggers, functions) |
-| `SUPABASE_SETUP.md`       | **Guia passo a passo** para configurar Supabase manualmente          |
-
----
-
-## 🎯 Principais Melhorias Implementadas
-
-### ✅ Fase 1: Correções Críticas
-
-- Corrigido import do CSS no layout.tsx
-- Virtual environment movido para local correto (`backend/.venv/`)
-- Arquivos `.env` criados com comentários explicativos
-- `.gitignore` adicionados (root, frontend, backend)
-
-### ✅ Fase 2: Configuração do Supabase
-
-- Schema SQL completo com:
-  - Tabelas: `documents`, `chunks`, `threads`, `messages`
-  - Índices para performance (including IVFFlat para vector search)
-  - RLS policies para isolamento multi-tenant
-  - Triggers para atualização automática de timestamps
-  - Functions RPC para busca semântica otimizada
-- Guia de setup manual detalhado (`SUPABASE_SETUP.md`)
-- Instruções para configurar Storage bucket `docs` com policies
-
-### ✅ Fase 3: Integração Real do Agno
-
-- **Reescrita completa** do `agno_agent.py` usando Agno Framework
-- Custom tools implementadas:
-  - `search_tool` - Busca semântica com pgvector
-  - `list_tool` - Listar documentos do usuário
-- Agent configurado com:
-  - Model: GPT-4o-mini
-  - Instructions claras para citar fontes
-  - Markdown habilitado
-  - Show tool calls desabilitado (UX melhor)
-- Mantida compatibilidade com interface existente
-
-### ✅ Fase 4: Segurança e Qualidade
-
-- **CORS configurado corretamente** via variável `CORS_ORIGINS`
-- **Validação de inputs** em todos os endpoints:
-  - Tamanho máximo de arquivo (10MB)
-  - Tipo MIME (apenas PDF)
-  - Tamanho de mensagens
-  - Títulos de documentos
-- **Error handling robusto**:
-  - Try/catch em todos os endpoints
-  - Mensagens de erro claras
-  - Rollback automático em falhas (delete de documento se falhar embeddings)
-  - Logging estruturado
-- **Transações atômicas** garantindo consistência do banco
-
----
-
-## 🐛 Troubleshooting
-
-### Backend não inicia
-
-**Erro:** `ModuleNotFoundError: No module named 'agno'`
-
-**Solução:**
-
-```bash
-cd backend
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-### Frontend não compila
-
-**Erro:** `Module not found: Can't resolve './globals.css'`
-
-**Solução:** Já corrigido! Mas se ocorrer, verifique se o import em `layout.tsx` é `import '../styles/globals.css'`
-
-### Chat não responde
-
-**Possíveis causas:**
-
-1. **Nenhum documento enviado**
-   - Solução: Faça upload de PDFs primeiro
-
-2. **OpenAI API Key inválida**
-   - Solução: Verifique `OPENAI_API_KEY` em `backend/.env`
-
-3. **Supabase não configurado**
-   - Solução: Siga o guia `SUPABASE_SETUP.md`
-
-### Upload falha com 403 Forbidden
-
-**Causa:** Storage policies não configuradas
-
-**Solução:** Configure as 3 policies do bucket `docs` (INSERT, SELECT, DELETE) conforme `SUPABASE_SETUP.md`
-
----
-
-## 📊 Estrutura do Banco de Dados
-
-```sql
-documents
-├── id (UUID, PK)
-├── user_id (UUID, FK auth.users)
-├── title (TEXT)
-├── mime (TEXT)
-├── storage_path (TEXT)
-├── meta (JSONB)
-└── uploaded_at (TIMESTAMPTZ)
-
-chunks
-├── id (UUID, PK)
-├── user_id (UUID)
-├── document_id (UUID, FK documents)
-├── page (INTEGER)
-├── chunk_index (INTEGER)
-├── text (TEXT)
-└── embedding (VECTOR(1536))  -- OpenAI text-embedding-3-small
-
-threads (para futuro uso)
-├── id (UUID, PK)
-├── user_id (UUID)
-├── title (TEXT)
-├── created_at (TIMESTAMPTZ)
-└── updated_at (TIMESTAMPTZ)
-
-messages (para futuro uso)
-├── id (UUID, PK)
-├── thread_id (UUID, FK threads)
-├── role (TEXT: 'user'|'assistant'|'system')
-├── content (TEXT)
-├── meta (JSONB)
-└── created_at (TIMESTAMPTZ)
-```
-
----
-
-## 🔮 Próximos Passos (Roadmap)
-
-### Thread Persistence (P1)
-
-- [ ] Implementar criação de threads no backend
-- [ ] Salvar histórico de mensagens
-- [ ] UI para listar e retomar conversas
-- [ ] Integrar com Agno Sessions
-
-### UX Melhorado (P2)
-
-- [ ] Loading states com skeleton loaders
-- [ ] Streaming de respostas do chat
-- [ ] Progress bar em uploads
-- [ ] Error boundaries no frontend
-- [ ] Toast notifications
-
-### Features Adicionais (P3)
-
-- [ ] Suporte para mais formatos (DOCX, TXT, MD)
-- [ ] Busca full-text além de semântica
-- [ ] Highlight de trechos citados
-- [ ] Exportar conversas
-- [ ] Estatísticas de uso
-
-### DevOps (P4)
-
-- [ ] Docker compose para desenvolvimento
-- [ ] CI/CD com GitHub Actions
-- [ ] Deploy no Vercel (frontend)
-- [ ] Deploy no Railway/Render (backend)
-- [ ] Testes unitários e E2E
-
----
-
-## 🤝 Contribuindo
-
-Este é um projeto educacional/pessoal. Sinta-se livre para:
-
-- Abrir issues para reportar bugs
-- Sugerir melhorias
-- Fazer fork e experimentar
-
----
-
-## 📄 Licença
-
-MIT License - Use à vontade!
-
----
-
-## 🙏 Agradecimentos
-
-- **Agno** - Framework de agents incrivelmente poderoso
-- **Supabase** - Backend as a Service completo e open source
-- **OpenAI** - Modelos de linguagem e embeddings
-- **Next.js** - Framework React excepcional
-
----
-
-## 📞 Suporte
-
-Para problemas relacionados ao projeto:
-
-- Consulte `SUPABASE_SETUP.md` para setup do Supabase
-- Verifique a seção Troubleshooting neste README
-- Revise os logs do backend e frontend
-
-Para problemas com tecnologias específicas:
-
-- Supabase: https://supabase.com/docs
-- Agno: https://docs.agno.com
-- Next.js: https://nextjs.org/docs
-
----
-
-**Feito com ❤️ usando Agno, Supabase e Next.js**
+MIT
