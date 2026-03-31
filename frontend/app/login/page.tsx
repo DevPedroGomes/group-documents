@@ -1,3 +1,5 @@
+import { redirect } from 'next/navigation'
+
 export default function LoginRedirect() {
-  return null;
+  redirect('/')
 }
