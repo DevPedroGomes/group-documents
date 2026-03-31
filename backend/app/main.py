@@ -102,7 +102,8 @@ async def ingest(request: Request, body: IngestBody, background_tasks: Backgroun
                     ).returning(documents.c.id)
                 ).scalar_one()
         except Exception as e:
-            raise HTTPException(500, f'Erro ao criar registro: {str(e)}')
+            print(f"DB error creating document: {e}")
+            raise HTTPException(500, 'Erro ao criar registro do documento')
 
         # Agendar processamento em background
         background_tasks.add_task(process_ingestion_task, str(doc_id), user_id, body.storage_path)
@@ -112,8 +113,8 @@ async def ingest(request: Request, body: IngestBody, background_tasks: Backgroun
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Erro inesperado em /ingest: {e}")
-        raise HTTPException(500, f'Erro interno: {str(e)}')
+        print(f"Unexpected error in /ingest: {e}")
+        raise HTTPException(500, 'Erro interno no servidor')
 
 from .multimodal import process_image, process_audio, process_video
 
@@ -467,14 +468,14 @@ async def chat(request: Request, body: ChatBody):
 
         except Exception as e:
             end_trace(trace, 'error', {'error': str(e)})
-            print(f"Erro ao executar agente: {e}")
-            raise HTTPException(500, f'Erro ao processar pergunta: {str(e)}')
+            print(f"Agent execution error: {e}")
+            raise HTTPException(500, 'Erro ao processar sua pergunta')
 
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Erro inesperado em /chat: {e}")
-        raise HTTPException(500, f'Erro interno no chat: {str(e)}')
+        print(f"Unexpected error in /chat: {e}")
+        raise HTTPException(500, 'Erro interno no chat')
 
 @app.get('/document/{doc_id}/preview')
 async def preview(request: Request, doc_id: str):

@@ -236,8 +236,5 @@ def run_agent(
         }
 
     except Exception as e:
-        print(f"Erro ao executar agente: {e}")
-        return {
-            'answer': f'Erro: {str(e)}',
-            'citations': []
-        }
+        print(f"Agent error: {e}")
+        raise  # Let the caller handle it with a sanitized HTTP response
