@@ -229,7 +229,7 @@ export default function KnowledgeHub({ getToken }: KnowledgeHubProps) {
         )}
       </AnimatePresence>
 
-      <div className="flex flex-col h-[calc(100dvh-57px)] p-4 lg:p-6">
+      <div className="flex flex-col h-[calc(100dvh-57px)] p-6 lg:p-8">
         {/* Header */}
         <div className="mb-6">
           <div className="flex items-center justify-between mb-4">
@@ -249,9 +249,9 @@ export default function KnowledgeHub({ getToken }: KnowledgeHubProps) {
                 <Button onClick={goToChat} className="gap-2">
                   <MessageSquare className="h-4 w-4" />
                   Talk to Agent
-                  <Badge variant="secondary" className="ml-1 bg-primary-foreground/20">
+                  <span className="flex items-center justify-center rounded-full bg-black/10 px-2.5 py-0.5 text-xs ml-1">
                     {selectedCount}
-                  </Badge>
+                  </span>
                 </Button>
               </motion.div>
             )}
@@ -265,7 +265,7 @@ export default function KnowledgeHub({ getToken }: KnowledgeHubProps) {
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 placeholder="Describe the document you're looking for..."
-                className="pl-9 pr-9 h-11"
+                className="pl-9 pr-9 h-11 bg-white/60 border-white/60 backdrop-blur-sm shadow-genlabs"
               />
               {query && (
                 <button
@@ -298,7 +298,7 @@ export default function KnowledgeHub({ getToken }: KnowledgeHubProps) {
               variant="outline"
               onClick={() => fileRef.current?.click()}
               disabled={uploadingCount > 0}
-              className="gap-2 h-11"
+              className="gap-2 h-11 bg-white"
             >
               {uploadingCount > 0 ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
@@ -325,19 +325,28 @@ export default function KnowledgeHub({ getToken }: KnowledgeHubProps) {
 
           {/* Stats bar */}
           {hasDocuments && (
-            <div className="flex items-center justify-between mt-4 text-sm text-muted-foreground">
-              <span>{docs.length} documents found</span>
-              <div className="flex items-center gap-3">
-                {selectedCount > 0 && (
-                  <button
-                    onClick={() => setSelectedIds(new Set())}
-                    className="text-xs hover:text-foreground underline"
-                  >
-                    Clear selection
-                  </button>
-                )}
-                <span>{selectedCount} selected</span>
+            <div className="flex items-center mt-4 gap-4">
+              <div className="flex items-center">
+                <div className="text-center">
+                  <p className="text-[10px] font-semibold text-zinc-400 uppercase tracking-widest mb-0.5">Documents</p>
+                  <p className="text-sm text-zinc-900 font-medium">{docs.length}</p>
+                </div>
+                <div className="curve-separator opacity-60 ml-4"></div>
               </div>
+              <div className="flex items-center">
+                <div className="text-center">
+                  <p className="text-[10px] font-semibold text-zinc-400 uppercase tracking-widest mb-0.5">Selected</p>
+                  <p className="text-sm text-zinc-900 font-medium">{selectedCount}</p>
+                </div>
+              </div>
+              {selectedCount > 0 && (
+                <button
+                  onClick={() => setSelectedIds(new Set())}
+                  className="text-xs text-zinc-400 hover:text-zinc-900 underline ml-auto"
+                >
+                  Clear selection
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -373,7 +382,7 @@ export default function KnowledgeHub({ getToken }: KnowledgeHubProps) {
           ) : (
             <motion.div
               layout
-              className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4"
+              className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 bg-zinc-200 rounded-[2rem] shadow-genlabs gap-x-px gap-y-px overflow-hidden"
             >
               <AnimatePresence mode="popLayout">
                 {docs.map((doc) => (
@@ -472,10 +481,10 @@ function DocumentCard({
       transition={{ duration: 0.2 }}
     >
       <Card
-        className={`relative p-4 cursor-pointer transition-all duration-200 hover:shadow-md ${
+        className={`relative p-4 cursor-pointer transition-colors duration-200 rounded-none border-0 shadow-none ${
           selected
-            ? 'ring-2 ring-primary bg-primary/5'
-            : 'hover:bg-muted/50'
+            ? 'bg-orange-50'
+            : 'bg-white hover:bg-zinc-50'
         } ${!isReady ? 'opacity-60' : ''}`}
         onClick={() => isReady && onSelect()}
       >
@@ -484,7 +493,7 @@ function DocumentCard({
           <motion.div
             initial={{ scale: 0 }}
             animate={{ scale: 1 }}
-            className="absolute top-2 left-2 bg-primary text-primary-foreground rounded-full p-1"
+            className="absolute top-2 left-2 bg-orange-500 text-white rounded-full p-1"
           >
             <CheckCircle2 className="h-4 w-4" />
           </motion.div>
@@ -510,7 +519,7 @@ function DocumentCard({
           <Button
             variant="ghost"
             size="sm"
-            className="w-full mt-2 text-xs"
+            className="w-full mt-2 text-xs text-zinc-400 hover:text-zinc-900"
             onClick={(e) => {
               e.stopPropagation()
               onPreview()
@@ -530,7 +539,7 @@ function EmptyState({ query, onUpload }: { query: string; onUpload: () => void }
     <motion.div
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
-      className="flex flex-col items-center justify-center h-64 border-2 border-dashed border-muted rounded-2xl"
+      className="flex flex-col items-center justify-center h-64 border-2 border-dashed border-zinc-300 rounded-[2rem] bg-white/40 backdrop-blur-sm"
     >
       {query ? (
         <>
@@ -624,14 +633,14 @@ function PreviewModal({
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"
+      className="fixed inset-0 z-50 bg-zinc-900/80 backdrop-blur-sm flex items-center justify-center p-4"
       onClick={onClose}
     >
       <motion.div
         initial={{ scale: 0.9, opacity: 0 }}
         animate={{ scale: 1, opacity: 1 }}
         exit={{ scale: 0.9, opacity: 0 }}
-        className="relative w-full h-full max-w-6xl max-h-[90vh] bg-background rounded-2xl overflow-hidden shadow-2xl"
+        className="relative w-full h-full max-w-6xl max-h-[90vh] bg-white rounded-[2rem] overflow-hidden shadow-2xl shadow-zinc-900/30"
         onClick={(e) => e.stopPropagation()}
       >
         <Button
