@@ -25,7 +25,9 @@ export interface ThreadSummary {
   updated_at: string
 }
 
-export interface SSEEvent {
-  type: 'workflow' | 'sources' | 'chunk' | 'done' | 'error'
-  data: any
-}
+export type SSEEvent =
+  | { type: 'workflow'; data: WorkflowStep[] }
+  | { type: 'sources'; data: Citation[] }
+  | { type: 'chunk'; data: string }
+  | { type: 'done'; data: { thread_id: string } }
+  | { type: 'error'; data: { message: string } }

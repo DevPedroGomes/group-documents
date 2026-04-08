@@ -6,7 +6,7 @@ import remarkGfm from 'remark-gfm'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { cn } from '@/lib/utils'
 import { Bot, User, FileText } from 'lucide-react'
-import type { Message, Citation } from '@/hooks/useChat'
+import type { Message, Citation } from '@/lib/types'
 
 interface ChatMessageProps {
   message: Message

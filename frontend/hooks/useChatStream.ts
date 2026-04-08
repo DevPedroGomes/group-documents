@@ -126,8 +126,8 @@ export function useChatStream({ getToken, documentIds, onError }: UseChatStreamO
                 onError?.(event.data.message || 'An error occurred')
                 break
             }
-          } catch {
-            // skip malformed JSON
+          } catch (parseError) {
+            console.warn('Malformed SSE event:', jsonStr, parseError)
           }
         }
       }
