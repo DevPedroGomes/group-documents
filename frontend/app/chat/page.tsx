@@ -5,6 +5,7 @@ import { useSearchParams, useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { useChatStream } from '@/hooks/useChatStream'
 import { ChatHeader } from '@/components/chat/ChatHeader'
+import { ChatHistory } from '@/components/chat/ChatHistory'
 import { ChatMessage, ThinkingMessage } from '@/components/chat/ChatMessage'
 import { ChatInput } from '@/components/chat/ChatInput'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -47,6 +48,8 @@ function ChatPageContent() {
     return () => listener.subscription.unsubscribe()
   }, [router])
 
+  const getToken = async () => (await supabase.auth.getSession()).data.session?.access_token
+
   const {
     messages,
     isLoading: isSending,
@@ -54,8 +57,10 @@ function ChatPageContent() {
     resetChat,
     stopGeneration,
     workflowSteps,
+    threadId,
+    loadThread,
   } = useChatStream({
-    getToken: async () => (await supabase.auth.getSession()).data.session?.access_token,
+    getToken,
     documentIds: documentIds.length > 0 ? documentIds : undefined,
     onError: setError,
   })
@@ -95,82 +100,90 @@ function ChatPageContent() {
 
   return (
     <div className="flex h-dvh flex-col bg-zinc-400/80">
-      <div className="flex flex-col h-full xl:max-w-[1000px] xl:mx-auto xl:my-4 glass-panel xl:rounded-[2rem] xl:border xl:border-white/20 xl:shadow-2xl overflow-hidden">
-      <ChatHeader
-        documentCount={documentIds.length}
-        onReset={resetChat}
-        hasMessages={messages.length > 0}
-      />
+      <div className="flex h-full xl:max-w-[1100px] xl:mx-auto xl:my-4 glass-panel xl:rounded-[2rem] xl:border xl:border-white/20 xl:shadow-2xl overflow-hidden relative">
+        <ChatHistory
+          getToken={getToken}
+          currentThreadId={threadId}
+          onSelectThread={(id) => loadThread(id, getToken)}
+          onNewChat={resetChat}
+        />
+        <div className="flex flex-col flex-1 overflow-hidden">
+          <ChatHeader
+            documentCount={documentIds.length}
+            onReset={resetChat}
+            hasMessages={messages.length > 0}
+          />
 
-      <ScrollArea ref={scrollRef} className="flex-1">
-        <div className="mx-auto max-w-3xl py-4">
-          {messages.length === 0 ? (
-            <EmptyState onSuggestionClick={sendMessage} />
-          ) : (
-            <AnimatePresence mode="popLayout">
-              {messages.map((message) => (
-                <ChatMessage
-                  key={message.id}
-                  message={message}
-                  onCitationClick={handleCitationClick}
-                />
-              ))}
-              {isSending && <ThinkingMessage key="thinking" />}
-              {isSending && workflowSteps.length > 0 && (
-                <motion.div
-                  key="workflow"
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  className="px-4 py-2"
-                >
-                  <div className="flex flex-col gap-1 text-xs text-zinc-500">
-                    {workflowSteps.map((step, i) => (
-                      <div key={i} className="flex items-center gap-2">
-                        {step.status === 'in_progress' ? (
-                          <Loader2 className="h-3 w-3 animate-spin" />
-                        ) : (
-                          <div className="h-3 w-3 rounded-full bg-emerald-500" />
-                        )}
-                        <span>{step.details}</span>
+          <ScrollArea ref={scrollRef} className="flex-1">
+            <div className="mx-auto max-w-3xl py-4">
+              {messages.length === 0 ? (
+                <EmptyState onSuggestionClick={sendMessage} />
+              ) : (
+                <AnimatePresence mode="popLayout">
+                  {messages.map((message) => (
+                    <ChatMessage
+                      key={message.id}
+                      message={message}
+                      onCitationClick={handleCitationClick}
+                    />
+                  ))}
+                  {isSending && <ThinkingMessage key="thinking" />}
+                  {isSending && workflowSteps.length > 0 && (
+                    <motion.div
+                      key="workflow"
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      className="px-4 py-2"
+                    >
+                      <div className="flex flex-col gap-1 text-xs text-zinc-500">
+                        {workflowSteps.map((step, i) => (
+                          <div key={i} className="flex items-center gap-2">
+                            {step.status === 'in_progress' ? (
+                              <Loader2 className="h-3 w-3 animate-spin" />
+                            ) : (
+                              <div className="h-3 w-3 rounded-full bg-emerald-500" />
+                            )}
+                            <span>{step.details}</span>
+                          </div>
+                        ))}
                       </div>
-                    ))}
-                  </div>
-                </motion.div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
               )}
-            </AnimatePresence>
-          )}
-        </div>
-      </ScrollArea>
+            </div>
+          </ScrollArea>
 
-      {error && (
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="mx-auto max-w-3xl px-4 pb-2"
-        >
-          <div className="rounded-lg bg-destructive/10 px-4 py-2 text-sm text-destructive">
-            {error}
-            <button
-              onClick={() => setError(null)}
-              className="ml-2 underline hover:no-underline"
+          {error && (
+            <motion.div
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="mx-auto max-w-3xl px-4 pb-2"
             >
-              Dismiss
-            </button>
-          </div>
-        </motion.div>
-      )}
+              <div className="rounded-lg bg-destructive/10 px-4 py-2 text-sm text-destructive">
+                {error}
+                <button
+                  onClick={() => setError(null)}
+                  className="ml-2 underline hover:no-underline"
+                >
+                  Dismiss
+                </button>
+              </div>
+            </motion.div>
+          )}
 
-      <ChatInput
-        onSend={sendMessage}
-        isLoading={isSending}
-        onStop={stopGeneration}
-        disabled={documentIds.length === 0}
-        placeholder={
-          documentIds.length === 0
-            ? 'No documents selected. Go back and select documents.'
-            : 'Ask a question about your documents...'
-        }
-      />
+          <ChatInput
+            onSend={sendMessage}
+            isLoading={isSending}
+            onStop={stopGeneration}
+            disabled={documentIds.length === 0}
+            placeholder={
+              documentIds.length === 0
+                ? 'No documents selected. Go back and select documents.'
+                : 'Ask a question about your documents...'
+            }
+          />
+        </div>
       </div>
     </div>
   )

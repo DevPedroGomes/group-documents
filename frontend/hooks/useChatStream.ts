@@ -163,6 +163,35 @@ export function useChatStream({ getToken, documentIds, onError }: UseChatStreamO
     }
   }, [])
 
+  const loadThread = useCallback(async (
+    targetThreadId: string,
+    getTokenFn: () => Promise<string | undefined>,
+  ) => {
+    try {
+      const token = await getTokenFn()
+      const res = await fetch(`/api/threads/${targetThreadId}/messages`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) return
+
+      const data = await res.json()
+      const loadedMessages: Message[] = (data.messages || []).map((m: { role: string; content: string; citations?: Citation[] }, i: number) => ({
+        id: `loaded-${i}`,
+        role: m.role as 'user' | 'assistant',
+        content: m.content,
+        citations: m.citations,
+        timestamp: new Date(),
+      }))
+
+      setMessages(loadedMessages)
+      setThreadId(targetThreadId)
+      setWorkflowSteps([])
+      setCurrentCitations([])
+    } catch (err) {
+      console.error('Failed to load thread:', err)
+    }
+  }, [])
+
   return {
     messages,
     isLoading,
@@ -172,5 +201,6 @@ export function useChatStream({ getToken, documentIds, onError }: UseChatStreamO
     sendMessage,
     resetChat,
     stopGeneration,
+    loadThread,
   }
 }
