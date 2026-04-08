@@ -5,7 +5,7 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     # App
-    app_name: str = "HubDocs API"
+    app_name: str = "BrainHub Team API"
     debug: bool = False
     cors_origins: str = "http://localhost:3000"
 

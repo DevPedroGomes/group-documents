@@ -240,7 +240,7 @@ export default function KnowledgeHub({ getToken }: KnowledgeHubProps) {
         <div className="mb-6">
           <div className="flex items-center justify-between mb-4">
             <div>
-              <h1 className="text-2xl font-bold tracking-tight">Document Hub</h1>
+              <h1 className="text-2xl font-bold tracking-tight">BrainHub Team</h1>
               <p className="text-muted-foreground text-sm">
                 Search and select documents to chat with AI
               </p>

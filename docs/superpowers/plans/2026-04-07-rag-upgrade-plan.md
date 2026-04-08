@@ -224,7 +224,7 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     # App
-    app_name: str = "HubDocs API"
+    app_name: str = "BrainHub Team API"
     debug: bool = False
     cors_origins: str = "http://localhost:3000"
 
@@ -1351,7 +1351,7 @@ def generate_answer(
     context = _format_context(documents)
 
     system_prompt = (
-        "You are a Team Hub Assistant that answers questions about shared documents. "
+        "You are a BrainHub Assistant that answers questions about shared documents. "
         "Answer EXCLUSIVELY based on the provided document context. "
         "ALWAYS cite the source (document name and page number) in your answers. "
         "If no relevant information is found, say so clearly. "
@@ -1391,7 +1391,7 @@ def stream_answer(
     context = _format_context(documents)
 
     system_prompt = (
-        "You are a Team Hub Assistant that answers questions about shared documents. "
+        "You are a BrainHub Assistant that answers questions about shared documents. "
         "Answer EXCLUSIVELY based on the provided document context. "
         "ALWAYS cite the source (document name and page number) in your answers. "
         "If no relevant information is found, say so clearly. "
@@ -2540,7 +2540,7 @@ git commit -m "feat: add chat routes with SSE streaming and thread management"
 Replace the entire content of `backend/app/main.py` with:
 
 ```python
-"""HubDocs API — FastAPI application factory."""
+"""BrainHub Team API — FastAPI application factory."""
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware

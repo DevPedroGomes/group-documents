@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Hub Agno + Supabase is a document Q&A system using RAG (Retrieval-Augmented Generation). Users upload PDFs, which are processed into embeddings, enabling semantic search and AI-powered question answering with automatic citations.
+BrainHub Team is a document Q&A system using RAG (Retrieval-Augmented Generation). Users upload PDFs, which are processed into embeddings, enabling semantic search and AI-powered question answering with automatic citations.
 
 ## Tech Stack
 
@@ -91,7 +91,7 @@ Key steps:
 
 ## Key Patterns
 
-- **Team Hub Mode:** All authenticated users can view/edit all documents (shared workspace). Chat threads remain private per user.
+- **BrainHub Team Mode:** All authenticated users can view/edit all documents (shared workspace). Chat threads remain private per user.
 - **Atomic transactions:** Document creation and embedding generation use rollback on failure
 - **Agno tools:** `search_tool` performs vector search across all documents, `list_tool` lists all hub documents
 - **Input validation:** Max file size 20MB, PDF/images/audio/video supported, message length limits enforced

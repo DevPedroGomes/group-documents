@@ -2,7 +2,7 @@ import '@/styles/globals.css'
 import type { Metadata } from 'next'
 
 export const metadata: Metadata = {
-  title: 'Document Hub',
+  title: 'BrainHub Team',
   description: 'Upload documents and chat with AI using RAG',
 }
 

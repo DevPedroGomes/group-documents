@@ -778,7 +778,7 @@ import '@/styles/globals.css'
 import type { Metadata } from 'next'
 
 export const metadata: Metadata = {
-  title: 'Document Hub',
+  title: 'BrainHub Team',
   description: 'Upload documents and chat with AI using RAG',
 }
 
@@ -1101,7 +1101,7 @@ export default function Topbar({ email, onSignOut }: TopbarProps) {
               <div className="flex items-center justify-center h-8 w-8 rounded-full btn-primary-gradient shadow-orange-glow/50">
                 <FileStack className="h-4 w-4 text-zinc-900" />
               </div>
-              <span className="font-semibold text-zinc-900 tracking-tight">Document Hub</span>
+              <span className="font-semibold text-zinc-900 tracking-tight">BrainHub Team</span>
             </div>
 
             {/* User section */}
@@ -1186,7 +1186,7 @@ if (!session) {
           <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full btn-primary-gradient shadow-orange-glow">
             <FileStack className="h-6 w-6 text-zinc-900" />
           </div>
-          <CardTitle className="text-2xl tracking-tighter">Document Hub</CardTitle>
+          <CardTitle className="text-2xl tracking-tighter">BrainHub Team</CardTitle>
           <CardDescription>
             Sign in to manage your documents and chat with AI
           </CardDescription>

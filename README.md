@@ -1,4 +1,4 @@
-# HubDocs
+# BrainHub Team
 
 A collaborative document Q&A platform for teams. Upload PDFs, images, audio, and video files into a shared workspace. The system extracts content, generates vector embeddings, and enables AI-powered question answering with automatic source citations -- powered by a Corrective RAG pipeline with hybrid search, cross-encoder reranking, and real-time streaming.
 
@@ -137,8 +137,8 @@ Four tables with Row Level Security:
 
 | Table | Scope | Purpose |
 |-------|-------|---------|
-| `documents` | Shared (Team Hub) | File metadata, status, auto-generated summary, chunk count |
-| `chunks` | Shared (Team Hub) | Text chunks with pgvector embeddings (1536d) + auto-generated tsvector |
+| `documents` | Shared (BrainHub Team) | File metadata, status, auto-generated summary, chunk count |
+| `chunks` | Shared (BrainHub Team) | Text chunks with pgvector embeddings (1536d) + auto-generated tsvector |
 | `threads` | Private per user | Chat conversations |
 | `messages` | Private per user | Messages with role, content, citations in JSONB |
 
@@ -289,7 +289,7 @@ Open `http://localhost:3000`.
 
 ```bash
 # Docker
-docker run -d --name redis-hubdocs -p 6379:6379 redis:alpine
+docker run -d --name redis-brainhub -p 6379:6379 redis:alpine
 
 # Or install locally (macOS)
 brew install redis && brew services start redis
@@ -334,7 +334,7 @@ Every external service except Supabase and Anthropic is optional:
 
 ## Key Design Decisions
 
-**Team Hub model.** All documents shared, chat threads private. Enforced at both application and database (RLS) layers.
+**BrainHub Team model.** All documents shared, chat threads private. Enforced at both application and database (RLS) layers.
 
 **Background ingestion.** POST /ingest returns 202 immediately. Processing runs in FastAPI BackgroundTasks. Frontend polls status every 3 seconds.
 
@@ -386,7 +386,7 @@ Every external service except Supabase and Anthropic is optional:
 - [ ] Verify all API keys are in environment variables, not in code
 - [ ] Enable HTTPS on both frontend and backend
 - [ ] Set Supabase JWT secret to a strong value (minimum 32 characters)
-- [ ] Review RLS policies match your access model (Team Hub = shared docs, private threads)
+- [ ] Review RLS policies match your access model (BrainHub Team = shared docs, private threads)
 - [ ] Set `CORS_ORIGINS` to exact production domain (not `*`)
 - [ ] Consider adding rate limiting before production traffic
 

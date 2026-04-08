@@ -57,7 +57,7 @@ export default function Page() {
             <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full btn-primary-gradient shadow-orange-glow">
               <FileStack className="h-6 w-6" />
             </div>
-            <CardTitle className="text-2xl tracking-tighter">Document Hub</CardTitle>
+            <CardTitle className="text-2xl tracking-tighter">BrainHub Team</CardTitle>
             <CardDescription>
               Sign in to manage your documents and chat with AI
             </CardDescription>

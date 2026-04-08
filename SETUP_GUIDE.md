@@ -1,6 +1,6 @@
-# Complete Setup Guide: Team Hub
+# Complete Setup Guide: BrainHub Team
 
-This guide covers the complete configuration of your **Team Hub** application with Email/Password and Google OAuth authentication.
+This guide covers the complete configuration of your **BrainHub Team** application with Email/Password and Google OAuth authentication.
 
 ---
 
@@ -72,14 +72,14 @@ Go to [console.cloud.google.com](https://console.cloud.google.com/)
 
 #### 2. Create a Project (or use existing)
 - Click "Select a project" > "New Project"
-- Name it (e.g., "Document Hub")
+- Name it (e.g., "BrainHub Team")
 - Click "Create"
 
 #### 3. Configure OAuth Consent Screen
 - Go to **APIs & Services** > **OAuth consent screen**
 - Choose **"External"** (allows any Google user)
 - Fill in:
-  - **App name**: "Document Hub" (or your app name)
+  - **App name**: "BrainHub Team" (or your app name)
   - **User support email**: your email
   - **Developer contact email**: your email
 - Click "Save and Continue" through the remaining steps
@@ -89,7 +89,7 @@ Go to [console.cloud.google.com](https://console.cloud.google.com/)
 - Go to **APIs & Services** > **Credentials**
 - Click **"+ Create Credentials"** > **"OAuth client ID"**
 - Select **Application type**: "Web application"
-- **Name**: "Document Hub Web" (or any name)
+- **Name**: "BrainHub Team Web" (or any name)
 - **Authorized redirect URIs** - Add:
   ```
   https://<YOUR-PROJECT-REF>.supabase.co/auth/v1/callback

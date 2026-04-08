@@ -1,4 +1,4 @@
-"""HubDocs API — FastAPI application factory."""
+"""BrainHub Team API — FastAPI application factory."""
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
