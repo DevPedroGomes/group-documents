@@ -40,6 +40,8 @@ interface Document {
   title: string
   mime: string
   status: 'pending' | 'processing' | 'completed' | 'failed'
+  summary?: string
+  chunk_count?: number
 }
 
 interface KnowledgeHubProps {
@@ -101,13 +103,17 @@ export default function KnowledgeHub({ getToken }: KnowledgeHubProps) {
   }, [debouncedQuery, fetchDocs, isLoading])
 
   // Poll for processing documents
+  const debouncedQueryRef = useRef(debouncedQuery)
+  debouncedQueryRef.current = debouncedQuery
+
   useEffect(() => {
     const hasPending = docs.some(d => d.status === 'pending' || d.status === 'processing')
     if (!hasPending) return
 
-    const interval = setInterval(() => fetchDocs(debouncedQuery), 3000)
+    const interval = setInterval(() => fetchDocs(debouncedQueryRef.current), 3000)
     return () => clearInterval(interval)
-  }, [docs, debouncedQuery, fetchDocs])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [docs.map(d => d.status).join(',')])
 
   // Toggle selection
   const toggleSelect = (id: string) => {
@@ -509,9 +515,27 @@ function DocumentCard({
           <div className="text-muted-foreground mb-3">
             {getIcon()}
           </div>
-          <p className="text-sm font-medium text-center line-clamp-2 break-words w-full">
-            {doc.title}
-          </p>
+          {doc.summary ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <p className="text-sm font-medium text-center line-clamp-2 break-words w-full cursor-help">
+                  {doc.title}
+                </p>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="max-w-xs text-xs">
+                {doc.summary}
+              </TooltipContent>
+            </Tooltip>
+          ) : (
+            <p className="text-sm font-medium text-center line-clamp-2 break-words w-full">
+              {doc.title}
+            </p>
+          )}
+          {doc.chunk_count != null && doc.chunk_count > 0 && (
+            <p className="text-[10px] text-zinc-400 mt-1">
+              {doc.chunk_count} chunks
+            </p>
+          )}
         </div>
 
         {/* Preview button */}

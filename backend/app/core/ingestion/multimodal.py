@@ -52,7 +52,8 @@ def process_media_with_gemini(
         if uploaded_file.state.name == "FAILED":
             raise Exception("Gemini File Upload Failed")
 
-        model = genai.GenerativeModel("gemini-3-pro-preview")
+        settings = get_settings()
+        model = genai.GenerativeModel(settings.gemini_model)
         response = model.generate_content(
             [uploaded_file, prompt],
             request_options={"timeout": 600},

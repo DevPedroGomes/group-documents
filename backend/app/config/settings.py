@@ -53,6 +53,7 @@ class Settings(BaseSettings):
 
     # Multimodal (Google Gemini)
     google_api_key: Optional[str] = None
+    gemini_model: str = "gemini-2.5-flash-preview-04-17"
 
     # Rate Limiting
     rate_limit_requests: int = 30
