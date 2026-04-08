@@ -1,22 +1,25 @@
 """Cohere cross-encoder reranking for precision improvement."""
 
 import logging
-from typing import Optional
-
-import cohere
+from typing import TYPE_CHECKING, Optional
 
 from app.config.settings import get_settings
 
+if TYPE_CHECKING:
+    import cohere
+
 logger = logging.getLogger(__name__)
 
-_client: Optional[cohere.Client] = None
+_client: Optional["cohere.Client"] = None
 
 
-def _get_client() -> cohere.Client:
+def _get_client() -> "cohere.Client":
+    import cohere as _cohere
+
     global _client
     if _client is None:
         settings = get_settings()
-        _client = cohere.Client(api_key=settings.cohere_api_key)
+        _client = _cohere.Client(api_key=settings.cohere_api_key)
     return _client
 
 

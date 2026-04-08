@@ -9,7 +9,7 @@ pydantic==2.8.2
 pydantic-settings>=2.0.0
 pyjwt==2.9.0
 python-dotenv==1.0.1
-httpx>=0.28
+httpx>=0.24,<1.0
 
 # LLM & RAG
 anthropic>=0.40.0
@@ -34,4 +34,4 @@ google-generativeai>=0.8.0
 langfuse==2.39.0
 
 # Supabase
-supabase==2.4.0
+supabase>=2.10.0
