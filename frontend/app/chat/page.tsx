@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, Suspense } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
-import { useChat } from '@/hooks/useChat'
+import { useChatStream } from '@/hooks/useChatStream'
 import { ChatHeader } from '@/components/chat/ChatHeader'
 import { ChatMessage, ThinkingMessage } from '@/components/chat/ChatMessage'
 import { ChatInput } from '@/components/chat/ChatInput'
@@ -12,8 +12,8 @@ import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { AnimatePresence, motion } from 'framer-motion'
-import { MessageSquare, Sparkles } from 'lucide-react'
-import type { Citation } from '@/hooks/useChat'
+import { Loader2, MessageSquare, Sparkles } from 'lucide-react'
+import type { Citation } from '@/lib/types'
 
 const supabase = createClient()
 
@@ -53,7 +53,8 @@ function ChatPageContent() {
     sendMessage,
     resetChat,
     stopGeneration,
-  } = useChat({
+    workflowSteps,
+  } = useChatStream({
     getToken: async () => (await supabase.auth.getSession()).data.session?.access_token,
     documentIds: documentIds.length > 0 ? documentIds : undefined,
     onError: setError,
@@ -115,6 +116,27 @@ function ChatPageContent() {
                 />
               ))}
               {isSending && <ThinkingMessage key="thinking" />}
+              {isSending && workflowSteps.length > 0 && (
+                <motion.div
+                  key="workflow"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  className="px-4 py-2"
+                >
+                  <div className="flex flex-col gap-1 text-xs text-zinc-500">
+                    {workflowSteps.map((step, i) => (
+                      <div key={i} className="flex items-center gap-2">
+                        {step.status === 'in_progress' ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                          <div className="h-3 w-3 rounded-full bg-emerald-500" />
+                        )}
+                        <span>{step.details}</span>
+                      </div>
+                    ))}
+                  </div>
+                </motion.div>
+              )}
             </AnimatePresence>
           )}
         </div>
