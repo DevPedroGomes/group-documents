@@ -1,6 +1,6 @@
 """FastAPI dependencies: authentication, database access."""
 
-import jwt
+from jose import jwt, JWTError
 from fastapi import Request, HTTPException
 
 from app.config.settings import get_settings
@@ -18,16 +18,13 @@ async def require_user(request: Request) -> str:
     try:
         payload = jwt.decode(
             token,
-            settings.supabase_jwt_secret,
-            algorithms=["HS256"],
-            audience="authenticated",
+            settings.jwt_secret,
+            algorithms=[settings.jwt_algorithm],
         )
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(401, "Token expired")
-    except jwt.InvalidTokenError:
-        raise HTTPException(401, "Invalid token")
+    except JWTError:
+        raise HTTPException(401, "Invalid or expired token")
 
-    user_id = payload.get("sub") or payload.get("user_id") or payload.get("uid")
+    user_id = payload.get("sub")
     if not user_id:
         raise HTTPException(401, "No user in token")
 

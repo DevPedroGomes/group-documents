@@ -1,0 +1,128 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: group-documents-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: brainhub
+      POSTGRES_USER: brainhub
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U brainhub -d brainhub"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - internal
+
+  redis:
+    image: redis:7-alpine
+    container_name: group-documents-redis
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - internal
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: group-documents-api
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      - CORS_ORIGINS=https://group-documents.pgdev.com.br
+      - DATABASE_URL=postgresql+asyncpg://brainhub:${DB_PASSWORD}@postgres:5432/brainhub
+      - JWT_SECRET=${JWT_SECRET}
+      - UPLOADS_PATH=/app/uploads
+      - REDIS_URL=redis://redis:6379
+    volumes:
+      - uploads:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/docs"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+      - internal
+      - proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.group-documents-api.entrypoints=https"
+      - "traefik.http.routers.group-documents-api.rule=Host(`group-documents-api.pgdev.com.br`)"
+      - "traefik.http.routers.group-documents-api.tls=true"
+      - "traefik.http.routers.group-documents-api.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.group-documents-api.middlewares=group-documents-api-security@docker"
+      - "traefik.http.services.group-documents-api.loadbalancer.server.port=8000"
+      - "traefik.http.middlewares.group-documents-api-security.headers.stsSeconds=31536000"
+      - "traefik.http.middlewares.group-documents-api-security.headers.stsIncludeSubdomains=true"
+      - "traefik.http.middlewares.group-documents-api-security.headers.stsPreload=true"
+      - "traefik.http.middlewares.group-documents-api-security.headers.forceSTSHeader=true"
+      - "traefik.http.middlewares.group-documents-api-security.headers.contentTypeNosniff=true"
+      - "traefik.http.middlewares.group-documents-api-security.headers.browserXssFilter=true"
+      - "traefik.http.middlewares.group-documents-api-security.headers.referrerPolicy=strict-origin-when-cross-origin"
+      - "traefik.http.middlewares.group-documents-api-security.headers.frameDeny=true"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: https://group-documents-api.pgdev.com.br
+    container_name: group-documents-web
+    restart: unless-stopped
+    environment:
+      - NEXT_PUBLIC_API_URL=https://group-documents-api.pgdev.com.br
+    depends_on:
+      backend:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+      - internal
+      - proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.group-documents.entrypoints=https"
+      - "traefik.http.routers.group-documents.rule=Host(`group-documents.pgdev.com.br`)"
+      - "traefik.http.routers.group-documents.tls=true"
+      - "traefik.http.routers.group-documents.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.group-documents.middlewares=group-documents-security@docker"
+      - "traefik.http.services.group-documents.loadbalancer.server.port=3000"
+      - "traefik.http.middlewares.group-documents-security.headers.stsSeconds=31536000"
+      - "traefik.http.middlewares.group-documents-security.headers.stsIncludeSubdomains=true"
+      - "traefik.http.middlewares.group-documents-security.headers.stsPreload=true"
+      - "traefik.http.middlewares.group-documents-security.headers.forceSTSHeader=true"
+      - "traefik.http.middlewares.group-documents-security.headers.contentTypeNosniff=true"
+      - "traefik.http.middlewares.group-documents-security.headers.browserXssFilter=true"
+      - "traefik.http.middlewares.group-documents-security.headers.referrerPolicy=strict-origin-when-cross-origin"
+      - "traefik.http.middlewares.group-documents-security.headers.frameDeny=true"
+
+volumes:
+  pgdata:
+  uploads:
+
+networks:
+  internal:
+  proxy:
+    external: true

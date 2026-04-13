@@ -2,7 +2,6 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
-import { createClient } from '@/lib/supabase/client'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useDebounce } from '@/hooks/useDebounce'
 import { Button } from '@/components/ui/button'
@@ -32,8 +31,6 @@ import {
   AlertCircle,
   Sparkles,
 } from 'lucide-react'
-
-const supabase = createClient()
 
 interface Document {
   id: string
@@ -127,17 +124,26 @@ export default function KnowledgeHub({ getToken }: KnowledgeHubProps) {
   }
 
   // Upload single file
-  const uploadSingleFile = async (file: File, user: any, token: string): Promise<Document | null> => {
+  const uploadSingleFile = async (file: File, token: string): Promise<Document | null> => {
     try {
-      const ext = file.name.split('.').pop()
-      const path = `${user.id}/docs/${crypto.randomUUID()}.${ext}`
+      // Upload file to backend
+      const formData = new FormData()
+      formData.append('file', file)
 
-      const { error: uploadError } = await supabase.storage
-        .from('docs')
-        .upload(path, file, { contentType: file.type, upsert: false })
+      const uploadRes = await fetch('/api/upload', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: formData,
+      })
 
-      if (uploadError) throw uploadError
+      if (!uploadRes.ok) {
+        const data = await uploadRes.json().catch(() => ({}))
+        throw new Error(data.detail || `Failed to upload ${file.name}`)
+      }
 
+      const { storage_path } = await uploadRes.json()
+
+      // Ingest the uploaded file
       const res = await fetch('/api/ingest', {
         method: 'POST',
         headers: {
@@ -145,7 +151,7 @@ export default function KnowledgeHub({ getToken }: KnowledgeHubProps) {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          storage_path: path,
+          storage_path,
           title: file.name,
           mime: file.type,
         }),
@@ -177,15 +183,12 @@ export default function KnowledgeHub({ getToken }: KnowledgeHubProps) {
     setUploadingCount(files.length)
 
     try {
-      const user = (await supabase.auth.getUser()).data.user
-      if (!user) throw new Error('Not authenticated')
-
       const token = await getToken()
-      if (!token) throw new Error('No token available')
+      if (!token) throw new Error('Not authenticated')
 
       // Upload all files in parallel
       const uploadPromises = Array.from(files).map(file =>
-        uploadSingleFile(file, user, token)
+        uploadSingleFile(file, token)
           .then(doc => {
             // Add document to list as soon as it's uploaded
             if (doc) {

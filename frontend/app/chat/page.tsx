@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, Suspense } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
-import { createClient } from '@/lib/supabase/client'
+import { useAuth } from '@/contexts/AuthContext'
 import { useChatStream } from '@/hooks/useChatStream'
 import { ChatHeader } from '@/components/chat/ChatHeader'
 import { ChatHistory } from '@/components/chat/ChatHistory'
@@ -16,39 +16,24 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { Loader2, MessageSquare, Sparkles } from 'lucide-react'
 import type { Citation } from '@/lib/types'
 
-const supabase = createClient()
-
 function ChatPageContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const scrollRef = useRef<HTMLDivElement>(null)
-  const [session, setSession] = useState<any>(null)
-  const [loading, setLoading] = useState(true)
+  const { user, loading, getToken } = useAuth()
   const [error, setError] = useState<string | null>(null)
 
   // Get document IDs from URL
   const documentIds = searchParams.get('docs')?.split(',').filter(Boolean) || []
 
-  // Auth check
+  // Redirect to home if not authenticated
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      if (!data.session) {
-        router.push('/')
-      } else {
-        setSession(data.session)
-      }
-      setLoading(false)
-    })
+    if (!loading && !user) {
+      router.push('/')
+    }
+  }, [loading, user, router])
 
-    const { data: listener } = supabase.auth.onAuthStateChange((_e, s) => {
-      if (!s) router.push('/')
-      setSession(s)
-    })
-
-    return () => listener.subscription.unsubscribe()
-  }, [router])
-
-  const getToken = async () => (await supabase.auth.getSession()).data.session?.access_token
+  const getTokenAsync = async () => getToken() || undefined
 
   const {
     messages,
@@ -60,7 +45,7 @@ function ChatPageContent() {
     threadId,
     loadThread,
   } = useChatStream({
-    getToken,
+    getToken: getTokenAsync,
     documentIds: documentIds.length > 0 ? documentIds : undefined,
     onError: setError,
   })
@@ -96,15 +81,15 @@ function ChatPageContent() {
     )
   }
 
-  if (!session) return null
+  if (!user) return null
 
   return (
     <div className="flex h-dvh flex-col bg-zinc-400/80">
       <div className="flex h-full xl:max-w-[1100px] xl:mx-auto xl:my-4 glass-panel xl:rounded-[2rem] xl:border xl:border-white/20 xl:shadow-2xl overflow-hidden relative">
         <ChatHistory
-          getToken={getToken}
+          getToken={getTokenAsync}
           currentThreadId={threadId}
-          onSelectThread={(id) => loadThread(id, getToken)}
+          onSelectThread={(id) => loadThread(id, getTokenAsync)}
           onNewChat={resetChat}
         />
         <div className="flex flex-col flex-1 overflow-hidden">

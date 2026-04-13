@@ -1,12 +1,12 @@
-"""Document management routes: ingest, list, preview."""
+"""Document management routes: upload, ingest, list, preview."""
 
+import os
 import re
 import logging
 import asyncio
 from typing import Optional
 
-import httpx
-from fastapi import APIRouter, Request, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Request, HTTPException, BackgroundTasks, UploadFile, File, Form
 from pydantic import BaseModel
 from sqlalchemy import insert, text as sqltext
 
@@ -14,7 +14,7 @@ from app.config.settings import get_settings
 from app.db.engine import engine
 from app.db.models import documents, chunks
 from app.api.dependencies import require_user
-from app.services.supabase_client import create_signed_url
+from app.services.file_storage import save_file, get_file
 from app.services.embedding import embed_documents
 from app.core.ingestion.pdf_processor import extract_pages_from_pdf
 from app.core.ingestion.chunker import chunk_document_pages, enrich_chunks_with_context
@@ -40,6 +40,53 @@ class IngestBody(BaseModel):
 
     class Config:
         str_strip_whitespace = True
+
+
+@router.post("/upload")
+async def upload_file(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    title: str = Form(...),
+):
+    """Upload a file and trigger ingestion."""
+    user_id = await require_user(request)
+    settings = get_settings()
+
+    if not title or len(title) > 500:
+        raise HTTPException(400, "Invalid title (max 500 characters)")
+
+    # Read file data
+    data = await file.read()
+    if len(data) > settings.max_file_size:
+        raise HTTPException(400, f"File too large (max {settings.max_file_size // (1024*1024)}MB)")
+
+    # Determine mime type
+    mime = file.content_type or "application/octet-stream"
+
+    # Save to local storage
+    storage_path = save_file(user_id, file.filename, data)
+
+    # Create document record
+    try:
+        with engine.begin() as conn:
+            doc_id = conn.execute(
+                insert(documents).values(
+                    user_id=user_id,
+                    title=title,
+                    mime=mime,
+                    storage_path=storage_path,
+                    status="pending",
+                ).returning(documents.c.id)
+            ).scalar_one()
+    except Exception as e:
+        logger.error(f"DB error creating document: {e}")
+        raise HTTPException(500, "Error creating document record")
+
+    # Trigger background ingestion
+    background_tasks.add_task(process_ingestion, str(doc_id), user_id, storage_path)
+
+    return {"document_id": str(doc_id), "status": "pending"}
 
 
 @router.post("/ingest")
@@ -76,7 +123,7 @@ async def ingest(request: Request, body: IngestBody, background_tasks: Backgroun
 
 
 async def process_ingestion(doc_id: str, user_id: str, storage_path: str):
-    """Background task: download → chunk → enrich → embed → store."""
+    """Background task: read file → chunk → enrich → embed → store."""
     settings = get_settings()
     loop = asyncio.get_running_loop()
 
@@ -89,19 +136,11 @@ async def process_ingestion(doc_id: str, user_id: str, storage_path: str):
                 sqltext("UPDATE documents SET status = 'processing' WHERE id = :id"), {"id": doc_id}
             )
 
-        # Download
-        url = create_signed_url(storage_path, 600)
-        async with httpx.AsyncClient(timeout=300) as client:
-            async with client.stream("GET", url) as r:
-                r.raise_for_status()
-                data_chunks = []
-                total = 0
-                async for chunk in r.aiter_bytes(chunk_size=8192):
-                    total += len(chunk)
-                    if total > settings.max_file_size:
-                        raise Exception(f"File too large (>{settings.max_file_size // (1024*1024)}MB)")
-                    data_chunks.append(chunk)
-                data = b"".join(data_chunks)
+        # Read file from local storage
+        data = get_file(storage_path)
+
+        if len(data) > settings.max_file_size:
+            raise Exception(f"File too large (>{settings.max_file_size // (1024*1024)}MB)")
 
         # Process by type
         text_chunks: list[tuple[str, dict]] = []
@@ -276,6 +315,7 @@ async def list_documents(request: Request, query: Optional[str] = None, semantic
 
 @router.get("/document/{doc_id}/preview")
 async def preview(request: Request, doc_id: str):
+    """Return a temporary download URL or serve the file directly."""
     await require_user(request)
     with engine.begin() as conn:
         row = conn.execute(
@@ -283,5 +323,13 @@ async def preview(request: Request, doc_id: str):
         ).first()
     if not row:
         raise HTTPException(404, "Document not found")
-    url = create_signed_url(row[0], 600)
-    return {"signed_url": url}
+
+    storage_path = row[0]
+    settings = get_settings()
+    abs_path = os.path.join(settings.uploads_path, storage_path)
+
+    if not os.path.isfile(abs_path):
+        raise HTTPException(404, "File not found on disk")
+
+    from fastapi.responses import FileResponse
+    return FileResponse(abs_path, filename=os.path.basename(storage_path))

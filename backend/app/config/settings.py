@@ -9,13 +9,16 @@ class Settings(BaseSettings):
     debug: bool = False
     cors_origins: str = "http://localhost:3000"
 
-    # Supabase
-    supabase_url: str
-    supabase_anon_key: str
-    supabase_service_role_key: str
-    supabase_jwt_secret: str
-    supabase_db_url: str
-    storage_bucket: str = "docs"
+    # Database
+    database_url: str
+
+    # Auth (local JWT)
+    jwt_secret: str
+    jwt_algorithm: str = "HS256"
+    jwt_access_token_expire_minutes: int = 60
+
+    # File storage
+    uploads_path: str = "/app/uploads"
 
     # LLM (Anthropic Claude)
     anthropic_api_key: str

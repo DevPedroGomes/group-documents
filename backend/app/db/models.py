@@ -1,6 +1,6 @@
 from sqlalchemy import (
     Table, Column, String, Integer, Text, JSON, TIMESTAMP,
-    ForeignKey, MetaData, Float,
+    ForeignKey, MetaData, Float, Boolean,
 )
 from sqlalchemy.dialects.postgresql import UUID, ARRAY
 from sqlalchemy.sql import func
@@ -8,6 +8,16 @@ from pgvector.sqlalchemy import Vector
 import uuid
 
 metadata = MetaData()
+
+users = Table(
+    "users", metadata,
+    Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
+    Column("email", String(255), unique=True, nullable=False, index=True),
+    Column("password_hash", String(255), nullable=False),
+    Column("full_name", String(255), nullable=True),
+    Column("is_active", Boolean, default=True),
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now()),
+)
 
 documents = Table(
     "documents", metadata,
