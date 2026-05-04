@@ -6,9 +6,8 @@ Entry point for all document retrieval.
 import logging
 from typing import Optional
 
-import anthropic
-
 from app.config.settings import get_settings
+from app.core.llm_client import chat_complete
 from app.services.embedding_cache import get_query_embedding
 from app.services.vector_store import hybrid_search
 from app.core.rag.reranker import rerank_documents
@@ -21,8 +20,7 @@ def generate_multi_queries(question: str) -> list[str]:
     settings = get_settings()
 
     try:
-        client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-        response = client.messages.create(
+        text = chat_complete(
             model=settings.fast_model,
             max_tokens=300,
             messages=[
@@ -39,11 +37,7 @@ def generate_multi_queries(question: str) -> list[str]:
                 }
             ],
         )
-        queries = [
-            q.strip()
-            for q in response.content[0].text.strip().split("\n")
-            if q.strip()
-        ]
+        queries = [q.strip() for q in text.strip().split("\n") if q.strip()]
         return queries[:settings.multi_query_count]
     except Exception as e:
         logger.warning(f"Multi-query generation failed: {e}")
@@ -52,6 +46,7 @@ def generate_multi_queries(question: str) -> list[str]:
 
 def retrieve_documents(
     question: str,
+    user_id: str,
     document_ids: Optional[list[str]] = None,
     top_k: int = 5,
 ) -> list[dict]:
@@ -62,6 +57,8 @@ def retrieve_documents(
     3. Merge & deduplicate results
     4. Rerank with Cohere cross-encoder
     5. Return top_k
+
+    `user_id` is REQUIRED for tenant isolation.
     """
     settings = get_settings()
     search_top_k = top_k * settings.search_candidates_multiplier
@@ -78,6 +75,7 @@ def retrieve_documents(
         results = hybrid_search(
             query_embedding=query_embedding,
             query_text=q,
+            user_id=user_id,
             top_k=search_top_k,
             document_ids=document_ids,
         )

@@ -1,13 +1,21 @@
-"""Answer generation using Claude Sonnet with streaming support."""
+"""Answer generation through the configured LLM provider, with streaming support."""
 
 import logging
 from typing import Generator, Optional
 
-import anthropic
-
 from app.config.settings import get_settings
+from app.core.llm_client import chat_complete, chat_stream
 
 logger = logging.getLogger(__name__)
+
+
+_SYSTEM_PROMPT = (
+    "You are a BrainHub Assistant that answers questions about shared documents. "
+    "Answer EXCLUSIVELY based on the provided document context. "
+    "ALWAYS cite the source (document name and page number) in your answers. "
+    "If no relevant information is found, say so clearly. "
+    "Respond in the same language as the user's question."
+)
 
 
 def _format_context(documents: list[dict]) -> str:
@@ -24,6 +32,24 @@ def _format_context(documents: list[dict]) -> str:
     return "\n\n".join(parts)
 
 
+def _build_messages(
+    question: str,
+    documents: list[dict],
+    history: Optional[list[dict]],
+) -> list[dict]:
+    context = _format_context(documents)
+    messages: list[dict] = []
+    if history:
+        for msg in history:
+            role = "user" if msg["role"] == "user" else "assistant"
+            messages.append({"role": role, "content": msg["content"]})
+    messages.append({
+        "role": "user",
+        "content": f"Context from documents:\n\n{context}\n\nQuestion: {question}",
+    })
+    return messages
+
+
 def generate_answer(
     question: str,
     documents: list[dict],
@@ -31,37 +57,12 @@ def generate_answer(
 ) -> str:
     """Generate a complete answer (non-streaming)."""
     settings = get_settings()
-    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-
-    context = _format_context(documents)
-
-    system_prompt = (
-        "You are a BrainHub Assistant that answers questions about shared documents. "
-        "Answer EXCLUSIVELY based on the provided document context. "
-        "ALWAYS cite the source (document name and page number) in your answers. "
-        "If no relevant information is found, say so clearly. "
-        "Respond in the same language as the user's question."
-    )
-
-    messages = []
-    if history:
-        for msg in history:
-            role = "user" if msg["role"] == "user" else "assistant"
-            messages.append({"role": role, "content": msg["content"]})
-
-    messages.append({
-        "role": "user",
-        "content": f"Context from documents:\n\n{context}\n\nQuestion: {question}",
-    })
-
-    response = client.messages.create(
+    return chat_complete(
         model=settings.generation_model,
         max_tokens=2000,
-        system=system_prompt,
-        messages=messages,
+        system=_SYSTEM_PROMPT,
+        messages=_build_messages(question, documents, history),
     )
-
-    return response.content[0].text
 
 
 def stream_answer(
@@ -69,36 +70,11 @@ def stream_answer(
     documents: list[dict],
     history: Optional[list[dict]] = None,
 ) -> Generator[str, None, None]:
-    """Stream answer tokens using Claude Sonnet."""
+    """Stream answer tokens through the configured LLM provider."""
     settings = get_settings()
-    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-
-    context = _format_context(documents)
-
-    system_prompt = (
-        "You are a BrainHub Assistant that answers questions about shared documents. "
-        "Answer EXCLUSIVELY based on the provided document context. "
-        "ALWAYS cite the source (document name and page number) in your answers. "
-        "If no relevant information is found, say so clearly. "
-        "Respond in the same language as the user's question."
-    )
-
-    messages = []
-    if history:
-        for msg in history:
-            role = "user" if msg["role"] == "user" else "assistant"
-            messages.append({"role": role, "content": msg["content"]})
-
-    messages.append({
-        "role": "user",
-        "content": f"Context from documents:\n\n{context}\n\nQuestion: {question}",
-    })
-
-    with client.messages.stream(
+    yield from chat_stream(
         model=settings.generation_model,
         max_tokens=2000,
-        system=system_prompt,
-        messages=messages,
-    ) as stream:
-        for text in stream.text_stream:
-            yield text
+        system=_SYSTEM_PROMPT,
+        messages=_build_messages(question, documents, history),
+    )

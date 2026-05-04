@@ -99,16 +99,14 @@ def enrich_chunks_with_context(
     document_title: str,
 ) -> list[tuple[str, dict]]:
     """
-    Anthropic's Contextual Retrieval technique:
-    Use Claude Haiku to generate 50-100 tokens of context per chunk,
-    prepended before embedding.
+    Anthropic's Contextual Retrieval technique: use a fast LLM (Haiku-class)
+    to generate 50-100 tokens of context per chunk, prepended before embedding.
 
     This improves retrieval quality by 35-67%.
     """
-    import anthropic
+    from app.core.llm_client import chat_complete
 
     settings = get_settings()
-    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
 
     # Truncate document text if too long for context window (keep first 50k chars)
     doc_context = full_document_text[:50000]
@@ -116,7 +114,7 @@ def enrich_chunks_with_context(
     enriched = []
     for chunk_text_str, meta in chunks:
         try:
-            response = client.messages.create(
+            context = chat_complete(
                 model=settings.fast_model,
                 max_tokens=150,
                 messages=[
@@ -130,8 +128,7 @@ def enrich_chunks_with_context(
                         ),
                     }
                 ],
-            )
-            context = response.content[0].text.strip()
+            ).strip()
             enriched_text = f"{context}\n\n{chunk_text_str}"
         except Exception as e:
             logger.warning(f"Contextual enrichment failed for chunk {meta['chunk_index']}: {e}")

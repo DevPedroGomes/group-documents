@@ -60,8 +60,8 @@ def _create_token(user_id: str, email: str) -> str:
 @router.post("/register")
 async def register(body: RegisterBody):
     """Create a new user account and return a JWT token."""
-    if len(body.password) < 6:
-        raise HTTPException(400, "Password must be at least 6 characters")
+    if len(body.password) < 12:
+        raise HTTPException(400, "Password must be at least 12 characters")
 
     password_hash = _hash_password(body.password)
     user_id = str(uuid.uuid4())

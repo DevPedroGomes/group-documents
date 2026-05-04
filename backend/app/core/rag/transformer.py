@@ -1,10 +1,9 @@
-"""Query transformation using Claude Haiku for better retrieval."""
+"""Query transformation using a fast LLM for better retrieval."""
 
 import logging
 
-import anthropic
-
 from app.config.settings import get_settings
+from app.core.llm_client import chat_complete
 
 logger = logging.getLogger(__name__)
 
@@ -15,10 +14,8 @@ def transform_query(question: str) -> str:
     Used when initial retrieval doesn't find relevant documents.
     """
     settings = get_settings()
-    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-
     try:
-        response = client.messages.create(
+        text = chat_complete(
             model=settings.fast_model,
             max_tokens=200,
             messages=[
@@ -38,7 +35,7 @@ def transform_query(question: str) -> str:
                 }
             ],
         )
-        return response.content[0].text.strip()
+        return text.strip()
     except Exception as e:
         logger.error(f"Query transformation failed: {e}")
         return question

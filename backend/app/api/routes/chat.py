@@ -13,6 +13,7 @@ from app.config.settings import get_settings
 from app.db.engine import engine
 from app.db.models import threads, messages
 from app.api.dependencies import require_user
+from app.api.rate_limit import limiter
 from app.core.guardrails.input_validator import validate_input
 from app.core.rag.generator import stream_answer
 from app.core.rag.transformer import transform_query
@@ -58,10 +59,10 @@ def get_thread_history(thread_id: str, user_id: str, limit: int = 20) -> list[di
     with engine.begin() as conn:
         rows = conn.execute(
             sqltext("""
-                SELECT m.role, m.content, m.meta, m.created_at
+                SELECT m.role, m.content, m.citations, m.created_at
                 FROM messages m
                 JOIN threads t ON m.thread_id = t.id
-                WHERE m.thread_id = :thread_id AND t.user_id = :user_id
+                WHERE m.thread_id = :thread_id AND t.user_id = CAST(:user_id AS uuid)
                 ORDER BY m.created_at ASC
                 LIMIT :limit
             """),
@@ -72,27 +73,28 @@ def get_thread_history(thread_id: str, user_id: str, limit: int = 20) -> list[di
         {
             "role": r["role"],
             "content": r["content"],
-            "citations": r["meta"].get("citations") if r["meta"] else None,
+            "citations": r["citations"] if r["citations"] else None,
         }
         for r in rows
     ]
 
 
 def save_message(thread_id: str, role: str, content: str, citations: list | None = None):
-    meta = json.dumps({"citations": citations}) if citations else None
+    citations_json = json.dumps(citations) if citations else None
     with engine.begin() as conn:
         conn.execute(
             sqltext("""
-                INSERT INTO messages (id, thread_id, role, content, meta, created_at)
-                VALUES (gen_random_uuid(), :thread_id, :role, :content, :meta, NOW())
+                INSERT INTO messages (id, thread_id, role, content, citations, created_at)
+                VALUES (gen_random_uuid(), :thread_id, :role, :content, CAST(:citations AS jsonb), NOW())
             """),
-            {"thread_id": thread_id, "role": role, "content": content, "meta": meta},
+            {"thread_id": thread_id, "role": role, "content": content, "citations": citations_json},
         )
 
 
 # --- Chat endpoint (SSE streaming) ---
 
 @router.post("/chat")
+@limiter.limit("30/minute")
 async def chat(request: Request, body: ChatBody):
     user_id = await require_user(request)
 
@@ -125,6 +127,7 @@ async def chat(request: Request, body: ChatBody):
 
             documents = retrieve_documents(
                 question=body.message,
+                user_id=user_id,
                 document_ids=body.document_ids,
                 top_k=5,
             )
@@ -279,6 +282,28 @@ async def get_messages(request: Request, thread_id: str):
 
     history = get_thread_history(thread_id, user_id, limit=100)
     return {"messages": history, "thread_id": thread_id}
+
+
+@router.delete("/threads/{thread_id}")
+async def delete_thread(request: Request, thread_id: str):
+    """Delete a thread and its messages (LGPD compliance). Ownership enforced."""
+    user_id = await require_user(request)
+
+    with engine.begin() as conn:
+        row = conn.execute(
+            sqltext("SELECT id FROM threads WHERE id = :id AND user_id = CAST(:uid AS uuid)"),
+            {"id": thread_id, "uid": user_id},
+        ).first()
+        if not row:
+            raise HTTPException(404, "Thread not found")
+
+        # FK CASCADE removes message rows.
+        conn.execute(
+            sqltext("DELETE FROM threads WHERE id = :id AND user_id = CAST(:uid AS uuid)"),
+            {"id": thread_id, "uid": user_id},
+        )
+
+    return {"deleted": True, "id": thread_id}
 
 
 def _sse(event_type: str, data) -> str:

@@ -40,8 +40,14 @@ chunks = Table(
     Column("document_id", UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False),
     Column("page", Integer),
     Column("chunk_index", Integer),
-    Column("text", Text, nullable=False),
+    Column("content", Text, nullable=False),
+    Column("enriched_content", Text),
     Column("embedding", Vector(1536)),
+    Column("token_count", Integer),
+    # Column name in DB is `metadata` but SQLAlchemy reserves the `metadata` attribute on Table,
+    # so we use key="meta_json" to expose as `chunks.c.meta_json` while writing column `metadata`.
+    Column("metadata", JSON, key="meta_json"),
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now()),
 )
 
 threads = Table(
@@ -59,7 +65,8 @@ messages = Table(
     Column("thread_id", UUID(as_uuid=True), ForeignKey("threads.id", ondelete="CASCADE"), nullable=False),
     Column("role", Text, nullable=False),
     Column("content", Text, nullable=False),
-    Column("meta", JSON),
+    Column("citations", JSON),
+    Column("sources", ARRAY(UUID(as_uuid=True))),
     Column("created_at", TIMESTAMP(timezone=True), server_default=func.now()),
 )
 

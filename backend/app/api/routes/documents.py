@@ -1,4 +1,4 @@
-"""Document management routes: upload, ingest, list, preview."""
+"""Document management routes: upload, ingest, list, preview, delete."""
 
 import os
 import re
@@ -14,7 +14,8 @@ from app.config.settings import get_settings
 from app.db.engine import engine
 from app.db.models import documents, chunks
 from app.api.dependencies import require_user
-from app.services.file_storage import save_file, get_file
+from app.services.file_storage import save_file, get_file, get_file_abspath, delete_file
+from app.api.rate_limit import limiter
 from app.services.embedding import embed_documents
 from app.core.ingestion.pdf_processor import extract_pages_from_pdf
 from app.core.ingestion.chunker import chunk_document_pages, enrich_chunks_with_context
@@ -22,6 +23,33 @@ from app.core.ingestion.chunker import chunk_document_pages, enrich_chunks_with_
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+# Allowed MIME types — must match the regex in validate_storage_path.
+ALLOWED_MIMES: dict[str, set[str]] = {
+    "application/pdf": {"pdf"},
+    "image/png": {"png"},
+    "image/jpeg": {"jpg", "jpeg"},
+    "image/gif": {"gif"},
+    "image/webp": {"webp"},
+    "audio/mpeg": {"mp3"},
+    "audio/mp3": {"mp3"},
+    "audio/wav": {"wav"},
+    "audio/x-wav": {"wav"},
+    "audio/webm": {"webm"},
+    "video/mp4": {"mp4"},
+    "video/webm": {"webm"},
+}
+
+
+def _sniff_mime(data: bytes) -> str:
+    """Sniff MIME type from file bytes using libmagic."""
+    try:
+        import magic
+        return magic.from_buffer(data, mime=True) or "application/octet-stream"
+    except Exception as e:
+        logger.warning(f"libmagic sniff failed: {e}")
+        return "application/octet-stream"
 
 
 def validate_storage_path(path: str) -> bool:
@@ -43,6 +71,7 @@ class IngestBody(BaseModel):
 
 
 @router.post("/upload")
+@limiter.limit("30/minute")
 async def upload_file(
     request: Request,
     background_tasks: BackgroundTasks,
@@ -58,14 +87,27 @@ async def upload_file(
 
     # Read file data
     data = await file.read()
+    if not data:
+        raise HTTPException(400, "Empty file")
     if len(data) > settings.max_file_size:
         raise HTTPException(400, f"File too large (max {settings.max_file_size // (1024*1024)}MB)")
 
-    # Determine mime type
-    mime = file.content_type or "application/octet-stream"
+    # MIME allowlist + magic-byte sniffing. The client-declared content-type is
+    # advisory only — we trust libmagic.
+    sniffed_mime = _sniff_mime(data).lower()
+    if sniffed_mime not in ALLOWED_MIMES:
+        logger.info(f"Rejected upload: sniffed mime={sniffed_mime}")
+        raise HTTPException(415, f"Unsupported file type: {sniffed_mime}")
 
-    # Save to local storage
-    storage_path = save_file(user_id, file.filename, data)
+    # If the client declared a content-type, it must agree with sniffed mime
+    # (or at least be in ALLOWED_MIMES with a compatible extension set).
+    declared = (file.content_type or "").lower()
+    if declared and declared in ALLOWED_MIMES:
+        if ALLOWED_MIMES[declared] != ALLOWED_MIMES[sniffed_mime]:
+            raise HTTPException(415, "Declared content-type does not match file contents")
+
+    # Save to local storage with UUID-based filename derived from sniffed mime
+    storage_path = save_file(user_id, sniffed_mime, data)
 
     # Create document record
     try:
@@ -74,7 +116,7 @@ async def upload_file(
                 insert(documents).values(
                     user_id=user_id,
                     title=title,
-                    mime=mime,
+                    mime=sniffed_mime,
                     storage_path=storage_path,
                     status="pending",
                 ).returning(documents.c.id)
@@ -90,6 +132,7 @@ async def upload_file(
 
 
 @router.post("/ingest")
+@limiter.limit("30/minute")
 async def ingest(request: Request, body: IngestBody, background_tasks: BackgroundTasks):
     user_id = await require_user(request)
 
@@ -102,6 +145,9 @@ async def ingest(request: Request, body: IngestBody, background_tasks: Backgroun
     path_user_id = body.storage_path.split("/")[0]
     if path_user_id != user_id:
         raise HTTPException(403, "Storage path does not belong to this user")
+
+    if (body.mime or "").lower() not in ALLOWED_MIMES:
+        raise HTTPException(415, f"Unsupported file type: {body.mime}")
 
     try:
         with engine.begin() as conn:
@@ -142,15 +188,18 @@ async def process_ingestion(doc_id: str, user_id: str, storage_path: str):
         if len(data) > settings.max_file_size:
             raise Exception(f"File too large (>{settings.max_file_size // (1024*1024)}MB)")
 
-        # Process by type
-        text_chunks: list[tuple[str, dict]] = []
+        # Process by type. We carry both the original chunk text (`raw_chunks`)
+        # and the contextually-enriched text (`enriched_chunks`) into the store.
+        raw_chunks: list[tuple[str, dict]] = []
+        enriched_chunks: list[tuple[str, dict]] = []
+        summary = None
 
         if mime == "application/pdf":
             pages = await loop.run_in_executor(None, extract_pages_from_pdf, data)
             if not pages:
                 raise Exception("No content extracted from PDF")
 
-            text_chunks = chunk_document_pages(pages)
+            raw_chunks = chunk_document_pages(pages)
 
             # Contextual enrichment
             full_text = " ".join(p for p in pages if p.strip())
@@ -160,23 +209,21 @@ async def process_ingestion(doc_id: str, user_id: str, storage_path: str):
                     sqltext("SELECT title FROM documents WHERE id = :id"), {"id": doc_id}
                 ).scalar() or ""
 
-            text_chunks = await loop.run_in_executor(
-                None, enrich_chunks_with_context, text_chunks, full_text, doc_title
+            enriched_chunks = await loop.run_in_executor(
+                None, enrich_chunks_with_context, raw_chunks, full_text, doc_title
             )
 
             # Generate summary
             try:
-                import anthropic
-                client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-                summary_resp = client.messages.create(
+                from app.core.llm_client import chat_complete
+                summary = chat_complete(
                     model=settings.fast_model,
                     max_tokens=300,
                     messages=[{
                         "role": "user",
                         "content": f"Summarize this document in 2-3 sentences:\n\n{full_text[:10000]}",
                     }],
-                )
-                summary = summary_resp.content[0].text.strip()
+                ).strip()
             except Exception as e:
                 logger.warning(f"Summary generation failed: {e}")
                 summary = None
@@ -188,8 +235,8 @@ async def process_ingestion(doc_id: str, user_id: str, storage_path: str):
                 raise Exception("No content extracted from image")
             from app.core.ingestion.chunker import chunk_text
             for ci, ck in enumerate(chunk_text(text)):
-                text_chunks.append((ck, {"page": 1, "chunk_index": ci}))
-            summary = None
+                raw_chunks.append((ck, {"page": 1, "chunk_index": ci}))
+            enriched_chunks = list(raw_chunks)
 
         elif mime and mime.startswith("audio/"):
             from app.core.ingestion.multimodal import process_audio
@@ -199,8 +246,8 @@ async def process_ingestion(doc_id: str, user_id: str, storage_path: str):
                 raise Exception("No content extracted from audio")
             from app.core.ingestion.chunker import chunk_text
             for ci, ck in enumerate(chunk_text(text)):
-                text_chunks.append((ck, {"page": 1, "chunk_index": ci}))
-            summary = None
+                raw_chunks.append((ck, {"page": 1, "chunk_index": ci}))
+            enriched_chunks = list(raw_chunks)
 
         elif mime and mime.startswith("video/"):
             from app.core.ingestion.multimodal import process_video
@@ -209,41 +256,55 @@ async def process_ingestion(doc_id: str, user_id: str, storage_path: str):
                 raise Exception("No content extracted from video")
             from app.core.ingestion.chunker import chunk_text
             for ci, ck in enumerate(chunk_text(text)):
-                text_chunks.append((ck, {"page": 1, "chunk_index": ci}))
-            summary = None
+                raw_chunks.append((ck, {"page": 1, "chunk_index": ci}))
+            enriched_chunks = list(raw_chunks)
 
         else:
             raise Exception(f"Unsupported format: {mime}")
 
-        if not text_chunks:
+        if not raw_chunks:
             raise Exception("No chunks generated")
 
-        # Embed
-        texts = [t for t, _ in text_chunks]
+        # Embed using the enriched text (better retrieval per Anthropic's contextual
+        # retrieval technique). Fall back to raw text if enrichment is missing.
+        if not enriched_chunks or len(enriched_chunks) != len(raw_chunks):
+            enriched_chunks = list(raw_chunks)
+
+        texts_for_embedding = [t for t, _ in enriched_chunks]
+        raw_texts = [t for t, _ in raw_chunks]
+
         batch_size = 64
         all_vectors = []
-        for i in range(0, len(texts), batch_size):
-            batch = texts[i : i + batch_size]
+        for i in range(0, len(texts_for_embedding), batch_size):
+            batch = texts_for_embedding[i : i + batch_size]
             vecs = await loop.run_in_executor(None, embed_documents, batch)
             all_vectors.extend(vecs)
 
-        # Store
+        # Store: keep raw content in `content`, enriched in `enriched_content`.
         from app.services.vector_store import add_chunks
-        pages_list = [m["page"] for _, m in text_chunks]
-        indices_list = [m["chunk_index"] for _, m in text_chunks]
-        add_chunks(texts, all_vectors, user_id, doc_id, pages_list, indices_list)
+        pages_list = [m["page"] for _, m in raw_chunks]
+        indices_list = [m["chunk_index"] for _, m in raw_chunks]
+        add_chunks(
+            texts=raw_texts,
+            enriched_texts=texts_for_embedding,
+            embeddings=all_vectors,
+            user_id=user_id,
+            document_id=doc_id,
+            pages=pages_list,
+            chunk_indices=indices_list,
+        )
 
         # Update document
         with engine.begin() as conn:
             update_sql = "UPDATE documents SET status = 'completed', chunk_count = :count"
-            update_params: dict = {"id": doc_id, "count": len(text_chunks)}
+            update_params: dict = {"id": doc_id, "count": len(raw_chunks)}
             if summary:
                 update_sql += ", summary = :summary"
                 update_params["summary"] = summary
             update_sql += " WHERE id = :id"
             conn.execute(sqltext(update_sql), update_params)
 
-        logger.info(f"Ingestion completed for {doc_id}: {len(text_chunks)} chunks")
+        logger.info(f"Ingestion completed for {doc_id}: {len(raw_chunks)} chunks")
 
     except Exception as e:
         logger.error(f"Ingestion failed for {doc_id}: {e}")
@@ -271,22 +332,23 @@ async def list_documents(request: Request, query: Optional[str] = None, semantic
             sql = sqltext("""
                 SELECT document_id, MAX(1 - (embedding <=> CAST(:qvec AS vector))) as max_score
                 FROM chunks
-                WHERE 1 - (embedding <=> CAST(:qvec AS vector)) > 0.15
+                WHERE user_id = CAST(:user_id AS uuid)
+                  AND 1 - (embedding <=> CAST(:qvec AS vector)) > 0.15
                 GROUP BY document_id
                 ORDER BY max_score DESC
                 LIMIT 50
             """)
-            rows = conn.execute(sql, {"qvec": qvec_str}).fetchall()
+            rows = conn.execute(sql, {"qvec": qvec_str, "user_id": user_id}).fetchall()
             relevant_ids = [str(r[0]) for r in rows]
             if not relevant_ids:
                 return {"items": []}
 
     with engine.begin() as conn:
-        base_sql = "SELECT id, title, mime, status, summary, chunk_count FROM documents"
-        params: dict = {}
+        base_sql = "SELECT id, title, mime, status, summary, chunk_count FROM documents WHERE user_id = CAST(:user_id AS uuid)"
+        params: dict = {"user_id": user_id}
 
         if relevant_ids is not None:
-            base_sql += " WHERE id = ANY(:ids)"
+            base_sql += " AND id = ANY(:ids)"
             params["ids"] = relevant_ids
         else:
             base_sql += " ORDER BY uploaded_at DESC"
@@ -315,21 +377,57 @@ async def list_documents(request: Request, query: Optional[str] = None, semantic
 
 @router.get("/document/{doc_id}/preview")
 async def preview(request: Request, doc_id: str):
-    """Return a temporary download URL or serve the file directly."""
-    await require_user(request)
+    """Return the file content for an owned document. 404 (not 403) on mismatch."""
+    user_id = await require_user(request)
+
     with engine.begin() as conn:
         row = conn.execute(
-            sqltext("SELECT storage_path FROM documents WHERE id=:id"), {"id": doc_id}
+            sqltext("SELECT storage_path FROM documents WHERE id = :id AND user_id = CAST(:uid AS uuid)"),
+            {"id": doc_id, "uid": user_id},
         ).first()
     if not row:
+        # Hide existence — same response whether the doc doesn't exist or
+        # belongs to someone else.
         raise HTTPException(404, "Document not found")
 
     storage_path = row[0]
-    settings = get_settings()
-    abs_path = os.path.join(settings.uploads_path, storage_path)
 
-    if not os.path.isfile(abs_path):
+    try:
+        abs_path = get_file_abspath(storage_path)
+    except FileNotFoundError:
         raise HTTPException(404, "File not found on disk")
 
     from fastapi.responses import FileResponse
     return FileResponse(abs_path, filename=os.path.basename(storage_path))
+
+
+@router.delete("/documents/{doc_id}")
+async def delete_document(request: Request, doc_id: str):
+    """Delete a document (and its chunks via FK CASCADE) plus the file on disk.
+
+    Enforces ownership; returns 404 if the document doesn't belong to the caller.
+    """
+    user_id = await require_user(request)
+
+    with engine.begin() as conn:
+        row = conn.execute(
+            sqltext("SELECT storage_path FROM documents WHERE id = :id AND user_id = CAST(:uid AS uuid)"),
+            {"id": doc_id, "uid": user_id},
+        ).first()
+        if not row:
+            raise HTTPException(404, "Document not found")
+        storage_path = row[0]
+
+        # FK CASCADE removes chunks rows. Explicitly delete the document.
+        conn.execute(
+            sqltext("DELETE FROM documents WHERE id = :id AND user_id = CAST(:uid AS uuid)"),
+            {"id": doc_id, "uid": user_id},
+        )
+
+    # Remove the file from disk best-effort.
+    try:
+        delete_file(storage_path)
+    except Exception as e:
+        logger.warning(f"File deletion failed for {storage_path}: {e}")
+
+    return {"deleted": True, "id": doc_id}

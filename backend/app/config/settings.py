@@ -20,10 +20,18 @@ class Settings(BaseSettings):
     # File storage
     uploads_path: str = "/app/uploads"
 
-    # LLM (Anthropic Claude)
-    anthropic_api_key: str
+    # LLM provider — "anthropic" (native SDK) | "openrouter" (OpenAI-compat aggregator)
+    # When llm_provider="openrouter", `generation_model` and `fast_model` should be
+    # OpenRouter ids (e.g. "anthropic/claude-haiku-4.5", "deepseek/deepseek-chat").
+    # Default kept as "anthropic" for backward-compat.
+    llm_provider: str = "anthropic"
+    anthropic_api_key: Optional[str] = None
     generation_model: str = "claude-sonnet-4-20250514"
     fast_model: str = "claude-haiku-4-5-20251001"
+
+    # OpenRouter (used when llm_provider="openrouter")
+    openrouter_api_key: Optional[str] = None
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
 
     # Embedding (Voyage AI)
     voyage_api_key: str

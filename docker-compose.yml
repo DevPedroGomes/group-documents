@@ -38,6 +38,12 @@ services:
       dockerfile: Dockerfile
     container_name: group-documents-api
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp
     env_file:
       - ./backend/.env
     environment:
@@ -54,7 +60,7 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/docs"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/healthz"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -68,7 +74,7 @@ services:
       - "traefik.http.routers.group-documents-api.rule=Host(`group-documents-api.pgdev.com.br`)"
       - "traefik.http.routers.group-documents-api.tls=true"
       - "traefik.http.routers.group-documents-api.tls.certresolver=letsencrypt"
-      - "traefik.http.routers.group-documents-api.middlewares=group-documents-api-security@docker"
+      - "traefik.http.routers.group-documents-api.middlewares=group-documents-api-security@docker,global-ratelimit@file,strip-server-header@file"
       - "traefik.http.services.group-documents-api.loadbalancer.server.port=8000"
       - "traefik.http.middlewares.group-documents-api-security.headers.stsSeconds=31536000"
       - "traefik.http.middlewares.group-documents-api-security.headers.stsIncludeSubdomains=true"
@@ -107,7 +113,7 @@ services:
       - "traefik.http.routers.group-documents.rule=Host(`group-documents.pgdev.com.br`)"
       - "traefik.http.routers.group-documents.tls=true"
       - "traefik.http.routers.group-documents.tls.certresolver=letsencrypt"
-      - "traefik.http.routers.group-documents.middlewares=group-documents-security@docker"
+      - "traefik.http.routers.group-documents.middlewares=group-documents-security@docker,global-ratelimit@file,strip-server-header@file"
       - "traefik.http.services.group-documents.loadbalancer.server.port=3000"
       - "traefik.http.middlewares.group-documents-security.headers.stsSeconds=31536000"
       - "traefik.http.middlewares.group-documents-security.headers.stsIncludeSubdomains=true"
