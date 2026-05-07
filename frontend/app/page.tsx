@@ -1,358 +1,273 @@
-'use client'
-
-import { useState } from 'react'
-import KnowledgeHub from '@/components/KnowledgeHub'
-import Topbar from '@/components/Topbar'
-import { useAuth } from '@/contexts/AuthContext'
+import Link from 'next/link'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { Skeleton } from '@/components/ui/skeleton'
+import RedirectIfAuthenticated from '@/components/RedirectIfAuthenticated'
 import {
-  FileStack, Loader2, FileText, Cpu, Search, ShieldCheck, MessageSquare,
-  Globe, ArrowRight, Users, Lock
+  FileStack, FileText, Cpu, Search, ShieldCheck, MessageSquare,
+  Globe, ArrowRight, Users, Lock, FileImage, Mic, Video,
+  Sparkles, CheckCircle2, Github,
 } from 'lucide-react'
 
-// ─── Pipeline Steps ───
+export const metadata = {
+  title: 'BrainHub Team — Multi-modal team Q&A with cited answers',
+  description:
+    'Upload PDFs, images, audio, and video into a shared workspace. Ask anything in natural language, get grounded answers with citations from a Corrective RAG pipeline.',
+}
 
-const pipelineSteps = [
+const PIPELINE = [
   {
     icon: FileText,
-    title: 'Document Ingestion',
-    desc: 'Upload PDFs, images, audio, or video (up to 20MB). Content is extracted, split into semantic chunks (500 tokens, 100 overlap), and enriched with contextual summaries via Claude Haiku.',
+    title: 'Multi-modal ingest',
+    desc: 'PDFs go through pypdf. Images, audio, and video are extracted via Google Gemini. libmagic sniffs MIME at upload.',
     color: 'bg-blue-50 text-blue-600',
   },
   {
     icon: Cpu,
-    title: 'Embedding & Indexing',
-    desc: 'Each chunk is embedded with Voyage AI (voyage-4-large, 1536 dims) and stored in PostgreSQL + pgvector with HNSW indexing. Full-text search vectors (tsvector + GIN) are generated in parallel.',
+    title: 'Embed & index',
+    desc: 'Voyage AI dual-tier embeddings (voyage-3-large for docs, voyage-3-lite for queries) + tsvector full-text search.',
     color: 'bg-purple-50 text-purple-600',
   },
   {
     icon: Search,
-    title: 'Hybrid Search + Reranking',
-    desc: 'Queries trigger multi-query expansion, then semantic (cosine similarity) and keyword (tsvector) searches run in parallel. Results are fused via Reciprocal Rank Fusion (k=60) and reranked with Cohere cross-encoder.',
+    title: 'Hybrid retrieval',
+    desc: 'Semantic and keyword searches run in parallel, fused via Reciprocal Rank Fusion, then reranked by Cohere.',
     color: 'bg-emerald-50 text-emerald-600',
   },
   {
     icon: ShieldCheck,
-    title: 'Corrective RAG',
-    desc: 'Retrieved chunks are graded for relevance. If below threshold (0.7), the query is automatically transformed and retried, or falls back to Tavily web search. Ensures answers are always grounded.',
+    title: 'Corrective grading',
+    desc: 'Retrieved chunks are scored. Below threshold? Query is rewritten and retried, or falls back to Tavily web search.',
     color: 'bg-amber-50 text-amber-600',
   },
   {
     icon: MessageSquare,
-    title: 'Grounded Generation',
-    desc: 'Claude Sonnet synthesizes the answer from verified context with strict source attribution. Responses stream token-by-token via SSE with citation markers linking back to source documents.',
+    title: 'Grounded synthesis',
+    desc: 'Claude Sonnet writes the answer from verified context with strict source citations, streaming token-by-token.',
     color: 'bg-orange-50 text-orange-600',
   },
 ]
 
-const techStack = [
-  { label: 'LLM', tech: 'Anthropic Claude Sonnet + Haiku' },
-  { label: 'Embeddings', tech: 'Voyage AI (1536d)' },
-  { label: 'Reranking', tech: 'Cohere cross-encoder' },
-  { label: 'Vector DB', tech: 'PostgreSQL + pgvector (HNSW)' },
-  { label: 'Backend', tech: 'FastAPI, Python 3.11' },
-  { label: 'Frontend', tech: 'Next.js 14, React 18' },
-  { label: 'Workflow', tech: 'LangGraph state machine' },
-  { label: 'Web Fallback', tech: 'Tavily API' },
+const MODALITIES = [
+  { icon: FileText,  name: 'PDFs',   accent: 'from-blue-100 to-blue-50',     iconColor: 'text-blue-600' },
+  { icon: FileImage, name: 'Images', accent: 'from-emerald-100 to-emerald-50', iconColor: 'text-emerald-600' },
+  { icon: Mic,       name: 'Audio',  accent: 'from-violet-100 to-violet-50',  iconColor: 'text-violet-600' },
+  { icon: Video,     name: 'Video',  accent: 'from-pink-100 to-pink-50',      iconColor: 'text-pink-600' },
 ]
 
-// ─── Main Page ───
+const FEATURES = [
+  { icon: Lock,        title: 'Tenant-isolated retrieval', desc: 'Every chunk row carries a user_id; vector and keyword queries WHERE-filter on it before RRF or rerank.' },
+  { icon: Sparkles,    title: 'Multi-provider LLM',         desc: 'Anthropic native or any OpenRouter model via env var. Failover-ready.' },
+  { icon: Globe,       title: 'Web fallback',                desc: 'When local context is too thin, the pipeline reaches Tavily for a web pass before answering.' },
+  { icon: CheckCircle2,title: 'Strict citations',           desc: 'Every claim links back to a source chunk. No hallucinated references.' },
+  { icon: Users,       title: 'Shared workspace',            desc: 'Everyone in the team sees the same documents; chat threads stay private per user.' },
+  { icon: ShieldCheck, title: 'libmagic on upload',          desc: 'MIME is sniffed from bytes, not extension. Allowlist enforced server-side.' },
+]
+
+const STACK = [
+  { label: 'LLM',         tech: 'Claude Sonnet + Haiku' },
+  { label: 'Embeddings',  tech: 'Voyage AI (1536d)' },
+  { label: 'Reranking',   tech: 'Cohere cross-encoder' },
+  { label: 'Vector DB',   tech: 'PostgreSQL + pgvector HNSW' },
+  { label: 'Cache',       tech: 'Redis 7' },
+  { label: 'Backend',     tech: 'FastAPI, Python 3.11' },
+  { label: 'Frontend',    tech: 'Next.js 14, React 18' },
+  { label: 'Web fallback',tech: 'Tavily API' },
+]
 
 export default function Page() {
-  const { user, loading, logout, getToken } = useAuth()
-
-  if (loading) {
-    return (
-      <main className="min-h-dvh flex items-center justify-center bg-zinc-400/80">
-        <div className="flex flex-col items-center gap-4">
-          <Skeleton className="h-12 w-12 rounded-full" />
-          <Skeleton className="h-4 w-32 rounded-full" />
-        </div>
-      </main>
-    )
-  }
-
-  // ─── Authenticated: show app ───
-  if (user) {
-    return (
-      <main className="h-dvh flex flex-col bg-zinc-400/80">
-        <div className="flex flex-col h-full xl:max-w-[1400px] xl:mx-auto xl:my-4 glass-panel xl:rounded-[2rem] xl:border xl:border-white/20 xl:shadow-2xl overflow-hidden">
-          <Topbar email={user.email || ''} onSignOut={logout} />
-          <KnowledgeHub getToken={async () => getToken() || undefined} />
-        </div>
-      </main>
-    )
-  }
-
-  // ─── Public: landing page ───
   return (
-    <main className="min-h-dvh bg-zinc-400/80">
-      {/* Navbar */}
-      <header className="sticky top-0 z-50 w-full border-b border-white/20 glass-panel">
-        <div className="max-w-6xl mx-auto flex h-14 items-center justify-between px-6 sm:px-8">
-          <div className="flex items-center gap-2.5">
-            <div className="flex h-8 w-8 items-center justify-center rounded-full btn-primary-gradient shadow-orange-glow">
-              <FileStack className="h-4 w-4" />
+    <>
+      <RedirectIfAuthenticated to="/chat" />
+      <main className="min-h-dvh bg-zinc-400/80">
+        {/* Navbar */}
+        <header className="sticky top-0 z-50 w-full border-b border-white/20 glass-panel">
+          <div className="max-w-6xl mx-auto flex h-14 items-center justify-between px-6 sm:px-8">
+            <div className="flex items-center gap-2.5">
+              <div className="flex h-8 w-8 items-center justify-center rounded-full btn-primary-gradient shadow-orange-glow">
+                <FileStack className="h-4 w-4" />
+              </div>
+              <span className="font-semibold tracking-tight text-zinc-900">BrainHub Team</span>
             </div>
-            <span className="font-semibold tracking-tight text-zinc-900">BrainHub Team</span>
-          </div>
-          <a href="#auth" className="text-sm font-medium text-zinc-700 hover:text-zinc-900 transition-colors">
-            Sign In
-          </a>
-        </div>
-      </header>
-
-      {/* Hero */}
-      <section className="py-20 md:py-28">
-        <div className="max-w-6xl mx-auto px-6 sm:px-8 text-center">
-          <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full glass-panel border border-white/30 text-xs font-medium text-zinc-600 mb-6">
-            <Users className="h-3.5 w-3.5" />
-            Collaborative Document Q&A for Teams
-          </div>
-
-          <h1 className="text-4xl sm:text-5xl md:text-6xl font-semibold tracking-tighter leading-[0.95] text-zinc-900 mb-6">
-            Ask your documents.
-            <br />
-            <span className="text-transparent bg-clip-text bg-gradient-to-r from-orange-500 to-amber-500">
-              Get grounded answers.
-            </span>
-          </h1>
-
-          <p className="text-lg text-zinc-600 leading-relaxed max-w-2xl mx-auto mb-10">
-            Upload PDFs, images, audio, and video into a shared team workspace.
-            Ask questions in natural language and get AI-powered answers with
-            automatic source citations, powered by a Corrective RAG pipeline
-            with hybrid search and cross-encoder reranking.
-          </p>
-
-          <div className="flex flex-wrap justify-center gap-3">
-            <a href="#auth">
-              <Button size="lg" className="rounded-full px-8 gap-2 btn-primary-gradient text-zinc-900 font-semibold shadow-orange-glow hover:opacity-90 transition-opacity">
-                Get Started <ArrowRight className="h-4 w-4" />
-              </Button>
-            </a>
-            <a href="#pipeline">
-              <Button size="lg" variant="outline" className="rounded-full px-8 border-white/30 glass-panel text-zinc-700 hover:bg-white/40">
-                How It Works
-              </Button>
-            </a>
-          </div>
-
-          <div className="flex flex-wrap justify-center gap-x-6 gap-y-1 mt-8 text-xs text-zinc-500 font-mono">
-            <span className="flex items-center gap-1.5"><Users className="h-3 w-3" /> Shared documents</span>
-            <span className="flex items-center gap-1.5"><Lock className="h-3 w-3" /> Private chat threads</span>
-            <span className="flex items-center gap-1.5"><Globe className="h-3 w-3" /> Web search fallback</span>
-          </div>
-        </div>
-      </section>
-
-      {/* Pipeline */}
-      <section id="pipeline" className="py-16 glass-panel border-t border-b border-white/20">
-        <div className="max-w-6xl mx-auto px-6 sm:px-8">
-          <div className="flex items-center gap-4 mb-3">
-            <span className="text-xs font-bold text-zinc-400 uppercase tracking-widest font-mono">Corrective RAG Pipeline</span>
-            <div className="h-px flex-1 bg-zinc-300/50" />
-          </div>
-          <h2 className="text-2xl font-semibold tracking-tight text-zinc-900 mb-2">
-            How It Works
-          </h2>
-          <p className="text-zinc-600 mb-8 max-w-2xl">
-            Every question goes through a 5-stage pipeline that retrieves, validates,
-            and synthesizes answers exclusively from your team&apos;s documents.
-          </p>
-
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
-            {pipelineSteps.map((step, i) => (
-              <div key={step.title} className="bg-white border border-zinc-200/80 rounded-2xl p-4 shadow-genlabs hover:shadow-lg transition-shadow">
-                <div className="flex items-center gap-2 mb-3">
-                  <div className={`rounded-xl p-2 ${step.color}`}>
-                    <step.icon className="h-4 w-4" />
-                  </div>
-                  <span className="text-[10px] font-mono text-zinc-400">{i + 1}</span>
-                </div>
-                <h3 className="text-xs font-semibold text-zinc-900 mb-1">{step.title}</h3>
-                <p className="text-[11px] text-zinc-500 leading-relaxed">{step.desc}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* Tech Stack */}
-      <section className="py-16">
-        <div className="max-w-6xl mx-auto px-6 sm:px-8">
-          <h2 className="text-2xl font-semibold tracking-tight text-zinc-900 mb-8 text-center">
-            Tech Stack
-          </h2>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 max-w-3xl mx-auto">
-            {techStack.map((item) => (
-              <div key={item.label} className="rounded-xl border border-zinc-200/80 bg-white p-3 shadow-genlabs text-center">
-                <p className="font-semibold text-zinc-900 text-xs">{item.label}</p>
-                <p className="text-[11px] text-zinc-500 mt-0.5">{item.tech}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* Auth Section */}
-      <section id="auth" className="py-20 glass-panel border-t border-white/20">
-        <div className="max-w-md mx-auto px-6 sm:px-8">
-          <Card className="glass-panel border-white/20">
-            <CardHeader className="text-center">
-              <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full btn-primary-gradient shadow-orange-glow">
-                <FileStack className="h-6 w-6" />
-              </div>
-              <CardTitle className="text-2xl tracking-tighter">BrainHub Team</CardTitle>
-              <CardDescription>
-                Sign in to manage your documents and chat with AI
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <AuthForm />
-            </CardContent>
-          </Card>
-        </div>
-      </section>
-
-      {/* Footer */}
-      <footer className="py-8 text-center">
-        <p className="text-sm text-zinc-500">
-          Built with FastAPI, Next.js, LangGraph, and Anthropic Claude
-        </p>
-      </footer>
-    </main>
-  )
-}
-
-// ─── Auth Form (unchanged logic) ───
-
-function AuthForm() {
-  const { login, register } = useAuth()
-  const [mode, setMode] = useState<'login' | 'signup'>('login')
-  const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
-  const [fullName, setFullName] = useState('')
-  const [status, setStatus] = useState<'idle' | 'loading' | 'error'>('idle')
-  const [msg, setMsg] = useState('')
-
-  const onSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setStatus('loading')
-    setMsg('')
-
-    try {
-      if (mode === 'login') {
-        await login(email, password)
-      } else {
-        await register(email, password, fullName)
-      }
-    } catch (error) {
-      setStatus('error')
-      setMsg(error instanceof Error ? error.message : 'Authentication failed')
-    }
-  }
-
-  return (
-    <div className="space-y-4">
-      <form onSubmit={onSubmit} className="space-y-3">
-        {mode === 'signup' && (
-          <div>
-            <label className="block text-sm font-medium mb-1.5">Full Name</label>
-            <Input
-              type="text"
-              value={fullName}
-              onChange={(e) => setFullName(e.target.value)}
-              placeholder="Your name"
-              required
-              autoComplete="name"
-            />
-          </div>
-        )}
-
-        <div>
-          <label className="block text-sm font-medium mb-1.5">Email</label>
-          <Input
-            type="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            placeholder="you@example.com"
-            required
-            autoComplete="username"
-          />
-        </div>
-
-        <div>
-          <label className="block text-sm font-medium mb-1.5">Password</label>
-          <Input
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            placeholder="••••••••"
-            required
-            minLength={6}
-            autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
-          />
-        </div>
-
-        <Button
-          type="submit"
-          disabled={!email || !password || (mode === 'signup' && !fullName) || status === 'loading'}
-          className="w-full"
-        >
-          {status === 'loading' ? (
-            <>
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              Loading...
-            </>
-          ) : mode === 'login' ? (
-            'Sign In'
-          ) : (
-            'Create Account'
-          )}
-        </Button>
-      </form>
-
-      {msg && (
-        <div
-          className={`text-sm p-3 rounded-lg ${
-            status === 'error'
-              ? 'bg-destructive/10 text-destructive'
-              : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-          }`}
-        >
-          {msg}
-        </div>
-      )}
-
-      <p className="text-center text-sm text-zinc-500">
-        {mode === 'login' ? (
-          <>
-            Don&apos;t have an account?{' '}
-            <button
-              type="button"
-              onClick={() => { setMode('signup'); setMsg('') }}
-              className="font-medium text-foreground hover:underline"
-            >
-              Sign up
-            </button>
-          </>
-        ) : (
-          <>
-            Already have an account?{' '}
-            <button
-              type="button"
-              onClick={() => { setMode('login'); setMsg('') }}
-              className="font-medium text-foreground hover:underline"
-            >
+            <nav className="hidden sm:flex items-center gap-6 text-sm text-zinc-600">
+              <a href="#modalities" className="hover:text-zinc-900 transition-colors">Modalities</a>
+              <a href="#pipeline"   className="hover:text-zinc-900 transition-colors">How it works</a>
+              <a href="#features"   className="hover:text-zinc-900 transition-colors">Features</a>
+            </nav>
+            <Link href="/login" className="text-sm font-medium text-white bg-zinc-900 hover:bg-zinc-800 transition-colors px-4 py-1.5 rounded-full">
               Sign in
-            </button>
-          </>
-        )}
-      </p>
-    </div>
+            </Link>
+          </div>
+        </header>
+
+        {/* Hero */}
+        <section className="relative overflow-hidden">
+          <div
+            className="absolute inset-0 -z-0 pointer-events-none"
+            aria-hidden
+            style={{
+              background:
+                'radial-gradient(ellipse 70% 50% at 50% 0%, rgba(251,146,60,0.18), transparent 60%), radial-gradient(ellipse 50% 30% at 50% 100%, rgba(168,85,247,0.10), transparent 70%)',
+            }}
+          />
+          <div className="relative max-w-6xl mx-auto px-6 sm:px-8 pt-16 pb-20 md:pt-24 md:pb-28 text-center">
+            <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full glass-panel border border-white/30 text-xs font-medium text-zinc-700 mb-6 shadow-sm">
+              <Sparkles className="h-3.5 w-3.5 text-orange-500" />
+              <span>Multi-modal RAG · Team-grade</span>
+            </div>
+
+            <h1 className="text-4xl sm:text-5xl md:text-6xl lg:text-7xl font-semibold tracking-tighter leading-[0.95] text-zinc-900 mb-6">
+              Ask your team&apos;s
+              <br />
+              <span className="text-transparent bg-clip-text bg-gradient-to-r from-orange-500 via-amber-500 to-pink-500">
+                PDFs, images, audio, video.
+              </span>
+            </h1>
+
+            <p className="text-lg sm:text-xl text-zinc-700 leading-relaxed max-w-2xl mx-auto mb-10">
+              One shared workspace. Four modalities. Cited answers.
+              Powered by a Corrective RAG pipeline with hybrid search and cross-encoder reranking.
+            </p>
+
+            <div className="flex flex-wrap justify-center gap-3">
+              <Link href="/login">
+                <Button size="lg" className="rounded-full px-8 gap-2 btn-primary-gradient text-zinc-900 font-semibold shadow-orange-glow hover:opacity-90 transition-opacity">
+                  Get Started <ArrowRight className="h-4 w-4" />
+                </Button>
+              </Link>
+              <a href="#pipeline">
+                <Button size="lg" variant="outline" className="rounded-full px-8 border-white/30 glass-panel text-zinc-700 hover:bg-white/40">
+                  How It Works
+                </Button>
+              </a>
+            </div>
+
+            {/* Modality showcase */}
+            <div id="modalities" className="mt-14 grid grid-cols-2 md:grid-cols-4 gap-3 max-w-3xl mx-auto">
+              {MODALITIES.map((m) => (
+                <div
+                  key={m.name}
+                  className={`relative aspect-[4/3] rounded-2xl border border-white/40 bg-gradient-to-br ${m.accent} shadow-genlabs flex flex-col items-center justify-center p-4 hover:-translate-y-0.5 transition-transform`}
+                >
+                  <m.icon className={`h-7 w-7 ${m.iconColor} mb-2`} strokeWidth={2} />
+                  <span className="text-sm font-semibold text-zinc-800">{m.name}</span>
+                  <span className="text-[10px] font-mono text-zinc-500 mt-0.5">supported</span>
+                </div>
+              ))}
+            </div>
+
+            <p className="mt-8 text-xs text-zinc-500 font-mono">
+              libmagic MIME sniffing · 20 MB max upload · Gemini for non-PDF · Voyage AI embeddings
+            </p>
+          </div>
+        </section>
+
+        {/* Pipeline */}
+        <section id="pipeline" className="py-16 sm:py-20 glass-panel border-t border-b border-white/20">
+          <div className="max-w-6xl mx-auto px-6 sm:px-8">
+            <div className="text-center mb-12">
+              <span className="text-xs font-bold text-zinc-400 uppercase tracking-widest font-mono">Corrective RAG Pipeline</span>
+              <h2 className="text-3xl sm:text-4xl font-semibold tracking-tight text-zinc-900 mt-2">
+                Five stages, end to end
+              </h2>
+              <p className="text-zinc-600 mt-3 max-w-2xl mx-auto">
+                Every question goes through this exact path. If retrieval is weak, the pipeline corrects itself before answering.
+              </p>
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+              {PIPELINE.map((step, i) => (
+                <div key={step.title} className="bg-white border border-zinc-200/80 rounded-2xl p-5 shadow-genlabs hover:shadow-lg transition-shadow">
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className={`rounded-xl p-2 ${step.color}`}>
+                      <step.icon className="h-4 w-4" />
+                    </div>
+                    <span className="text-[10px] font-mono text-zinc-400">{`0${i + 1}`}</span>
+                  </div>
+                  <h3 className="text-sm font-semibold text-zinc-900 mb-1.5">{step.title}</h3>
+                  <p className="text-[11px] text-zinc-500 leading-relaxed">{step.desc}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        {/* Features */}
+        <section id="features" className="py-16 sm:py-20">
+          <div className="max-w-6xl mx-auto px-6 sm:px-8">
+            <div className="text-center mb-12">
+              <span className="text-xs uppercase tracking-widest text-zinc-400 font-mono">Why teams pick BrainHub</span>
+              <h2 className="text-3xl sm:text-4xl font-semibold tracking-tight text-zinc-900 mt-2">
+                Engineered for production, not demos
+              </h2>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-3">
+              {FEATURES.map((f, i) => (
+                <article key={i} className="rounded-2xl bg-white border border-zinc-200/80 p-6 shadow-genlabs hover:shadow-lg transition-shadow">
+                  <div className="inline-flex items-center justify-center w-9 h-9 rounded-lg bg-zinc-100 text-zinc-700 mb-4">
+                    <f.icon className="h-4 w-4" strokeWidth={2.4} />
+                  </div>
+                  <h3 className="font-semibold text-base text-zinc-900 mb-1.5">{f.title}</h3>
+                  <p className="text-sm text-zinc-500 leading-relaxed">{f.desc}</p>
+                </article>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        {/* Tech stack */}
+        <section className="py-16 sm:py-20 glass-panel border-t border-white/20">
+          <div className="max-w-4xl mx-auto px-6 sm:px-8">
+            <h2 className="text-2xl sm:text-3xl font-semibold tracking-tight text-zinc-900 mb-8 text-center">
+              Built with
+            </h2>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              {STACK.map((item) => (
+                <div key={item.label} className="rounded-xl border border-zinc-200/80 bg-white p-4 shadow-genlabs text-center">
+                  <p className="font-semibold text-zinc-900 text-xs uppercase tracking-wider">{item.label}</p>
+                  <p className="text-[12px] text-zinc-500 mt-1">{item.tech}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        {/* Final CTA */}
+        <section className="py-20">
+          <div className="max-w-3xl mx-auto px-6 text-center">
+            <h2 className="text-3xl sm:text-4xl font-semibold tracking-tight text-zinc-900">
+              Stop grepping your own Notion.
+            </h2>
+            <p className="text-zinc-600 mt-3 max-w-xl mx-auto">
+              Drop everything your team has into one workspace. Ask anything. Get cited answers in seconds.
+            </p>
+            <Link href="/login">
+              <Button size="lg" className="mt-8 rounded-full px-8 gap-2 btn-primary-gradient text-zinc-900 font-semibold shadow-orange-glow hover:opacity-90 transition-opacity">
+                Create your workspace <ArrowRight className="h-4 w-4" />
+              </Button>
+            </Link>
+          </div>
+        </section>
+
+        {/* Footer */}
+        <footer className="py-8 border-t border-white/20 glass-panel">
+          <div className="max-w-6xl mx-auto px-6 flex flex-col sm:flex-row items-center justify-between gap-3 text-sm text-zinc-600">
+            <p>Built by Pedro Gomes — full-stack AI engineer.</p>
+            <div className="flex items-center gap-4">
+              <a
+                href="https://github.com/devpedrogomes/group-documents"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="hover:text-zinc-900 transition-colors inline-flex items-center gap-1.5"
+              >
+                <Github className="h-3.5 w-3.5" /> GitHub
+              </a>
+              <Link href="/login" className="hover:text-zinc-900 transition-colors">
+                Sign in →
+              </Link>
+            </div>
+          </div>
+        </footer>
+      </main>
+    </>
   )
 }
