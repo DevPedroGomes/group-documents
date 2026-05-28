@@ -6,18 +6,14 @@ import { Input } from '@/components/ui/input'
 import { useAuth } from '@/contexts/AuthContext'
 import Topbar from '@/components/Topbar'
 import KnowledgeHub from '@/components/KnowledgeHub'
+import { useLocale } from '@/hooks/useLocale'
 import {
   FileStack, FileText, Cpu, Search, ShieldCheck, MessageSquare,
   Globe, ArrowRight, Users, Lock, FileImage, Mic, Video,
   Sparkles, CheckCircle2, Github, Bot, User, ArrowDown, Loader2,
 } from 'lucide-react'
 
-const SECTIONS = [
-  { id: 'index',    label: 'Index' },
-  { id: 'pipeline', label: 'Pipeline' },
-  { id: 'features', label: 'Engineering' },
-  { id: 'stack',    label: 'Stack' },
-]
+const SECTION_IDS = ['index', 'pipeline', 'features', 'stack'] as const
 
 const PIPELINE = [
   {
@@ -123,6 +119,7 @@ const STACK = [
 
 export default function Landing() {
   const { user, loading, logout, getToken } = useAuth()
+  const { locale, toggleLocale, t } = useLocale()
 
   // ─── Loading auth state ──────────────────────────────────────────────
   if (loading) {
@@ -191,12 +188,23 @@ export default function Landing() {
             <span className="font-semibold tracking-tight text-white">Group Docs</span>
             <span className="hidden sm:inline-block text-[11px] font-mono text-neutral-500 ml-1">/ team</span>
           </div>
-          <a
-            href="#auth"
-            className="text-sm font-medium text-neutral-900 bg-white hover:bg-neutral-100 transition-colors px-4 py-1.5 rounded-full"
-          >
-            Sign in
-          </a>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={toggleLocale}
+              className="flex items-center gap-1 rounded-md border border-white/10 px-2.5 py-1 text-xs font-medium text-neutral-300 transition-colors hover:bg-white/5"
+              aria-label="Toggle language"
+            >
+              <span className={locale === 'en' ? 'font-bold text-white' : ''}>EN</span>
+              <span className="text-neutral-600">|</span>
+              <span className={locale === 'pt' ? 'font-bold text-white' : ''}>PT</span>
+            </button>
+            <a
+              href="#auth"
+              className="text-sm font-medium text-neutral-900 bg-white hover:bg-neutral-100 transition-colors px-4 py-1.5 rounded-full"
+            >
+              {t('nav.signIn')}
+            </a>
+          </div>
         </div>
       </header>
 
@@ -205,15 +213,15 @@ export default function Landing() {
         className="hidden lg:flex flex-col gap-3 fixed left-6 top-1/2 -translate-y-1/2 z-30"
         aria-label="Section index"
       >
-        {SECTIONS.map((s, i) => (
+        {SECTION_IDS.map((id, i) => (
           <a
-            key={s.id}
-            href={`#${s.id}`}
+            key={id}
+            href={`#${id}`}
             className="group flex items-center gap-3 text-[10px] font-mono uppercase tracking-widest text-neutral-500 hover:text-white transition-colors"
           >
             <span className="w-6 text-right">{`0${i + 1}`}</span>
             <span className="h-px w-6 bg-white/10 group-hover:w-10 group-hover:bg-blue-300 transition-all" />
-            <span className="opacity-0 group-hover:opacity-100 transition-opacity">{s.label}</span>
+            <span className="opacity-0 group-hover:opacity-100 transition-opacity">{t(`sections.${id}` as const)}</span>
           </a>
         ))}
       </aside>
@@ -228,26 +236,24 @@ export default function Landing() {
           <div className="lg:col-span-7">
             <div className="flex items-center gap-3 mb-8">
               <span className="text-[10px] font-mono uppercase tracking-widest text-blue-400">
-                01 / Index
+                {t('hero.tag')}
               </span>
               <span className="h-px flex-1 max-w-[80px] bg-white/10" />
               <span className="text-[10px] font-mono uppercase tracking-widest text-neutral-500">
-                v1.0
+                {t('hero.version')}
               </span>
             </div>
 
             <h1 className="text-5xl sm:text-6xl md:text-7xl font-semibold tracking-tighter leading-[0.95] text-white mb-7">
-              Your team&apos;s
+              {t('hero.title1')}
               <br />
-              shared brain,
+              {t('hero.title2')}
               <br />
-              <span className="gradient-text">cited and corrected.</span>
+              <span className="gradient-text">{t('hero.title3')}</span>
             </h1>
 
             <p className="text-base sm:text-lg text-neutral-400 leading-relaxed max-w-xl mb-7">
-              Drop PDFs, images, audio and video into one workspace. Ask anything in plain language —
-              a Corrective RAG pipeline retrieves, grades, rewrites and answers, every claim bound
-              to a source span.
+              {t('hero.subtitle')}
             </p>
 
             <div className="flex flex-wrap items-center gap-x-2.5 gap-y-2 mb-8">
@@ -265,12 +271,12 @@ export default function Landing() {
             <div className="flex flex-wrap items-center gap-3">
               <a href="#auth">
                 <Button size="lg" className="rounded-full px-7 gap-2">
-                  Open the workspace <ArrowRight className="h-4 w-4" />
+                  {t('hero.cta.open')} <ArrowRight className="h-4 w-4" />
                 </Button>
               </a>
               <a href="#pipeline">
                 <Button size="lg" variant="outline" className="rounded-full px-7 gap-2">
-                  Read the pipeline <ArrowDown className="h-4 w-4" />
+                  {t('hero.cta.read')} <ArrowDown className="h-4 w-4" />
                 </Button>
               </a>
             </div>
