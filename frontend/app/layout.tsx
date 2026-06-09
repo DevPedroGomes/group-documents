@@ -3,7 +3,7 @@ import type { Metadata } from 'next'
 import { AuthProvider } from '@/contexts/AuthContext'
 
 export const metadata: Metadata = {
-  title: 'BrainHub Team',
+  title: 'BrainHub',
   description: 'Upload documents and chat with AI using RAG',
 }
 
@@ -14,7 +14,9 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <body className="min-h-dvh bg-zinc-400/80 font-sans antialiased">
+      <body className="min-h-dvh bg-neutral-950 text-white font-sans antialiased">
+        <div className="app-bg" aria-hidden />
+        <div className="app-grid" aria-hidden />
         <AuthProvider>{children}</AuthProvider>
       </body>
     </html>

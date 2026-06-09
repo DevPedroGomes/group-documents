@@ -143,7 +143,7 @@ export default function Landing() {
                 aria-hidden
               />
             </div>
-            <span className="font-semibold tracking-tight text-white text-lg">Group Docs</span>
+            <span className="font-semibold tracking-tight text-white text-lg">BrainHub</span>
           </div>
 
           {/* Terminal-style status line */}
@@ -185,7 +185,7 @@ export default function Landing() {
             >
               <FileStack className="h-4 w-4 text-white" />
             </div>
-            <span className="font-semibold tracking-tight text-white">Group Docs</span>
+            <span className="font-semibold tracking-tight text-white">BrainHub</span>
             <span className="hidden sm:inline-block text-[11px] font-mono text-neutral-500 ml-1">/ team</span>
           </div>
           <div className="flex items-center gap-2">
@@ -524,7 +524,7 @@ export default function Landing() {
               {/* terminal flourish */}
               <div className="mt-12 flex items-center gap-3 text-[11px] font-mono text-neutral-500">
                 <span className="text-blue-300">$</span>
-                <span>groupdocs</span>
+                <span>brainhub</span>
                 <span className="text-neutral-700">init</span>
                 <span className="text-neutral-700">--workspace</span>
                 <span className="text-blue-300">your-team</span>
