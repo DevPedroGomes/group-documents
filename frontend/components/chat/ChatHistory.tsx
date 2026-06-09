@@ -87,10 +87,10 @@ export function ChatHistory({
             animate={{ width: 280, opacity: 1 }}
             exit={{ width: 0, opacity: 0 }}
             transition={{ duration: 0.2 }}
-            className="border-r border-zinc-200 bg-white/80 backdrop-blur-sm overflow-hidden shrink-0"
+            className="border-r border-white/10 bg-white/[0.03] backdrop-blur overflow-hidden shrink-0"
           >
             <div className="flex flex-col h-full w-[280px]">
-              <div className="p-3 border-b border-zinc-100">
+              <div className="p-3 border-b border-white/10">
                 <Button
                   variant="outline"
                   size="sm"
@@ -105,28 +105,42 @@ export function ChatHistory({
               <ScrollArea className="flex-1">
                 <div className="p-2">
                   {isLoading ? (
-                    <p className="text-xs text-zinc-400 text-center py-4">Loading...</p>
+                    <p className="text-xs font-mono text-neutral-500 text-center py-4">loading…</p>
                   ) : threads.length === 0 ? (
-                    <p className="text-xs text-zinc-400 text-center py-4">No conversations yet</p>
+                    <p className="text-xs font-mono text-neutral-500 text-center py-4">no threads yet</p>
                   ) : (
-                    Object.entries(grouped).map(([label, items]) => (
-                      <div key={label} className="mb-3">
-                        <p className="text-[10px] font-semibold text-zinc-400 uppercase tracking-widest px-2 mb-1">
-                          {label}
-                        </p>
-                        {items.map((thread) => (
-                          <button
-                            key={thread.id}
-                            onClick={() => onSelectThread(thread.id)}
-                            className={`w-full text-left px-3 py-2 rounded-lg text-sm truncate transition-colors ${
-                              currentThreadId === thread.id
-                                ? 'bg-orange-50 text-orange-700 font-medium'
-                                : 'text-zinc-600 hover:bg-zinc-100'
-                            }`}
-                          >
-                            {thread.title || 'Untitled'}
-                          </button>
-                        ))}
+                    Object.entries(grouped).map(([label, items], gIdx) => (
+                      <div key={label} className="mb-4">
+                        <div className="flex items-center gap-2 px-2 mb-1.5">
+                          <span className="text-[9px] font-mono uppercase tracking-widest text-blue-400">
+                            {`0${gIdx + 1}`}
+                          </span>
+                          <span className="text-[10px] font-semibold text-neutral-500 uppercase tracking-widest">
+                            {label}
+                          </span>
+                          <span className="h-px flex-1 bg-white/5" />
+                        </div>
+                        {items.map((thread) => {
+                          const active = currentThreadId === thread.id
+                          return (
+                            <button
+                              key={thread.id}
+                              onClick={() => onSelectThread(thread.id)}
+                              className={`group relative w-full text-left pl-3.5 pr-3 py-2 rounded-lg text-sm truncate transition-colors ${
+                                active
+                                  ? 'bg-blue-400/10 text-blue-100'
+                                  : 'text-neutral-300 hover:bg-white/[0.04]'
+                              }`}
+                            >
+                              {active && (
+                                <span className="absolute left-0 top-2 bottom-2 w-0.5 rounded-r bg-blue-400" />
+                              )}
+                              <span className="block truncate">
+                                {thread.title || 'Untitled'}
+                              </span>
+                            </button>
+                          )
+                        })}
                       </div>
                     ))
                   )}

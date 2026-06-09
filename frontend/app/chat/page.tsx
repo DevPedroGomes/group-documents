@@ -13,7 +13,7 @@ import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { AnimatePresence, motion } from 'framer-motion'
-import { Loader2, MessageSquare, Sparkles } from 'lucide-react'
+import { Loader2, ArrowRight } from 'lucide-react'
 import type { Citation } from '@/lib/types'
 
 function ChatPageContent() {
@@ -84,8 +84,8 @@ function ChatPageContent() {
   if (!user) return null
 
   return (
-    <div className="flex h-dvh flex-col bg-zinc-400/80">
-      <div className="flex h-full xl:max-w-[1100px] xl:mx-auto xl:my-4 glass-panel xl:rounded-[2rem] xl:border xl:border-white/20 xl:shadow-2xl overflow-hidden relative">
+    <div className="flex h-dvh flex-col">
+      <div className="flex h-full xl:max-w-[1100px] xl:mx-auto xl:my-4 glass-panel xl:rounded-[2rem] xl:border-gradient xl:ring-1 xl:ring-white/10 xl:shadow-2xl xl:shadow-black/40 overflow-hidden relative">
         <ChatHistory
           getToken={getTokenAsync}
           currentThreadId={threadId}
@@ -120,13 +120,13 @@ function ChatPageContent() {
                       animate={{ opacity: 1 }}
                       className="px-4 py-2"
                     >
-                      <div className="flex flex-col gap-1 text-xs text-zinc-500">
+                      <div className="flex flex-col gap-1 text-xs text-neutral-400">
                         {workflowSteps.map((step, i) => (
                           <div key={i} className="flex items-center gap-2">
                             {step.status === 'in_progress' ? (
-                              <Loader2 className="h-3 w-3 animate-spin" />
+                              <Loader2 className="h-3 w-3 animate-spin text-blue-300" />
                             ) : (
-                              <div className="h-3 w-3 rounded-full bg-emerald-500" />
+                              <div className="h-3 w-3 rounded-full bg-emerald-400" />
                             )}
                             <span>{step.details}</span>
                           </div>
@@ -145,7 +145,7 @@ function ChatPageContent() {
               animate={{ opacity: 1, y: 0 }}
               className="mx-auto max-w-3xl px-4 pb-2"
             >
-              <div className="rounded-lg bg-destructive/10 px-4 py-2 text-sm text-destructive">
+              <div className="rounded-lg bg-red-500/10 border border-red-500/20 px-4 py-2 text-sm text-red-300">
                 {error}
                 <button
                   onClick={() => setError(null)}
@@ -176,39 +176,59 @@ function ChatPageContent() {
 
 function EmptyState({ onSuggestionClick }: { onSuggestionClick: (msg: string) => void }) {
   const suggestions = [
-    'Summarize the main points of these documents',
-    'What are the key findings?',
-    'Are there any action items mentioned?',
-    'Compare the information across documents',
+    { label: 'summarize',  text: 'Summarize the main points of these documents' },
+    { label: 'findings',   text: 'What are the key findings?' },
+    { label: 'actions',    text: 'Are there any action items mentioned?' },
+    { label: 'compare',    text: 'Compare the information across documents' },
   ]
 
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
-      className="flex flex-col items-center justify-center px-4 py-16"
+      className="px-6 py-16 max-w-2xl mx-auto"
     >
-      <div className="mb-6 rounded-full btn-primary-gradient shadow-orange-glow p-4">
-        <Sparkles className="h-8 w-8 text-zinc-900" />
+      <div className="flex items-center gap-3 mb-5">
+        <span className="text-[10px] font-mono uppercase tracking-widest text-blue-400">
+          00 / Cold start
+        </span>
+        <span className="h-px flex-1 max-w-[80px] bg-white/10" />
       </div>
 
-      <h2 className="mb-2 text-xl font-semibold text-zinc-900 tracking-tight">Start a Conversation</h2>
-      <p className="mb-8 text-center text-zinc-500 text-sm font-medium max-w-md leading-relaxed">
-        Ask questions about your selected documents. The AI will search through them and provide answers with citations.
+      <h2 className="text-3xl sm:text-4xl font-semibold tracking-tighter text-white mb-3">
+        Ask anything.
+      </h2>
+      <p className="text-sm text-neutral-400 max-w-md mb-8 leading-relaxed">
+        The pipeline retrieves, grades, rewrites and answers — every claim bound to a source span
+        from your selected documents.
       </p>
 
-      <div className="grid gap-2 w-full max-w-md">
-        {suggestions.map((suggestion, idx) => (
-          <Button
+      <div className="flex flex-col gap-2.5">
+        <span className="text-[10px] font-mono uppercase tracking-widest text-neutral-500 mb-1">
+          try
+        </span>
+        {suggestions.map((s, idx) => (
+          <button
             key={idx}
-            variant="outline"
-            className="justify-start text-left h-auto py-3 px-4 bg-white"
-            onClick={() => onSuggestionClick(suggestion)}
+            onClick={() => onSuggestionClick(s.text)}
+            className="group flex items-center gap-4 text-left rounded-xl bg-white/[0.03] hover:bg-white/[0.06] ring-1 ring-white/10 hover:ring-blue-400/30 transition-all px-4 py-3"
           >
-            <MessageSquare className="h-4 w-4 mr-2 shrink-0 text-zinc-400" />
-            <span className="text-sm text-zinc-600">{suggestion}</span>
-          </Button>
+            <span className="text-[10px] font-mono uppercase tracking-widest text-blue-400 shrink-0 w-20">
+              {s.label}
+            </span>
+            <span className="h-3 w-px bg-white/10 shrink-0" />
+            <span className="text-sm text-neutral-300 group-hover:text-white transition-colors flex-1">
+              {s.text}
+            </span>
+            <ArrowRight className="h-3.5 w-3.5 text-neutral-600 group-hover:text-blue-300 group-hover:translate-x-0.5 transition-all" />
+          </button>
         ))}
+      </div>
+
+      <div className="mt-10 flex items-center gap-3 text-[11px] font-mono text-neutral-500">
+        <span className="text-blue-300">{'>'}</span>
+        <span>waiting for input</span>
+        <span className="ml-1 inline-block w-1.5 h-3 bg-blue-300/80 animate-pulse" />
       </div>
     </motion.div>
   )

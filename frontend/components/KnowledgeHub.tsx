@@ -25,6 +25,8 @@ import {
   Music,
   Video,
   File,
+  Link2,
+  Globe,
   CheckCircle2,
   Clock,
   Loader2,
@@ -56,6 +58,10 @@ export default function KnowledgeHub({ getToken }: KnowledgeHubProps) {
   const [error, setError] = useState<string | null>(null)
   const [previewDoc, setPreviewDoc] = useState<{ id: string; mime: string } | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
+  const [showUrlModal, setShowUrlModal] = useState(false)
+  const [urlInput, setUrlInput] = useState('')
+  const [isCrawling, setIsCrawling] = useState(false)
+  const [urlError, setUrlError] = useState<string | null>(null)
 
   // Debounce search query
   const debouncedQuery = useDebounce(query, 400)
@@ -123,12 +129,12 @@ export default function KnowledgeHub({ getToken }: KnowledgeHubProps) {
     setSelectedIds(next)
   }
 
-  // Upload single file
+  // Upload single file — backend /upload handles save + ingest in one call
   const uploadSingleFile = async (file: File, token: string): Promise<Document | null> => {
     try {
-      // Upload file to backend
       const formData = new FormData()
       formData.append('file', file)
+      formData.append('title', file.name)
 
       const uploadRes = await fetch('/api/upload', {
         method: 'POST',
@@ -141,28 +147,7 @@ export default function KnowledgeHub({ getToken }: KnowledgeHubProps) {
         throw new Error(data.detail || `Failed to upload ${file.name}`)
       }
 
-      const { storage_path } = await uploadRes.json()
-
-      // Ingest the uploaded file
-      const res = await fetch('/api/ingest', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          storage_path,
-          title: file.name,
-          mime: file.type,
-        }),
-      })
-
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}))
-        throw new Error(data.detail || `Failed to process ${file.name}`)
-      }
-
-      const data = await res.json()
+      const data = await uploadRes.json()
       return {
         id: data.document_id,
         title: file.name,
@@ -215,6 +200,58 @@ export default function KnowledgeHub({ getToken }: KnowledgeHubProps) {
     }
   }
 
+  // Submit URL for crawl + ingest
+  const submitUrl = async () => {
+    const url = urlInput.trim()
+    if (!url) {
+      setUrlError('Enter a URL')
+      return
+    }
+    if (!/^https?:\/\//i.test(url)) {
+      setUrlError('URL must start with http:// or https://')
+      return
+    }
+
+    setUrlError(null)
+    setIsCrawling(true)
+
+    try {
+      const token = await getToken()
+      if (!token) throw new Error('Not authenticated')
+
+      const res = await fetch('/api/crawl', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ url }),
+      })
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.detail || 'Failed to crawl URL')
+      }
+
+      const data = await res.json()
+      setDocs(prev => [
+        {
+          id: data.document_id,
+          title: data.title || url,
+          mime: 'text/plain',
+          status: 'pending',
+        },
+        ...prev,
+      ])
+      setUrlInput('')
+      setShowUrlModal(false)
+    } catch (err) {
+      setUrlError(err instanceof Error ? err.message : 'Crawl failed')
+    } finally {
+      setIsCrawling(false)
+    }
+  }
+
   // Navigate to chat
   const goToChat = () => {
     const ids = Array.from(selectedIds).join(',')
@@ -238,14 +275,88 @@ export default function KnowledgeHub({ getToken }: KnowledgeHubProps) {
         )}
       </AnimatePresence>
 
-      <div className="flex flex-col h-[calc(100dvh-57px)] p-6 lg:p-8">
-        {/* Header */}
-        <div className="mb-6">
-          <div className="flex items-center justify-between mb-4">
+      {/* Add URL Modal */}
+      <AnimatePresence>
+        {showUrlModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+            onClick={() => !isCrawling && setShowUrlModal(false)}
+          >
+            <motion.div
+              initial={{ scale: 0.96, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.96, opacity: 0 }}
+              className="w-full max-w-md rounded-xl border border-white/10 bg-neutral-900 p-6 shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center gap-3 mb-4">
+                <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-500/10 text-blue-400">
+                  <Globe className="h-4 w-4" />
+                </div>
+                <div>
+                  <h2 className="text-base font-semibold text-white">Add a URL</h2>
+                  <p className="text-xs text-neutral-400">Crawl a web page and index its text.</p>
+                </div>
+              </div>
+
+              <Input
+                value={urlInput}
+                onChange={(e) => { setUrlInput(e.target.value); setUrlError(null) }}
+                onKeyDown={(e) => { if (e.key === 'Enter' && !isCrawling) submitUrl() }}
+                placeholder="https://example.com/article"
+                autoFocus
+                disabled={isCrawling}
+                className="h-11"
+              />
+
+              {urlError && (
+                <p className="mt-2 text-xs text-red-400 flex items-center gap-1.5">
+                  <AlertCircle className="h-3 w-3" />
+                  {urlError}
+                </p>
+              )}
+
+              <div className="mt-5 flex justify-end gap-2">
+                <Button
+                  variant="ghost"
+                  onClick={() => { setShowUrlModal(false); setUrlInput(''); setUrlError(null) }}
+                  disabled={isCrawling}
+                >
+                  Cancel
+                </Button>
+                <Button onClick={submitUrl} disabled={isCrawling} className="gap-2">
+                  {isCrawling ? <Loader2 className="h-4 w-4 animate-spin" /> : <Link2 className="h-4 w-4" />}
+                  {isCrawling ? 'Crawling…' : 'Index'}
+                </Button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <div className="flex flex-col h-[calc(100dvh-57px)] p-6 lg:p-10 max-w-7xl w-full mx-auto">
+        {/* ─── Header ──────────────────────────────────────────────── */}
+        <div className="mb-7">
+          <div className="flex items-center gap-3 mb-3">
+            <span className="text-[10px] font-mono uppercase tracking-widest text-blue-400">
+              Workspace / Library
+            </span>
+            <span className="h-px flex-1 max-w-[80px] bg-white/10" />
+            <span className="text-[10px] font-mono uppercase tracking-widest text-neutral-500">
+              {docs.length} indexed
+            </span>
+          </div>
+
+          <div className="flex items-end justify-between gap-6">
             <div>
-              <h1 className="text-2xl font-bold tracking-tight">BrainHub Team</h1>
-              <p className="text-muted-foreground text-sm">
-                Search and select documents to chat with AI
+              <h1 className="text-3xl sm:text-4xl font-semibold tracking-tighter text-white">
+                Library
+              </h1>
+              <p className="mt-2 text-neutral-400 text-sm max-w-md leading-relaxed">
+                Search the team corpus. Select documents to take into a chat.
               </p>
             </div>
 
@@ -258,7 +369,7 @@ export default function KnowledgeHub({ getToken }: KnowledgeHubProps) {
                 <Button onClick={goToChat} className="gap-2">
                   <MessageSquare className="h-4 w-4" />
                   Talk to Agent
-                  <span className="flex items-center justify-center rounded-full bg-black/10 px-2.5 py-0.5 text-xs ml-1">
+                  <span className="flex items-center justify-center rounded-full bg-black/15 px-2.5 py-0.5 text-xs ml-1">
                     {selectedCount}
                   </span>
                 </Button>
@@ -266,27 +377,27 @@ export default function KnowledgeHub({ getToken }: KnowledgeHubProps) {
             )}
           </div>
 
-          {/* Search & Upload */}
-          <div className="flex flex-col sm:flex-row gap-3">
+          {/* ─── Search + upload row ──────────────────────────────── */}
+          <div className="mt-7 flex flex-col sm:flex-row gap-3">
             <div className="relative flex-1">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-neutral-500" />
               <Input
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="Describe the document you're looking for..."
-                className="pl-9 pr-9 h-11 bg-white/60 border-white/60 backdrop-blur-sm shadow-genlabs"
+                placeholder="Describe what you're looking for…"
+                className="pl-10 pr-9 h-11"
               />
               {query && (
                 <button
                   onClick={() => setQuery('')}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-neutral-500 hover:text-white"
                 >
                   <X className="h-4 w-4" />
                 </button>
               )}
               {isSearching && (
                 <div className="absolute right-10 top-1/2 -translate-y-1/2">
-                  <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                  <Loader2 className="h-4 w-4 animate-spin text-neutral-500" />
                 </div>
               )}
             </div>
@@ -307,53 +418,57 @@ export default function KnowledgeHub({ getToken }: KnowledgeHubProps) {
               variant="outline"
               onClick={() => fileRef.current?.click()}
               disabled={uploadingCount > 0}
-              className="gap-2 h-11 bg-white"
+              className="gap-2 h-11"
             >
               {uploadingCount > 0 ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
               ) : (
                 <Upload className="h-4 w-4" />
               )}
-              {uploadingCount > 0 ? `Uploading ${uploadingCount}...` : 'Upload'}
+              {uploadingCount > 0 ? `Uploading ${uploadingCount}…` : 'Upload'}
+            </Button>
+
+            <Button
+              variant="outline"
+              onClick={() => { setShowUrlModal(true); setUrlError(null) }}
+              className="gap-2 h-11"
+            >
+              <Link2 className="h-4 w-4" />
+              Add URL
             </Button>
           </div>
 
-          {/* Search hint */}
+          {/* ─── Search hint ──────────────────────────────────────── */}
           {debouncedQuery && (
             <motion.div
               initial={{ opacity: 0, y: -10 }}
               animate={{ opacity: 1, y: 0 }}
-              className="mt-3 flex items-center gap-2 text-sm text-muted-foreground"
+              className="mt-4 inline-flex items-center gap-2 text-xs font-mono text-neutral-400"
             >
-              <Sparkles className="h-4 w-4 text-primary" />
-              <span>
-                Showing documents matching: <strong>"{debouncedQuery}"</strong>
-              </span>
+              <Sparkles className="h-3.5 w-3.5 text-blue-300" />
+              <span>matching</span>
+              <span className="text-white">&quot;{debouncedQuery}&quot;</span>
             </motion.div>
           )}
 
-          {/* Stats bar */}
+          {/* ─── Mono stats strip ─────────────────────────────────── */}
           {hasDocuments && (
-            <div className="flex items-center mt-4 gap-4">
-              <div className="flex items-center">
-                <div className="text-center">
-                  <p className="text-[10px] font-semibold text-zinc-400 uppercase tracking-widest mb-0.5">Documents</p>
-                  <p className="text-sm text-zinc-900 font-medium">{docs.length}</p>
-                </div>
-                <div className="curve-separator opacity-60 ml-4"></div>
-              </div>
-              <div className="flex items-center">
-                <div className="text-center">
-                  <p className="text-[10px] font-semibold text-zinc-400 uppercase tracking-widest mb-0.5">Selected</p>
-                  <p className="text-sm text-zinc-900 font-medium">{selectedCount}</p>
-                </div>
-              </div>
+            <div className="mt-5 flex items-center gap-4 text-[10px] font-mono uppercase tracking-widest text-neutral-500">
+              <span>
+                <span className="text-white/80 font-semibold">{docs.length}</span>
+                <span className="ml-1.5">documents</span>
+              </span>
+              <span className="text-white/15">/</span>
+              <span>
+                <span className="text-white/80 font-semibold">{selectedCount}</span>
+                <span className="ml-1.5">selected</span>
+              </span>
               {selectedCount > 0 && (
                 <button
                   onClick={() => setSelectedIds(new Set())}
-                  className="text-xs text-zinc-400 hover:text-zinc-900 underline ml-auto"
+                  className="ml-auto text-neutral-400 hover:text-white normal-case tracking-normal text-xs"
                 >
-                  Clear selection
+                  clear selection
                 </button>
               )}
             </div>
@@ -365,7 +480,7 @@ export default function KnowledgeHub({ getToken }: KnowledgeHubProps) {
           <motion.div
             initial={{ opacity: 0, y: -10 }}
             animate={{ opacity: 1, y: 0 }}
-            className="mb-4 p-3 rounded-lg bg-destructive/10 text-destructive text-sm flex items-center gap-2"
+            className="mb-4 p-3 rounded-lg bg-red-500/10 text-red-300 text-sm flex items-center gap-2 border border-red-500/20"
           >
             <AlertCircle className="h-4 w-4" />
             {error}
@@ -378,12 +493,20 @@ export default function KnowledgeHub({ getToken }: KnowledgeHubProps) {
           </motion.div>
         )}
 
-        {/* Documents Grid */}
+        {/* ─── Documents (row list) ─────────────────────────────── */}
         <div className="flex-1 overflow-y-auto">
           {isLoading ? (
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
-              {[...Array(8)].map((_, i) => (
-                <Skeleton key={i} className="h-40 rounded-xl" />
+            <div className="rounded-2xl bg-white/5 ring-1 ring-white/10 backdrop-blur divide-y divide-white/5 overflow-hidden">
+              {[...Array(6)].map((_, i) => (
+                <div key={i} className="flex items-center gap-4 px-5 py-3.5">
+                  <Skeleton className="h-5 w-5 rounded-full shrink-0" />
+                  <Skeleton className="h-9 w-9 rounded-lg shrink-0" />
+                  <div className="flex-1 space-y-2">
+                    <Skeleton className="h-3.5 w-3/4" />
+                    <Skeleton className="h-2.5 w-20" />
+                  </div>
+                  <Skeleton className="h-5 w-20 rounded-full shrink-0" />
+                </div>
               ))}
             </div>
           ) : !hasDocuments ? (
@@ -391,7 +514,8 @@ export default function KnowledgeHub({ getToken }: KnowledgeHubProps) {
           ) : (
             <motion.div
               layout
-              className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 bg-zinc-200 rounded-[2rem] shadow-genlabs gap-x-px gap-y-px overflow-hidden"
+              className="rounded-2xl bg-white/[0.03] ring-1 ring-white/10 border-gradient backdrop-blur divide-y divide-white/5 overflow-hidden"
+              style={{ borderRadius: 16 }}
             >
               <AnimatePresence mode="popLayout">
                 {docs.map((doc) => (
@@ -439,11 +563,12 @@ function DocumentCard({
   onPreview: () => void
 }) {
   const getIcon = () => {
-    if (doc.mime === 'application/pdf') return <FileText className="h-8 w-8" />
-    if (doc.mime.startsWith('image/')) return <Image className="h-8 w-8" />
-    if (doc.mime.startsWith('audio/')) return <Music className="h-8 w-8" />
-    if (doc.mime.startsWith('video/')) return <Video className="h-8 w-8" />
-    return <File className="h-8 w-8" />
+    if (doc.mime === 'application/pdf') return <FileText className="h-4 w-4" />
+    if (doc.mime === 'text/plain') return <Globe className="h-4 w-4" />
+    if (doc.mime.startsWith('image/')) return <Image className="h-4 w-4" />
+    if (doc.mime.startsWith('audio/')) return <Music className="h-4 w-4" />
+    if (doc.mime.startsWith('video/')) return <Video className="h-4 w-4" />
+    return <File className="h-4 w-4" />
   }
 
   const getStatusBadge = () => {
@@ -484,44 +609,52 @@ function DocumentCard({
   return (
     <motion.div
       layout
-      initial={{ opacity: 0, scale: 0.9 }}
-      animate={{ opacity: 1, scale: 1 }}
-      exit={{ opacity: 0, scale: 0.9 }}
+      initial={{ opacity: 0, x: -8 }}
+      animate={{ opacity: 1, x: 0 }}
+      exit={{ opacity: 0, x: 8 }}
       transition={{ duration: 0.2 }}
     >
-      <Card
-        className={`relative p-4 cursor-pointer transition-colors duration-200 rounded-none border-0 shadow-none ${
-          selected
-            ? 'bg-orange-50'
-            : 'bg-white hover:bg-zinc-50'
+      <div
+        className={`group relative flex items-center gap-4 px-4 sm:px-5 py-3.5 cursor-pointer transition-colors ${
+          selected ? 'bg-blue-400/10' : 'hover:bg-white/[0.03]'
         } ${!isReady ? 'opacity-60' : ''}`}
         onClick={() => isReady && onSelect()}
       >
-        {/* Selection indicator */}
+        {/* Left edge selection accent */}
         {selected && (
-          <motion.div
-            initial={{ scale: 0 }}
-            animate={{ scale: 1 }}
-            className="absolute top-2 left-2 bg-orange-500 text-white rounded-full p-1"
-          >
-            <CheckCircle2 className="h-4 w-4" />
-          </motion.div>
+          <motion.span
+            initial={{ scaleY: 0 }}
+            animate={{ scaleY: 1 }}
+            className="absolute left-0 top-2 bottom-2 w-0.5 rounded-r bg-blue-400 origin-center"
+          />
         )}
 
-        {/* Status badge */}
-        <div className="absolute top-2 right-2">
-          {getStatusBadge()}
+        {/* Selection check / placeholder */}
+        <div className="shrink-0 h-5 w-5 flex items-center justify-center">
+          {selected ? (
+            <motion.span
+              initial={{ scale: 0 }}
+              animate={{ scale: 1 }}
+              className="h-5 w-5 rounded-full bg-blue-400 text-neutral-950 flex items-center justify-center"
+            >
+              <CheckCircle2 className="h-3.5 w-3.5" />
+            </motion.span>
+          ) : (
+            <span className="h-4 w-4 rounded-full ring-1 ring-white/15 group-hover:ring-white/40 transition-colors" />
+          )}
         </div>
 
-        {/* Content */}
-        <div className="flex flex-col items-center justify-center pt-6 pb-2">
-          <div className="text-muted-foreground mb-3">
-            {getIcon()}
-          </div>
+        {/* Modality icon */}
+        <div className="shrink-0 h-9 w-9 rounded-lg bg-white/5 ring-1 ring-white/10 flex items-center justify-center text-blue-300">
+          {getIcon()}
+        </div>
+
+        {/* Title + meta */}
+        <div className="flex-1 min-w-0">
           {doc.summary ? (
             <Tooltip>
               <TooltipTrigger asChild>
-                <p className="text-sm font-medium text-center line-clamp-2 break-words w-full cursor-help">
+                <p className="text-sm font-medium text-white truncate cursor-help">
                   {doc.title}
                 </p>
               </TooltipTrigger>
@@ -530,23 +663,26 @@ function DocumentCard({
               </TooltipContent>
             </Tooltip>
           ) : (
-            <p className="text-sm font-medium text-center line-clamp-2 break-words w-full">
-              {doc.title}
-            </p>
+            <p className="text-sm font-medium text-white truncate">{doc.title}</p>
           )}
-          {doc.chunk_count != null && doc.chunk_count > 0 && (
-            <p className="text-[10px] text-zinc-400 mt-1">
-              {doc.chunk_count} chunks
-            </p>
-          )}
+          <p className="text-[10px] font-mono text-neutral-500 mt-0.5 truncate">
+            {doc.chunk_count != null && doc.chunk_count > 0
+              ? `${doc.chunk_count} chunks`
+              : '— · indexing'}
+          </p>
         </div>
 
-        {/* Preview button */}
+        {/* Status badge */}
+        <div className="shrink-0">
+          {getStatusBadge()}
+        </div>
+
+        {/* Preview action */}
         {isReady && (
           <Button
             variant="ghost"
             size="sm"
-            className="w-full mt-2 text-xs text-zinc-400 hover:text-zinc-900"
+            className="shrink-0 text-xs h-8 px-2.5 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity"
             onClick={(e) => {
               e.stopPropagation()
               onPreview()
@@ -555,7 +691,7 @@ function DocumentCard({
             Preview
           </Button>
         )}
-      </Card>
+      </div>
     </motion.div>
   )
 }
@@ -566,27 +702,53 @@ function EmptyState({ query, onUpload }: { query: string; onUpload: () => void }
     <motion.div
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
-      className="flex flex-col items-center justify-center h-64 border-2 border-dashed border-zinc-300 rounded-[2rem] bg-white/40 backdrop-blur-sm"
+      className="rounded-2xl bg-white/[0.03] ring-1 ring-white/10 border-gradient backdrop-blur p-8 sm:p-12"
+      style={{ borderRadius: 16 }}
     >
+      <div className="flex items-center gap-3 mb-5">
+        <span className="text-[10px] font-mono uppercase tracking-widest text-blue-400">
+          00 / {query ? 'No matches' : 'Cold start'}
+        </span>
+        <span className="h-px flex-1 max-w-[80px] bg-white/10" />
+      </div>
+
       {query ? (
         <>
-          <Search className="h-12 w-12 text-muted-foreground/50 mb-4" />
-          <p className="text-lg font-medium text-muted-foreground mb-1">No documents found</p>
-          <p className="text-sm text-muted-foreground">
-            Try a different search term or upload new documents
+          <h2 className="text-2xl sm:text-3xl font-semibold tracking-tighter text-white mb-3">
+            Nothing matches that.
+          </h2>
+          <p className="text-sm text-neutral-400 max-w-md mb-7 leading-relaxed">
+            Try a different search term, or drop in something the team is missing.
           </p>
+          <div className="flex flex-wrap items-center gap-4">
+            <Button onClick={onUpload} className="gap-2">
+              <Upload className="h-4 w-4" />
+              Upload
+            </Button>
+            <span className="text-[11px] font-mono text-neutral-500">
+              <span className="text-blue-300">$</span> upload --query <span className="text-neutral-300">&quot;{query}&quot;</span>
+            </span>
+          </div>
         </>
       ) : (
         <>
-          <Upload className="h-12 w-12 text-muted-foreground/50 mb-4" />
-          <p className="text-lg font-medium text-muted-foreground mb-1">No documents yet</p>
-          <p className="text-sm text-muted-foreground mb-4">
-            Upload your first document to get started
+          <h2 className="text-2xl sm:text-3xl font-semibold tracking-tighter text-white mb-3">
+            Drop your team&apos;s
+            <br />
+            knowledge in.
+          </h2>
+          <p className="text-sm text-neutral-400 max-w-md mb-7 leading-relaxed">
+            PDFs, images, audio, video. libmagic sniffs MIME from bytes; embeddings flow on the way through.
           </p>
-          <Button onClick={onUpload} className="gap-2">
-            <Upload className="h-4 w-4" />
-            Upload Document
-          </Button>
+          <div className="flex flex-wrap items-center gap-4">
+            <Button onClick={onUpload} className="gap-2">
+              <Upload className="h-4 w-4" />
+              Upload first document
+            </Button>
+            <span className="text-[11px] font-mono text-neutral-500">
+              <span className="text-blue-300">$</span> upload --any <span className="text-neutral-300">pdf|image|audio|video</span>
+            </span>
+          </div>
         </>
       )}
     </motion.div>
@@ -660,14 +822,14 @@ function PreviewModal({
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      className="fixed inset-0 z-50 bg-zinc-900/80 backdrop-blur-sm flex items-center justify-center p-4"
+      className="fixed inset-0 z-50 bg-neutral-950/85 backdrop-blur-sm flex items-center justify-center p-4"
       onClick={onClose}
     >
       <motion.div
         initial={{ scale: 0.9, opacity: 0 }}
         animate={{ scale: 1, opacity: 1 }}
         exit={{ scale: 0.9, opacity: 0 }}
-        className="relative w-full h-full max-w-6xl max-h-[90vh] bg-white rounded-[2rem] overflow-hidden shadow-2xl shadow-zinc-900/30"
+        className="relative w-full h-full max-w-6xl max-h-[90vh] bg-neutral-900 ring-1 ring-white/10 rounded-[2rem] overflow-hidden shadow-2xl shadow-black/60"
         onClick={(e) => e.stopPropagation()}
       >
         <Button

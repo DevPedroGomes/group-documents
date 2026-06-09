@@ -13,7 +13,7 @@ interface ChatHeaderProps {
 
 export function ChatHeader({ documentCount, onReset, hasMessages }: ChatHeaderProps) {
   return (
-    <header className="sticky top-0 z-10 border-b border-white/20 glass-panel">
+    <header className="sticky top-0 z-10 border-b border-white/10 glass-panel">
       <div className="flex items-center justify-between px-4 py-3">
         <div className="flex items-center gap-3">
           <Link href="/">
@@ -23,7 +23,7 @@ export function ChatHeader({ documentCount, onReset, hasMessages }: ChatHeaderPr
           </Link>
 
           <div className="flex flex-col">
-            <h1 className="text-lg font-semibold text-zinc-900 tracking-tight">AI Assistant</h1>
+            <h1 className="text-lg font-semibold text-white tracking-tight">AI Assistant</h1>
             <Badge variant="secondary" className="gap-1 text-[10px] uppercase tracking-widest w-fit">
               <FileText className="h-3 w-3" />
               {documentCount} {documentCount === 1 ? 'doc' : 'docs'}
@@ -36,7 +36,7 @@ export function ChatHeader({ documentCount, onReset, hasMessages }: ChatHeaderPr
             variant="ghost"
             size="sm"
             onClick={onReset}
-            className="gap-2 text-zinc-400 hover:text-zinc-900"
+            className="gap-2 text-neutral-400 hover:text-white"
           >
             <RotateCcw className="h-4 w-4" />
             New chat

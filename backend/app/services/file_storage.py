@@ -24,6 +24,7 @@ MIME_TO_EXT = {
     "audio/webm": ".webm",
     "video/mp4": ".mp4",
     "video/webm": ".webm",
+    "text/plain": ".txt",
 }
 
 

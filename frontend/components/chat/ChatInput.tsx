@@ -48,9 +48,9 @@ export function ChatInput({
   }
 
   return (
-    <div className="border-t border-zinc-200 glass-panel p-4">
+    <div className="border-t border-white/10 glass-panel p-4">
       <div className="mx-auto max-w-3xl">
-        <div className="relative flex items-end gap-2 rounded-2xl border border-zinc-200 bg-white p-2 shadow-genlabs focus-within:ring-2 focus-within:ring-orange-400/50 focus-within:border-orange-300 transition-all">
+        <div className="relative flex items-end gap-2 rounded-2xl bg-white/5 ring-1 ring-white/10 backdrop-blur p-2 focus-within:ring-2 focus-within:ring-blue-400/50 transition-all">
           <textarea
             ref={textareaRef}
             value={input}
@@ -60,7 +60,7 @@ export function ChatInput({
             disabled={disabled}
             rows={1}
             className={cn(
-              'flex-1 resize-none bg-transparent px-3 py-2 text-sm text-zinc-900 placeholder:text-zinc-400 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50',
+              'flex-1 resize-none bg-transparent px-3 py-2 text-sm text-white placeholder:text-neutral-500 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50',
               'min-h-[40px] max-h-[200px]'
             )}
           />
@@ -72,7 +72,7 @@ export function ChatInput({
                 size="icon"
                 variant="ghost"
                 onClick={onStop}
-                className="h-9 w-9 rounded-xl hover:bg-red-50 hover:text-red-600"
+                className="h-9 w-9 rounded-xl hover:bg-red-500/10 hover:text-red-300"
               >
                 <Square className="h-4 w-4 fill-current" />
               </Button>
@@ -90,7 +90,7 @@ export function ChatInput({
           </div>
         </div>
 
-        <p className="mt-2 text-center text-[10px] text-zinc-400 uppercase tracking-widest font-medium">
+        <p className="mt-2 text-center text-[10px] text-neutral-500 uppercase tracking-widest font-medium">
           Enter to send · Shift+Enter for new line
         </p>
       </div>

@@ -4,18 +4,17 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
 export async function POST(request: NextRequest) {
   const authorization = request.headers.get('Authorization') || ''
+  const body = await request.text()
 
-  // Forward the multipart form data as-is to the backend
-  const formData = await request.formData()
-
-  const response = await fetch(`${API_URL}/upload`, {
+  const response = await fetch(`${API_URL}/crawl`, {
     method: 'POST',
     headers: {
       Authorization: authorization,
+      'Content-Type': 'application/json',
     },
-    body: formData,
+    body,
   })
 
-  const data = await response.json()
+  const data = await response.json().catch(() => ({}))
   return NextResponse.json(data, { status: response.status })
 }

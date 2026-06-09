@@ -26,8 +26,8 @@ export function ChatMessage({ message, onCitationClick }: ChatMessageProps) {
         isUser ? 'flex-row-reverse' : 'flex-row'
       )}
     >
-      <Avatar className={cn('h-8 w-8 shrink-0', isUser ? 'btn-primary-gradient shadow-sm' : 'bg-zinc-100')}>
-        <AvatarFallback className={cn(isUser ? 'bg-transparent text-zinc-900' : 'bg-zinc-100 text-zinc-600')}>
+      <Avatar className={cn('h-8 w-8 shrink-0', isUser ? 'bg-white' : 'bg-white/5 ring-1 ring-white/10')}>
+        <AvatarFallback className={cn(isUser ? 'bg-transparent text-neutral-900' : 'bg-transparent text-blue-300')}>
           {isUser ? <User className="h-4 w-4" /> : <Bot className="h-4 w-4" />}
         </AvatarFallback>
       </Avatar>
@@ -37,11 +37,11 @@ export function ChatMessage({ message, onCitationClick }: ChatMessageProps) {
           className={cn(
             'rounded-2xl px-4 py-3 text-sm',
             isUser
-              ? 'bg-zinc-900 text-white rounded-tr-sm'
-              : 'bg-white border border-zinc-200 shadow-sm rounded-tl-sm text-zinc-700'
+              ? 'bg-white text-neutral-900 rounded-tr-sm'
+              : 'bg-white/5 ring-1 ring-white/10 backdrop-blur rounded-tl-sm text-neutral-100'
           )}
         >
-          <div className={cn('prose prose-sm max-w-none', isUser ? 'prose-invert' : 'prose-zinc')}>
+          <div className={cn('prose prose-sm max-w-none', isUser ? 'prose-zinc' : 'prose-invert')}>
             <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
           </div>
         </div>
@@ -52,11 +52,11 @@ export function ChatMessage({ message, onCitationClick }: ChatMessageProps) {
               <button
                 key={idx}
                 onClick={() => onCitationClick?.(citation)}
-                className="group flex items-center gap-1.5 px-3 py-1 rounded-full bg-orange-50 border border-orange-200 text-xs text-orange-700 hover:bg-orange-100 transition-colors"
+                className="group flex items-center gap-1.5 px-3 py-1 rounded-full bg-blue-400/15 border border-blue-400/30 text-xs text-blue-200 hover:bg-blue-400/25 transition-colors"
               >
                 <FileText className="h-3 w-3" />
                 <span className="max-w-[150px] truncate">{citation.document_title}</span>
-                <span className="text-[10px] font-semibold uppercase tracking-wider text-orange-500">
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-blue-300">
                   p.{citation.page}
                 </span>
               </button>
@@ -64,7 +64,7 @@ export function ChatMessage({ message, onCitationClick }: ChatMessageProps) {
           </div>
         )}
 
-        <span className="text-[10px] text-zinc-400 px-1 font-medium">
+        <span className="text-[10px] text-neutral-500 px-1 font-medium">
           {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
         </span>
       </div>
@@ -80,20 +80,20 @@ export function ThinkingMessage() {
       exit={{ opacity: 0, y: -10 }}
       className="flex gap-3 px-4 py-3"
     >
-      <Avatar className="h-8 w-8 shrink-0 bg-zinc-100">
-        <AvatarFallback className="bg-zinc-100 text-zinc-600">
+      <Avatar className="h-8 w-8 shrink-0 bg-white/5 ring-1 ring-white/10">
+        <AvatarFallback className="bg-transparent text-blue-300">
           <Bot className="h-4 w-4" />
         </AvatarFallback>
       </Avatar>
 
       <div className="flex flex-col gap-2">
-        <div className="rounded-2xl rounded-tl-sm px-4 py-3 bg-white border border-zinc-200 shadow-sm">
+        <div className="rounded-2xl rounded-tl-sm px-4 py-3 bg-white/5 ring-1 ring-white/10 backdrop-blur">
           <div className="flex items-center gap-2">
             <div className="flex gap-1">
               {[0, 1, 2].map((i) => (
                 <motion.div
                   key={i}
-                  className="w-2 h-2 bg-orange-400 rounded-full"
+                  className="w-2 h-2 bg-blue-400 rounded-full"
                   animate={{
                     scale: [1, 1.3, 1],
                     opacity: [0.5, 1, 0.5],
@@ -106,7 +106,7 @@ export function ThinkingMessage() {
                 />
               ))}
             </div>
-            <span className="text-sm text-zinc-400">Thinking...</span>
+            <span className="text-sm text-neutral-400">Thinking...</span>
           </div>
         </div>
       </div>

@@ -1,45 +1,51 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-
 @layer base {
   :root {
-    --background: 240 6% 62%;
-    --foreground: 240 6% 10%;
-    --card: 0 0% 100%;
-    --card-foreground: 240 6% 10%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 240 6% 10%;
-    --primary: 24 94% 53%;
-    --primary-foreground: 240 6% 10%;
-    --secondary: 240 5% 96%;
-    --secondary-foreground: 240 4% 46%;
-    --muted: 240 5% 96%;
-    --muted-foreground: 240 4% 46%;
-    --accent: 240 5% 96%;
-    --accent-foreground: 240 6% 10%;
-    --destructive: 0 84% 60%;
+    /* Fluxora dark tokens — neutral-950 base, white text, blue-400 accent */
+    --background: 0 0% 4%;            /* neutral-950 #0a0a0a */
+    --foreground: 0 0% 98%;           /* white-ish */
+    --card: 0 0% 9%;                  /* neutral-900 #171717 */
+    --card-foreground: 0 0% 98%;
+    --popover: 0 0% 9%;
+    --popover-foreground: 0 0% 98%;
+    --primary: 213 94% 68%;           /* blue-400 #60a5fa */
+    --primary-foreground: 0 0% 4%;
+    --secondary: 0 0% 14%;            /* neutral-800 ~#262626 */
+    --secondary-foreground: 0 0% 80%;
+    --muted: 0 0% 14%;
+    --muted-foreground: 0 0% 64%;     /* neutral-400 */
+    --accent: 213 94% 68%;
+    --accent-foreground: 0 0% 4%;
+    --destructive: 0 84% 65%;         /* red-400 */
     --destructive-foreground: 0 0% 98%;
-    --border: 240 6% 80%;
-    --input: 240 6% 80%;
-    --ring: 24 94% 53%;
+    --border: 0 0% 100% / 0.10;       /* white/10 */
+    --input: 0 0% 100% / 0.10;
+    --ring: 213 94% 68%;
     --radius: 1rem;
 
-    --glass-bg: rgba(255, 255, 255, 0.90);
+    /* Fluxora glass surfaces — translucent white over dark canvas */
+    --glass-bg: rgba(255, 255, 255, 0.04);
     --glass-blur: 12px;
-    --glass-card-bg: rgba(255, 255, 255, 0.1);
+    --glass-card-bg: rgba(255, 255, 255, 0.05);
     --glass-card-blur: 8px;
-    --shadow-layered: 0px 0px 0px 1px rgba(0,0,0,0.06),
-                      0px 1px 1px -0.5px rgba(0,0,0,0.06),
-                      0px 3px 3px -1.5px rgba(0,0,0,0.06),
-                      0px 6px 6px -3px rgba(0,0,0,0.06),
-                      0px 12px 12px -6px rgba(0,0,0,0.06),
-                      0px 24px 24px -12px rgba(0,0,0,0.06);
-    --orange-glow: 0 15px 25px -10px rgba(248, 113, 22, 0.7),
-                   inset 0 4px 8px rgba(253, 230, 138, 0.9),
-                   inset 0 -4px 8px rgba(249, 115, 22, 0.9);
+
+    /* Layered dark shadow (used to be shadow-genlabs) */
+    --shadow-layered:
+      0 1px 0 0 rgba(255, 255, 255, 0.04) inset,
+      0 1px 2px rgba(0, 0, 0, 0.4),
+      0 8px 24px -8px rgba(0, 0, 0, 0.5),
+      0 24px 48px -16px rgba(0, 0, 0, 0.4);
+
+    /* Blue glow (kept the legacy var name --orange-glow so existing utilities keep working) */
+    --orange-glow:
+      0 1px 0 0 rgba(255, 255, 255, 0.4) inset,
+      0 0 0 1px rgba(96, 165, 250, 0.5),
+      0 12px 32px -8px rgba(96, 165, 250, 0.45);
   }
 }
 
@@ -53,6 +59,29 @@
   }
 }
 
+/* ── Background canvas (subtle SVG grid + soft radial glow) ───────────── */
+.app-bg {
+  position: fixed;
+  inset: 0;
+  z-index: -10;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse 80% 50% at 50% 0%, rgba(96, 165, 250, 0.08), transparent 60%),
+    radial-gradient(ellipse 60% 40% at 90% 30%, rgba(139, 92, 246, 0.05), transparent 70%),
+    radial-gradient(ellipse 50% 35% at 10% 80%, rgba(244, 114, 182, 0.04), transparent 70%);
+}
+.app-grid {
+  position: fixed;
+  inset: 0;
+  z-index: -9;
+  pointer-events: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='64' height='64'><path d='M64 0H0v64' fill='none' stroke='white' stroke-opacity='0.06' stroke-width='0.5'/></svg>");
+  background-size: 64px 64px;
+  mask-image: linear-gradient(to bottom, transparent 0%, black 8%, black 92%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 8%, black 92%, transparent 100%);
+}
+
+/* ── Fluxora glass surfaces ──────────────────────────────────────────── */
 .glass-panel {
   background: var(--glass-bg);
   backdrop-filter: blur(var(--glass-blur));
@@ -63,34 +92,71 @@
   background: var(--glass-card-bg);
   backdrop-filter: blur(var(--glass-card-blur));
   -webkit-backdrop-filter: blur(var(--glass-card-blur));
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  box-shadow: 0 1px 0 0 rgba(255, 255, 255, 0.05) inset,
+              0 8px 24px -12px rgba(0, 0, 0, 0.6);
 }
 
+/* ── Fluxora 1px masked gradient border (used everywhere) ────────────── */
+.border-gradient {
+  position: relative;
+}
+.border-gradient::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+          mask-composite: exclude;
+  background: linear-gradient(
+    225deg,
+    rgba(255, 255, 255, 0.0) 0%,
+    rgba(255, 255, 255, 0.20) 50%,
+    rgba(255, 255, 255, 0.0) 100%
+  );
+  pointer-events: none;
+}
+
+/* ── Curve separator (kept for back-compat — now white/20) ───────────── */
 .curve-separator {
-  background-image: url("data:image/svg+xml,%3Csvg width='20' height='60' viewBox='0 0 20 60' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M18 1C18 1 1 15 1 30C1 45 18 59 18 59' stroke='%23CBD5E1' stroke-width='0.5' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg width='20' height='60' viewBox='0 0 20 60' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M18 1C18 1 1 15 1 30C1 45 18 59 18 59' stroke='%23ffffff33' stroke-width='0.5' stroke-linecap='round'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: center;
   width: 20px;
   height: 40px;
 }
 
+/* ── Headline accent gradient (blue → violet → pink) ─────────────────── */
 .gradient-text {
-  @apply text-transparent bg-clip-text bg-gradient-to-r from-zinc-400 to-zinc-200;
+  background-image: linear-gradient(
+    90deg,
+    rgb(96, 165, 250) 0%,    /* blue-400 */
+    rgb(167, 139, 250) 50%,  /* violet-400 */
+    rgb(244, 114, 182) 100%  /* pink-400 */
+  );
+  -webkit-background-clip: text;
+          background-clip: text;
+  color: transparent;
 }
 
+/* ── Legacy shadow names — redefined for dark theme ──────────────────── */
 .shadow-genlabs {
   box-shadow: var(--shadow-layered);
 }
-
 .shadow-orange-glow {
   box-shadow: var(--orange-glow);
 }
 
+/* ── Primary button surface (kept legacy name `btn-primary-gradient`).
+     In Fluxora, primary CTA is white-on-dark with subtle inset highlight. */
 .btn-primary-gradient {
-  background: radial-gradient(circle at 10% 0%, #fed7aa 0%, #fb923c 100%);
+  background: linear-gradient(180deg, #ffffff 0%, #f5f5f5 100%);
+  color: rgb(10, 10, 10);
 }
 
+/* ── Live status dot ─────────────────────────────────────────────────── */
 .status-dot-live {
   @apply relative flex h-2 w-2;
 }
@@ -103,10 +169,62 @@
   @apply relative inline-flex rounded-full h-2 w-2 bg-emerald-500;
 }
 
+/* ── Hover lift utility ──────────────────────────────────────────────── */
+.hover-lift {
+  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1),
+              box-shadow 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.hover-lift:hover {
+  transform: translateY(-2px);
+}
+
+/* ── Entrance animation (fade + slide + un-blur) ─────────────────────── */
+@keyframes fadeSlideIn {
+  0%   { opacity: 0; transform: translateY(24px); filter: blur(8px); }
+  100% { opacity: 1; transform: translateY(0);    filter: blur(0); }
+}
+.fade-slide-in {
+  animation: fadeSlideIn 0.7s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* ── Horizontal marquee (infinite scroll for stack ticker) ───────────── */
+@keyframes marqueeScroll {
+  0%   { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+.marquee-track {
+  display: flex;
+  width: max-content;
+  animation: marqueeScroll 40s linear infinite;
+}
+.marquee-mask {
+  mask-image: linear-gradient(to right, transparent 0, black 8%, black 92%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to right, transparent 0, black 8%, black 92%, transparent 100%);
+}
+.marquee-track:hover { animation-play-state: paused; }
+
+/* ── Hairline section divider (used between editorial features) ─────── */
+.hairline-top {
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* ── Code/trace chip (used in pipeline timeline) ─────────────────────── */
+.trace-chip {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  background: rgba(96, 165, 250, 0.08);
+  color: rgb(147, 197, 253);
+  border: 1px solid rgba(96, 165, 250, 0.2);
+  padding: 4px 10px;
+  border-radius: 9999px;
+  white-space: nowrap;
+}
+
 html, body {
   height: 100%;
 }
 
+/* ── Dark scrollbar ──────────────────────────────────────────────────── */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -115,9 +233,9 @@ html, body {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: hsl(var(--muted-foreground) / 0.3);
+  background: rgba(255, 255, 255, 0.12);
   border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: hsl(var(--muted-foreground) / 0.5);
+  background: rgba(255, 255, 255, 0.22);
 }

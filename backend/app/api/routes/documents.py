@@ -39,6 +39,9 @@ ALLOWED_MIMES: dict[str, set[str]] = {
     "audio/webm": {"webm"},
     "video/mp4": {"mp4"},
     "video/webm": {"webm"},
+    # text/plain is reserved for content extracted from crawled URLs (the user
+    # cannot upload a raw .txt file via /upload — libmagic sniff will reject it).
+    "text/plain": {"txt"},
 }
 
 
@@ -57,7 +60,7 @@ def validate_storage_path(path: str) -> bool:
         return False
     if ".." in path or path.startswith("/"):
         return False
-    pattern = r"^[a-f0-9-]+/docs/[^/]+\.(pdf|png|jpg|jpeg|gif|webp|mp3|mp4|wav|webm)$"
+    pattern = r"^[a-f0-9-]+/docs/[^/]+\.(pdf|png|jpg|jpeg|gif|webp|mp3|mp4|wav|webm|txt)$"
     return bool(re.match(pattern, path, re.IGNORECASE))
 
 
@@ -95,7 +98,10 @@ async def upload_file(
     # MIME allowlist + magic-byte sniffing. The client-declared content-type is
     # advisory only — we trust libmagic.
     sniffed_mime = _sniff_mime(data).lower()
-    if sniffed_mime not in ALLOWED_MIMES:
+    # text/plain is reserved for /crawl ingestion only — direct .txt uploads
+    # are rejected so the crawl provenance (source URL stored in `meta`) is the
+    # only path that produces a text document.
+    if sniffed_mime == "text/plain" or sniffed_mime not in ALLOWED_MIMES:
         logger.info(f"Rejected upload: sniffed mime={sniffed_mime}")
         raise HTTPException(415, f"Unsupported file type: {sniffed_mime}")
 
@@ -131,6 +137,71 @@ async def upload_file(
     return {"document_id": str(doc_id), "status": "pending"}
 
 
+class CrawlBody(BaseModel):
+    url: str
+    title: Optional[str] = None
+
+    class Config:
+        str_strip_whitespace = True
+
+
+@router.post("/crawl")
+@limiter.limit("10/minute")
+async def crawl_url(request: Request, body: CrawlBody, background_tasks: BackgroundTasks):
+    """Fetch a URL, extract its text, and ingest it as a document.
+
+    SSRF defenses: scheme allowlist, hostname/IP deny-list, DNS resolution
+    re-validated on every redirect hop. See `app.core.ingestion.url_crawler`.
+    """
+    from app.core.ingestion.url_crawler import fetch_and_extract, is_safe_url
+
+    user_id = await require_user(request)
+
+    if not body.url:
+        raise HTTPException(400, "URL is required")
+    if len(body.url) > 2048:
+        raise HTTPException(400, "URL too long (max 2048 characters)")
+
+    ok, err = is_safe_url(body.url)
+    if not ok:
+        raise HTTPException(400, f"URL blocked: {err}")
+
+    # Synchronous fetch (cheap relative to embeddings; keeps API contract
+    # simple — caller knows immediately whether the URL was reachable).
+    try:
+        text, page_title = await asyncio.get_running_loop().run_in_executor(
+            None, fetch_and_extract, body.url
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        logger.error(f"Crawl failed for {body.url}: {e}")
+        raise HTTPException(502, "Failed to fetch URL")
+
+    title = (body.title or page_title or body.url)[:500]
+
+    storage_path = save_file(user_id, "text/plain", text.encode("utf-8"))
+
+    try:
+        with engine.begin() as conn:
+            doc_id = conn.execute(
+                insert(documents).values(
+                    user_id=user_id,
+                    title=title,
+                    mime="text/plain",
+                    storage_path=storage_path,
+                    status="pending",
+                    meta={"source_url": body.url},
+                ).returning(documents.c.id)
+            ).scalar_one()
+    except Exception as e:
+        logger.error(f"DB error creating document: {e}")
+        raise HTTPException(500, "Error creating document record")
+
+    background_tasks.add_task(process_ingestion, str(doc_id), user_id, storage_path)
+    return {"document_id": str(doc_id), "status": "pending", "title": title}
+
+
 @router.post("/ingest")
 @limiter.limit("30/minute")
 async def ingest(request: Request, body: IngestBody, background_tasks: BackgroundTasks):
@@ -146,7 +217,8 @@ async def ingest(request: Request, body: IngestBody, background_tasks: Backgroun
     if path_user_id != user_id:
         raise HTTPException(403, "Storage path does not belong to this user")
 
-    if (body.mime or "").lower() not in ALLOWED_MIMES:
+    mime_lower = (body.mime or "").lower()
+    if mime_lower == "text/plain" or mime_lower not in ALLOWED_MIMES:
         raise HTTPException(415, f"Unsupported file type: {body.mime}")
 
     try:
@@ -258,6 +330,29 @@ async def process_ingestion(doc_id: str, user_id: str, storage_path: str):
             for ci, ck in enumerate(chunk_text(text)):
                 raw_chunks.append((ck, {"page": 1, "chunk_index": ci}))
             enriched_chunks = list(raw_chunks)
+
+        elif mime == "text/plain":
+            text = data.decode("utf-8", errors="replace")
+            if not text.strip():
+                raise Exception("No content extracted from URL")
+            from app.core.ingestion.chunker import chunk_text
+            for ci, ck in enumerate(chunk_text(text)):
+                raw_chunks.append((ck, {"page": 1, "chunk_index": ci}))
+            enriched_chunks = list(raw_chunks)
+
+            try:
+                from app.core.llm_client import chat_complete
+                summary = chat_complete(
+                    model=settings.fast_model,
+                    max_tokens=300,
+                    messages=[{
+                        "role": "user",
+                        "content": f"Summarize this web page in 2-3 sentences:\n\n{text[:10000]}",
+                    }],
+                ).strip()
+            except Exception as e:
+                logger.warning(f"Summary generation failed: {e}")
+                summary = None
 
         else:
             raise Exception(f"Unsupported format: {mime}")
