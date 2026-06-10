@@ -1,0 +1,9 @@
+# SECURITY 2026-06-09: mantem segredos de runtime FORA da camada da imagem.
+# O env_file ja injeta o .env em runtime — ele nunca deve entrar no `COPY . .`.
+.env
+.env.*
+!.env.example
+.git
+.gitignore
+__pycache__/
+*.pyc
