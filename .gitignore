@@ -62,3 +62,6 @@ out/
 # Temporary files
 *.tmp
 *.temp
+
+# deploy control (VPS-local)
+.deploy-freeze

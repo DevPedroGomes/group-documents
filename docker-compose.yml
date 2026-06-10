@@ -36,6 +36,7 @@ services:
       - internal
 
   backend:
+    image: ghcr.io/devpedrogomes/group-documents/backend:latest
     build:
       context: ./backend
       dockerfile: Dockerfile
@@ -88,6 +89,7 @@ services:
       - "traefik.http.middlewares.group-documents-api-security.headers.frameDeny=true"
 
   frontend:
+    image: ghcr.io/devpedrogomes/group-documents/frontend:latest
     build:
       context: ./frontend
       dockerfile: Dockerfile
