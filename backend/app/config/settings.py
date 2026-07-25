@@ -35,9 +35,14 @@ class Settings(BaseSettings):
 
     # Embedding (Voyage AI)
     voyage_api_key: str
+    # Doc e query DEVEM usar o mesmo modelo: `input_type` ("document"/"query")
+    # e o que diferencia os dois lados no Voyage. Modelos distintos produzem
+    # espacos vetoriais nao-comparaveis — e voyage-3-lite (512 dims) contra
+    # voyage-3-large (1024) nem chega a rodar: pgvector rejeita a comparacao.
     voyage_doc_model: str = "voyage-3-large"
-    voyage_query_model: str = "voyage-3-lite"
-    embedding_dimensions: int = 1536
+    voyage_query_model: str = "voyage-3-large"
+    # Precisa bater com o vector(N) das migrations. Ver migrations/002.
+    embedding_dimensions: int = 1024
 
     # Reranking (Cohere)
     cohere_api_key: Optional[str] = None

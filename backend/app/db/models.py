@@ -5,7 +5,17 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import UUID, ARRAY
 from sqlalchemy.sql import func
 from pgvector.sqlalchemy import Vector
+import os
 import uuid
+
+# Dimensao do vetor. Tem que bater com o vector(N) das migrations — divergencia
+# aqui derruba TODA ingestao com "expected N dimensions, not M".
+#
+# Lido do env cru de proposito, em vez de `get_settings()`: este modulo e
+# importado por engine.py, que por sua vez e importado pelo runner de
+# migrations. Instanciar o Settings completo aqui faria o import explodir por
+# qualquer env var nao relacionada que estivesse faltando.
+EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIMENSIONS", "1024"))
 
 metadata = MetaData()
 
@@ -42,7 +52,7 @@ chunks = Table(
     Column("chunk_index", Integer),
     Column("content", Text, nullable=False),
     Column("enriched_content", Text),
-    Column("embedding", Vector(1536)),
+    Column("embedding", Vector(EMBEDDING_DIM)),
     Column("token_count", Integer),
     # Column name in DB is `metadata` but SQLAlchemy reserves the `metadata` attribute on Table,
     # so we use key="meta_json" to expose as `chunks.c.meta_json` while writing column `metadata`.
@@ -74,7 +84,7 @@ semantic_cache = Table(
     "semantic_cache", metadata,
     Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
     Column("query_hash", Text, nullable=False),
-    Column("query_embedding", Vector(1536)),
+    Column("query_embedding", Vector(EMBEDDING_DIM)),
     Column("query_text", Text, nullable=False),
     Column("response_text", Text, nullable=False),
     Column("citations", JSON),

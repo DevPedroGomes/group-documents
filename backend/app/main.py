@@ -1,5 +1,8 @@
 """BrainHub Team API — FastAPI application factory."""
 
+import logging
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -9,6 +12,21 @@ from slowapi.middleware import SlowAPIMiddleware
 
 from app.config.settings import get_settings
 from app.api.rate_limit import limiter
+from app.db.migrate import run_migrations
+
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    """Aplica migrations pendentes antes de aceitar trafego.
+
+    Deliberadamente FATAL: se o schema nao puder ser levado ao estado esperado,
+    a app nao sobe. E o oposto do que acontecia antes — schema divergente do
+    codigo, app subindo normal, e toda ingestao falhando em silencio.
+    """
+    run_migrations()
+    yield
 
 
 def _rate_limit_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
@@ -23,6 +41,7 @@ def create_app() -> FastAPI:
 
     app = FastAPI(
         title=settings.app_name,
+        lifespan=_lifespan,
         docs_url="/docs" if settings.debug else None,
         redoc_url="/redoc" if settings.debug else None,
         openapi_url="/openapi.json" if settings.debug else None,
