@@ -78,11 +78,11 @@ class Settings(BaseSettings):
     # Guardrails
     enable_input_guardrails: bool = True
 
-    # Observability (Langfuse)
-    langfuse_enabled: bool = False
-    langfuse_public_key: Optional[str] = None
-    langfuse_secret_key: Optional[str] = None
-    langfuse_host: str = "https://cloud.langfuse.com"
+    # Observability: o pacote `langfuse` foi removido do requirements por ser
+    # dependencia morta — 3 MB na imagem, nenhum import no codigo e
+    # `langfuse_enabled` nunca lido. Se for reinstrumentar, adicione langfuse>=4
+    # e escreva contra a API nova; a v2 que estava pinada e incompativel com ela.
+    # Envs LANGFUSE_* remanescentes sao ignoradas (model_config extra="ignore").
 
     # File limits
     max_file_size: int = 20 * 1024 * 1024  # 20MB
