@@ -64,14 +64,18 @@ def run_migrations() -> None:
         """))
 
     with engine.connect() as conn:
-        # Serializa entre instancias; liberado no fim do bloco (close da conn).
+        # Serializa entre instancias. O lock e de SESSAO, nao de transacao:
+        # sobrevive aos commits abaixo e so cai no unlock/close.
         conn.execute(sqltext("SELECT pg_advisory_lock(:k)"), {"k": _LOCK_KEY})
         try:
             applied = {
                 r[0] for r in conn.execute(sqltext("SELECT version FROM schema_migrations"))
             }
-            pending = [(v, p) for v, p in migrations if v not in applied]
+            # SQLAlchemy 2.0 abre transacao implicita no primeiro execute(); fechar
+            # aqui e o que permite abrir uma transacao explicita por migration.
+            conn.commit()
 
+            pending = [(v, p) for v, p in migrations if v not in applied]
             if not pending:
                 logger.info("migrate: schema em dia (%d aplicadas)", len(applied))
                 return
@@ -80,18 +84,20 @@ def run_migrations() -> None:
             for version, path in pending:
                 sql = path.read_text(encoding="utf-8")
                 # Transacao por migration: uma falha nao deixa schema meio-aplicado.
-                trans = conn.begin()
                 try:
-                    conn.execute(sqltext(sql))
-                    conn.execute(
-                        sqltext("INSERT INTO schema_migrations (version) VALUES (:v)"),
-                        {"v": version},
-                    )
-                    trans.commit()
+                    with conn.begin():
+                        conn.execute(sqltext(sql))
+                        conn.execute(
+                            sqltext("INSERT INTO schema_migrations (version) VALUES (:v)"),
+                            {"v": version},
+                        )
                     logger.info("migrate: aplicada %s", version)
                 except Exception:
-                    trans.rollback()
                     logger.exception("migrate: FALHOU em %s — schema inalterado", version)
                     raise
         finally:
+            # Fecha qualquer transacao pendente antes do unlock, senao o proprio
+            # unlock reabriria uma e a conexao morreria com tx aberta.
+            conn.rollback()
             conn.execute(sqltext("SELECT pg_advisory_unlock(:k)"), {"k": _LOCK_KEY})
+            conn.commit()
