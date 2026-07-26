@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 from jose import jwt
 from fastapi import APIRouter, Request, HTTPException
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, ConfigDict, EmailStr
 import bcrypt as _bcrypt
 
 
@@ -33,16 +33,14 @@ class RegisterBody(BaseModel):
     password: str
     full_name: str | None = None
 
-    class Config:
-        str_strip_whitespace = True
+    model_config = ConfigDict(str_strip_whitespace=True)
 
 
 class LoginBody(BaseModel):
     email: EmailStr
     password: str
 
-    class Config:
-        str_strip_whitespace = True
+    model_config = ConfigDict(str_strip_whitespace=True)
 
 
 def _create_token(user_id: str, email: str) -> str:

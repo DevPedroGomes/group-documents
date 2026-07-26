@@ -6,7 +6,7 @@ from typing import AsyncGenerator
 
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import insert, text as sqltext
 
 from app.config.settings import get_settings
@@ -30,8 +30,7 @@ class ChatBody(BaseModel):
     document_ids: list[str] | None = None
     thread_id: str | None = None
 
-    class Config:
-        str_strip_whitespace = True
+    model_config = ConfigDict(str_strip_whitespace=True)
 
 
 # --- Thread management ---

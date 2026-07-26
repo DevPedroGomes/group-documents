@@ -7,7 +7,7 @@ import asyncio
 from typing import Optional
 
 from fastapi import APIRouter, Request, HTTPException, BackgroundTasks, UploadFile, File, Form
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import insert, text as sqltext
 
 from app.config.settings import get_settings
@@ -69,8 +69,7 @@ class IngestBody(BaseModel):
     title: str
     mime: str
 
-    class Config:
-        str_strip_whitespace = True
+    model_config = ConfigDict(str_strip_whitespace=True)
 
 
 @router.post("/upload")
@@ -141,8 +140,7 @@ class CrawlBody(BaseModel):
     url: str
     title: Optional[str] = None
 
-    class Config:
-        str_strip_whitespace = True
+    model_config = ConfigDict(str_strip_whitespace=True)
 
 
 @router.post("/crawl")
