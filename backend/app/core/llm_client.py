@@ -10,6 +10,7 @@ interface; the OpenRouter path adapts internally.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Generator, Optional
 
 from app.config.settings import get_settings
@@ -74,30 +75,68 @@ def _anthropic_client():
     return anthropic.Anthropic(api_key=s.anthropic_api_key)
 
 
-def _anthropic_complete(model, max_tokens, messages, system, temperature):
-    client = _anthropic_client()
-    kwargs = {
-        "model": model,
-        "max_tokens": max_tokens,
-        "messages": messages,
-        "temperature": temperature,
-    }
+# Modelos que RECUSAM parametro de sampling: mandar temperature/top_p/top_k
+# devolve 400. Sonnet 4.6, Opus 4.6, Sonnet 4.5 e Haiku 4.5 ainda aceitam.
+_RECUSA_SAMPLING = re.compile(
+    r"^(anthropic/)?claude-(opus-5|opus-4-[78]|sonnet-5|fable-5|mythos-5)"
+)
+
+# Modelos onde o parametro `thinking` e valido. Haiku 4.5 nao aceita nenhuma
+# forma dele — mandar qualquer valor devolve 400.
+_ACEITA_THINKING = re.compile(
+    r"^(anthropic/)?claude-(opus-5|opus-4-[678]|sonnet-5|sonnet-4-6|fable-5|mythos-5)"
+)
+
+
+def _kwargs_anthropic(model, max_tokens, messages, system, temperature) -> dict:
+    """Monta o payload respeitando o que CADA modelo aceita.
+
+    Este caminho e o de rollback (producao roda no OpenRouter), e ele nao
+    sobreviveria a um modelo da familia 5 do jeito que estava:
+
+    1. `temperature` — na familia 5 qualquer valor de sampling e 400. O jeito
+       de guiar o comportamento passou a ser o prompt.
+    2. `thinking` — na familia 5 pensar e o PADRAO, e `max_tokens` limita
+       pensamento + resposta JUNTOS. Os call sites daqui tem teto apertado
+       (150 a 2000) e o de geracao e STREAMING: com pensamento ligado o
+       visitante veria uma pausa longa antes da primeira palavra e a resposta
+       poderia truncar no meio. Este app faz RAG aterrado, nao raciocinio
+       longo — desligar mantem latencia e custo onde estavam.
+    """
+    kwargs = {"model": model, "max_tokens": max_tokens, "messages": messages}
     if system:
         kwargs["system"] = system
-    resp = client.messages.create(**kwargs)
-    return resp.content[0].text
+    if not _RECUSA_SAMPLING.match(model):
+        kwargs["temperature"] = temperature
+    if _ACEITA_THINKING.match(model):
+        kwargs["thinking"] = {"type": "disabled"}
+    return kwargs
+
+
+def _primeiro_texto(content) -> str:
+    """Primeiro bloco de TEXTO da resposta, nao o primeiro bloco.
+
+    `content[0].text` quebra assim que o modelo pensa: o bloco de thinking vem
+    antes do texto e nao tem `.text`. E um AttributeError que so aparece em
+    producao, depois de alguem trocar o modelo.
+    """
+    for bloco in content:
+        if bloco.type == "text":
+            return bloco.text
+    return ""
+
+
+def _anthropic_complete(model, max_tokens, messages, system, temperature):
+    client = _anthropic_client()
+    resp = client.messages.create(
+        **_kwargs_anthropic(model, max_tokens, messages, system, temperature)
+    )
+    return _primeiro_texto(resp.content)
 
 
 def _anthropic_stream(model, max_tokens, messages, system, temperature):
     client = _anthropic_client()
-    kwargs = {
-        "model": model,
-        "max_tokens": max_tokens,
-        "messages": messages,
-        "temperature": temperature,
-    }
-    if system:
-        kwargs["system"] = system
+    kwargs = _kwargs_anthropic(model, max_tokens, messages, system, temperature)
     with client.messages.stream(**kwargs) as stream:
         for text in stream.text_stream:
             yield text

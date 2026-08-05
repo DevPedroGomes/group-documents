@@ -26,8 +26,11 @@ class Settings(BaseSettings):
     # Default kept as "anthropic" for backward-compat.
     llm_provider: str = "anthropic"
     anthropic_api_key: Optional[str] = None
-    generation_model: str = "claude-sonnet-4-20250514"
-    fast_model: str = "claude-haiku-4-5-20251001"
+    # Producao roda no OpenRouter (ver backend/.env), entao estes defaults valem
+    # para o caminho de rollback LLM_PROVIDER=anthropic. Saiu de
+    # claude-sonnet-4-20250514, que a Anthropic retira em 15/06/2026.
+    generation_model: str = "claude-sonnet-5"
+    fast_model: str = "claude-haiku-4-5"
 
     # OpenRouter (used when llm_provider="openrouter")
     openrouter_api_key: Optional[str] = None
