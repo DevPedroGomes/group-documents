@@ -23,4 +23,10 @@ USER app
 
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# --forwarded-allow-ips: sem isto o uvicorn nao confia no X-Forwarded-For que o
+# Traefik seta, e `request.client.host` vira o IP do PROPRIO Traefik. O
+# resultado e que o slowapi chaveava TODOS os visitantes no mesmo balde: um
+# unico "30/minute" para o mundo inteiro, e nenhum limite por pessoa. A porta
+# 8000 nao e publicada no host — o container so e alcancavel pela rede Docker,
+# via Traefik — entao confiar no proxy aqui e seguro.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--forwarded-allow-ips", "*"]

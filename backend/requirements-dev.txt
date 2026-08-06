@@ -1,0 +1,4 @@
+# Dependencias de teste. Ficam fora do requirements.txt de proposito: nada aqui
+# entra na imagem de producao.
+-r requirements.txt
+pytest>=8.0

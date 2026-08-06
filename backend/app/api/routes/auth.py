@@ -22,6 +22,7 @@ from app.config.settings import get_settings
 from app.db.engine import engine
 from app.db.models import users
 from app.api.dependencies import require_user
+from app.api.rate_limit import limiter
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +57,8 @@ def _create_token(user_id: str, email: str) -> str:
 
 
 @router.post("/register")
-async def register(body: RegisterBody):
+@limiter.limit(get_settings().auth_rate_limit)
+async def register(request: Request, body: RegisterBody):
     """Create a new user account and return a JWT token."""
     if len(body.password) < 12:
         raise HTTPException(400, "Password must be at least 12 characters")
@@ -94,7 +96,8 @@ async def register(body: RegisterBody):
 
 
 @router.post("/login")
-async def login(body: LoginBody):
+@limiter.limit(get_settings().auth_rate_limit)
+async def login(request: Request, body: LoginBody):
     """Authenticate user and return a JWT token."""
     with engine.begin() as conn:
         row = conn.execute(

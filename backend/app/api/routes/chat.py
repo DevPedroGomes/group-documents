@@ -14,6 +14,7 @@ from app.db.engine import engine
 from app.db.models import threads, messages
 from app.api.dependencies import require_user
 from app.api.rate_limit import limiter
+from app.core import budget
 from app.core.guardrails.input_validator import validate_input
 from app.core.rag.generator import stream_answer
 from app.core.rag.transformer import transform_query
@@ -111,6 +112,18 @@ async def chat(request: Request, body: ChatBody):
         thread_id = create_thread(user_id)
 
     history = get_thread_history(thread_id, user_id)
+
+    # Teto diario global, consumido ANTES de qualquer chamada paga. Vem depois
+    # da validacao e da checagem de posse da thread, que sao gratis: pergunta
+    # invalida nao deve gastar a cota do proximo visitante.
+    try:
+        await budget.consumir("chat", get_settings().daily_chat_limit)
+    except budget.TetoAtingido as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=exc.mensagem,
+            headers={"Retry-After": str(budget.segundos_ate_meia_noite_utc())},
+        ) from exc
 
     # Save user message
     save_message(thread_id, "user", body.message)
@@ -229,8 +242,18 @@ async def chat(request: Request, body: ChatBody):
             yield _sse("done", {"thread_id": thread_id})
 
         except Exception as e:
-            logger.error(f"SSE generation error: {e}")
-            yield _sse("error", {"message": str(e)})
+            # O erro cru do provider NAO vai para a tela. Foi assim que uma
+            # mensagem de rate limit da Voyage, com link do dashboard de
+            # billing e nome do plano, apareceu para o visitante no meio do
+            # stream. O detalhe fica no log, onde serve para depurar.
+            logger.error(f"SSE generation error: {e}", exc_info=True)
+            yield _sse("error", {"message": "Something went wrong answering that. Please try again."})
+
+            # Nada foi gerado, entao nenhuma chamada paga de geracao aconteceu:
+            # devolve a cota em vez de cobra-la do proximo visitante. Se ja
+            # havia texto, o modelo rodou e o gasto foi real — nao devolve.
+            if not full_answer:
+                await budget.devolver("chat")
 
         finally:
             # Save assistant message

@@ -16,6 +16,7 @@ from app.db.models import documents, chunks
 from app.api.dependencies import require_user
 from app.services.file_storage import save_file, get_file, get_file_abspath, delete_file
 from app.api.rate_limit import limiter
+from app.core import budget
 from app.services.embedding import embed_documents
 from app.core.ingestion.pdf_processor import extract_pages_from_pdf
 from app.core.ingestion.chunker import chunk_document_pages, enrich_chunks_with_context
@@ -115,6 +116,18 @@ async def upload_file(
     storage_path = save_file(user_id, sniffed_mime, data)
 
     # Create document record
+    # Teto diario global de ingestoes. A ingestao e o caminho MAIS caro do app:
+    # enriquecimento contextual chama o LLM uma vez por chunk. Consumido antes
+    # de criar a linha, para uma recusa nao deixar documento fantasma no banco.
+    try:
+        await budget.consumir("ingest", get_settings().daily_ingest_limit)
+    except budget.TetoAtingido as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=exc.mensagem,
+            headers={"Retry-After": str(budget.segundos_ate_meia_noite_utc())},
+        ) from exc
+
     try:
         with engine.begin() as conn:
             doc_id = conn.execute(
@@ -180,6 +193,18 @@ async def crawl_url(request: Request, body: CrawlBody, background_tasks: Backgro
 
     storage_path = save_file(user_id, "text/plain", text.encode("utf-8"))
 
+    # Teto diario global de ingestoes. A ingestao e o caminho MAIS caro do app:
+    # enriquecimento contextual chama o LLM uma vez por chunk. Consumido antes
+    # de criar a linha, para uma recusa nao deixar documento fantasma no banco.
+    try:
+        await budget.consumir("ingest", get_settings().daily_ingest_limit)
+    except budget.TetoAtingido as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=exc.mensagem,
+            headers={"Retry-After": str(budget.segundos_ate_meia_noite_utc())},
+        ) from exc
+
     try:
         with engine.begin() as conn:
             doc_id = conn.execute(
@@ -218,6 +243,18 @@ async def ingest(request: Request, body: IngestBody, background_tasks: Backgroun
     mime_lower = (body.mime or "").lower()
     if mime_lower == "text/plain" or mime_lower not in ALLOWED_MIMES:
         raise HTTPException(415, f"Unsupported file type: {body.mime}")
+
+    # Teto diario global de ingestoes. A ingestao e o caminho MAIS caro do app:
+    # enriquecimento contextual chama o LLM uma vez por chunk. Consumido antes
+    # de criar a linha, para uma recusa nao deixar documento fantasma no banco.
+    try:
+        await budget.consumir("ingest", get_settings().daily_ingest_limit)
+    except budget.TetoAtingido as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=exc.mensagem,
+            headers={"Retry-After": str(budget.segundos_ate_meia_noite_utc())},
+        ) from exc
 
     try:
         with engine.begin() as conn:

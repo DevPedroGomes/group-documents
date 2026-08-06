@@ -84,6 +84,14 @@ class Settings(BaseSettings):
     # Rate Limiting
     rate_limit_requests: int = 30
     rate_limit_window_seconds: int = 60
+    # Cadastro e aberto e gratuito, entao o rate limit por IP e a unica coisa
+    # entre um script e uma fila infinita de contas novas.
+    auth_rate_limit: str = "5/minute"
+
+    # Tetos diarios GLOBAIS (ver core/budget.py). Os rate limits acima limitam
+    # UM chamador; nenhum deles limita todos juntos nem alguem criando contas.
+    daily_chat_limit: int = 300
+    daily_ingest_limit: int = 100
 
     # Guardrails
     enable_input_guardrails: bool = True

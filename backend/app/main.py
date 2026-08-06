@@ -56,6 +56,18 @@ def create_app() -> FastAPI:
     def healthz():
         return {"status": "ok"}
 
+    @app.get("/demo-limits", include_in_schema=False)
+    async def demo_limits():
+        """Quanto sobrou do teto de hoje.
+
+        Publico de proposito: um visitante que bate num limite deve conseguir
+        ver que aquilo e uma decisao de projeto, nao um app quebrado. Nao expoe
+        nada sensivel — so contadores e os proprios limites.
+        """
+        from app.core import budget
+
+        return await budget.panorama()
+
     # CORS
     cors_origins = [o.strip() for o in settings.cors_origins.split(",")]
     app.add_middleware(
