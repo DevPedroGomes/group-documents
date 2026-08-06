@@ -62,6 +62,23 @@ def hybrid_search(
     Returns top_k results sorted by combined RRF score.
 
     `user_id` is REQUIRED — every chunk read is filtered by ownership.
+
+    Sobre o campo `snippet`, que e o texto que chega ao gerador:
+
+    1. Vem de `content` (o chunk cru), nao de `enriched_content`. O contexto
+       escrito pela IA no enriquecimento existe para melhorar o EMBEDDING, que
+       e onde ele entra. Mandar esse resumo para o gerador faz o modelo ler o
+       resumo que outro modelo escreveu, em vez do documento — ruido e risco de
+       alucinacao, sem ganho.
+    2. O corte era em 500 caracteres. Chunks tem 500 TOKENS (~2000 caracteres),
+       entao o gerador recebia menos de um terco do chunk, cortado no meio de
+       uma frase. Com enriquecimento ficava pior: o prefixo de contexto ocupava
+       ~300 desses 500 e sobravam ~200 de documento de verdade. Media as duas
+       coisas e a feature de qualidade estava degradando a resposta.
+       O teto de 4000 aqui e so um limite de sanidade, acima do tamanho de um
+       chunk; nao corta conteudo em uso normal.
+
+    O preview curto das citacoes na UI continua sendo cortado por quem exibe.
     """
     settings = get_settings()
     prefetch = top_k * settings.search_candidates_multiplier
@@ -92,7 +109,7 @@ def hybrid_search(
     # 1. Semantic search (pgvector HNSW)
     semantic_sql = sqltext(f"""
         SELECT c.id, c.document_id, d.title as document_title, c.page,
-               left(COALESCE(c.enriched_content, c.content), 500) as snippet,
+               left(c.content, 4000) as snippet,
                1 - (c.embedding <=> CAST(:qvec AS vector)) as score
         FROM chunks c
         JOIN documents d ON c.document_id = d.id
@@ -106,7 +123,7 @@ def hybrid_search(
     # 2. Keyword search (tsvector GIN)
     keyword_sql = sqltext(f"""
         SELECT c.id, c.document_id, d.title as document_title, c.page,
-               left(COALESCE(c.enriched_content, c.content), 500) as snippet,
+               left(c.content, 4000) as snippet,
                ts_rank(c.search_vector, plainto_tsquery('english', :query_text)) as score
         FROM chunks c
         JOIN documents d ON c.document_id = d.id
