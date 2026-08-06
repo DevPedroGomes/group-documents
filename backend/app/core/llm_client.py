@@ -163,11 +163,45 @@ def _openrouter_client():
     )
 
 
+def _bloco_para_openai(bloco: dict) -> dict:
+    """Traduz um bloco de conteudo do formato Anthropic para o OpenAI-compat.
+
+    Os call sites deste modulo escrevem no formato Anthropic — e a interface
+    publica declarada no topo do arquivo. O caminho do OpenRouter fala
+    OpenAI-compat, onde imagem NAO e `{"type":"image","source":{...}}` e sim
+    `{"type":"image_url","image_url":{"url":"data:<mime>;base64,<...>"}}`.
+
+    Sem esta traducao o bloco de imagem seguia num formato que o outro lado nao
+    reconhece e era simplesmente DESCARTADO: o modelo recebia so o texto
+    "descreva esta imagem", sem imagem nenhuma, e respondia descrevendo uma
+    imagem inventada. Nao dava erro em lugar nenhum — a descricao chegava
+    plausivel e completamente errada, e ia direto para o indice.
+    """
+    if bloco.get("type") != "image":
+        return bloco
+
+    fonte = bloco.get("source") or {}
+    if fonte.get("type") == "base64":
+        mime = fonte.get("media_type", "image/png")
+        return {
+            "type": "image_url",
+            "image_url": {"url": f"data:{mime};base64,{fonte.get('data', '')}"},
+        }
+    if fonte.get("type") == "url":
+        return {"type": "image_url", "image_url": {"url": fonte.get("url", "")}}
+    return bloco
+
+
 def _to_openai_messages(messages: list[dict], system: Optional[str]):
     out = []
     if system:
         out.append({"role": "system", "content": system})
-    out.extend(messages)
+    for msg in messages:
+        conteudo = msg.get("content")
+        if isinstance(conteudo, list):
+            msg = {**msg, "content": [_bloco_para_openai(b) if isinstance(b, dict) else b
+                                      for b in conteudo]}
+        out.append(msg)
     return out
 
 

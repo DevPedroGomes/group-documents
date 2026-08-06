@@ -390,3 +390,51 @@ def test_audio_usa_deepgram_porque_voyage_nao_cobre_audio():
     assert "deepgram_api_key" in Settings.model_fields
     fonte = inspect.getsource(transcrever_audio)
     assert "api.deepgram.com" in fonte
+
+
+# ---------------------------------------------------------------------------
+# 8. Traducao de bloco de imagem entre os dois formatos de provider
+#
+# Os call sites escrevem no formato Anthropic. Producao roda no OpenRouter, que
+# fala OpenAI-compat, onde imagem tem OUTRA forma. Sem traduzir, o bloco era
+# descartado em silencio: o modelo recebia so o texto "descreva esta imagem",
+# sem imagem, e devolvia a descricao de uma imagem inventada — plausivel,
+# errada, e indo direto para o indice.
+# ---------------------------------------------------------------------------
+
+def test_bloco_de_imagem_e_traduzido_para_o_formato_openai():
+    from app.core.llm_client import _to_openai_messages
+
+    mensagens = [{
+        "role": "user",
+        "content": [
+            {"type": "image", "source": {"type": "base64",
+                                         "media_type": "image/png", "data": "QUJD"}},
+            {"type": "text", "text": "descreva"},
+        ],
+    }]
+    saida = _to_openai_messages(mensagens, None)
+    blocos = saida[0]["content"]
+
+    assert blocos[0]["type"] == "image_url", "bloco de imagem seguiria e seria descartado"
+    assert blocos[0]["image_url"]["url"] == "data:image/png;base64,QUJD"
+    assert blocos[1] == {"type": "text", "text": "descreva"}
+
+
+def test_traducao_nao_mexe_em_conteudo_de_texto_simples():
+    from app.core.llm_client import _to_openai_messages
+
+    mensagens = [{"role": "user", "content": "texto puro"}]
+    assert _to_openai_messages(mensagens, None) == mensagens
+
+
+def test_bloco_com_cache_control_sobrevive_a_traducao():
+    """O marcador de cache do enriquecimento nao pode ser perdido no caminho."""
+    from app.core.llm_client import _to_openai_messages
+
+    mensagens = [{
+        "role": "user",
+        "content": [{"type": "text", "text": "doc", "cache_control": {"type": "ephemeral"}}],
+    }]
+    bloco = _to_openai_messages(mensagens, None)[0]["content"][0]
+    assert bloco.get("cache_control") == {"type": "ephemeral"}
