@@ -14,15 +14,18 @@ Alem disso o caminho estava morto de duas formas: o pacote
 
 Agora:
 
-- IMAGEM e VIDEO sao embedados DIRETO pelo `voyage-multimodal-3.5`, no mesmo
-  espaco vetorial do texto. Uma pergunta escrita pode recuperar uma figura
-  porque os dois vivem no mesmo espaco, nao porque alguem descreveu a figura.
+- IMAGEM e embedada DIRETO pela torre de visao do `jina-clip-v1`, que roda
+  local e compartilha o espaco vetorial com a torre de texto do mesmo modelo.
+  Uma pergunta escrita pode recuperar uma figura porque os dois vivem no mesmo
+  espaco, nao porque alguem descreveu a figura.
 - A descricao textual continua existindo, mas com outro papel: alimentar o
   BM25 (que so sabe casar palavra) e dar ao gerador algo legivel para citar.
   Ela nao e mais o que a busca vetorial enxerga. Sai do Claude, que ja esta
   configurado e pago — uma dependencia a menos.
-- AUDIO o Voyage nao cobre. Vai para o Deepgram, a mesma chave que o
-  Transcripts ja usa.
+- AUDIO e VIDEO vao para o Deepgram, a mesma chave que o Transcripts ja usa.
+  O modelo local cobre texto e imagem, nao fala. Video e indexado pelo que e
+  FALADO nele; o conteudo visual nao entra — decisao assumida, ver
+  `processar_video`.
 
 Cada funcao devolve `(texto, imagem_ou_none)`. Quem chama decide o que fazer:
 com imagem, embeda a imagem; sem, embeda o texto.
@@ -63,7 +66,7 @@ def _abrir_imagem(data: bytes):
     from PIL import Image
 
     img = Image.open(io.BytesIO(data))
-    # O Voyage rejeita alguns modos exoticos; RGB e o denominador comum.
+    # Modos exoticos (P, CMYK, RGBA) quebram encoder de visao; RGB e o comum.
     if img.mode not in ("RGB", "L"):
         img = img.convert("RGB")
     return img
@@ -121,43 +124,32 @@ def processar_imagem(data: bytes, mime: str) -> tuple[str, object]:
     return descrever_imagem(data, mime), imagem
 
 
-def processar_video(data: bytes, filename: Optional[str] = None) -> tuple[str, object]:
-    """(descricao, Video). O Voyage embeda o video direto, com os frames.
+def processar_video(data: bytes, mime: str) -> tuple[str, None]:
+    """(transcricao, None). Video e indexado pelo que e FALADO nele.
 
-    Limite do provider: 20 MB por video — que coincide com o `max_file_size` do
-    app, entao nao ha caso em que um upload aceito aqui seja recusado la.
+    O modelo de embedding local (jina-clip-v1) cobre texto e imagem, nao video
+    — diferente da API multimodal que estava aqui antes. Indexar o conteudo
+    visual exigiria ffmpeg, amostragem de frames e um vetor por frame; video e
+    a modalidade mais rara num app de documentos de time e nao paga esse peso
+    na imagem nem na CPU de uma maquina de 2 nucleos.
+
+    O Deepgram aceita container de video e devolve a fala. Para reuniao
+    gravada, aula e demo — que e o que um time realmente sobe — a fala E o
+    conteudo.
+
+    LIMITACAO ASSUMIDA: slide mostrado sem ser lido em voz alta nao entra no
+    indice. Se isso passar a importar, o caminho e amostrar frames e mandar
+    cada um pela torre de visao, que ja existe.
     """
-    from voyageai.video_utils import Video
-
-    settings = get_settings()
-    import tempfile
-    import os
-
-    sufixo = os.path.splitext(filename or "")[1] or ".mp4"
-    caminho = None
-    try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=sufixo) as tmp:
-            tmp.write(data)
-            caminho = tmp.name
-        video = Video.from_path(caminho, model=settings.voyage_doc_model)
-        # Descricao textual de video exigiria amostrar frames e mandar ao
-        # Claude. Nao vale o custo: o vetor do video ja e o que a busca usa, e
-        # o nome do arquivo cobre o caso de alguem procurar pelo titulo.
-        return (filename or "video"), video
-    finally:
-        if caminho and os.path.exists(caminho):
-            try:
-                os.unlink(caminho)
-            except OSError:
-                pass
+    return transcrever_audio(data, mime)
 
 
 def transcrever_audio(data: bytes, mime: str) -> tuple[str, None]:
     """(transcricao, None). Audio nao tem embedding proprio: vira texto mesmo.
 
-    O Voyage multimodal cobre texto, imagem e video, nao audio. Deepgram e a
-    escolha aqui porque ja e o provider de audio do portfolio e a integracao ja
-    esta provada no Transcripts.
+    O modelo local cobre texto e imagem, nao fala. Deepgram e a escolha aqui
+    porque ja e o provider de audio do portfolio e a integracao ja esta provada
+    no Transcripts.
     """
     settings = get_settings()
     if not settings.deepgram_api_key:

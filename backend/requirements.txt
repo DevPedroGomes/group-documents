@@ -18,8 +18,10 @@ bcrypt>=4.0.0
 
 # LLM & RAG
 anthropic>=0.40.0
+# Embedding LOCAL (jina-clip-v1, ONNX). Substitui o voyageai: sem provider,
+# sem rate limit, sem custo. Ver services/embedding.py.
+fastembed>=0.8.0
 openai>=1.50.0
-voyageai>=0.3.0
 cohere>=5.0
 tiktoken>=0.7.0
 

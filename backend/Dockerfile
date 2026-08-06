@@ -14,12 +14,25 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 RUN groupadd -r app -g 10001 && useradd -r -u 10001 -g app -d /app -s /sbin/nologin app && \
-    mkdir -p /app/uploads /tmp/pycache && \
+    mkdir -p /app/uploads /tmp/pycache /app/.cache/fastembed && \
     chown -R app:app /app /tmp/pycache
 
-ENV PYTHONPYCACHEPREFIX=/tmp/pycache
+ENV PYTHONPYCACHEPREFIX=/tmp/pycache \
+    FASTEMBED_CACHE_PATH=/app/.cache/fastembed
 
+# Baixa os pesos do jina-clip-v1 no BUILD, nao no primeiro request. Sem isto o
+# primeiro visitante depois de cada deploy espera ~30 s de download dentro da
+# propria pergunta, e um container sem rede de saida simplesmente nunca
+# responderia. Com os pesos na imagem, o app sobe funcionando offline.
+# ~850 MB nas duas torres — e o preco de nao depender de um provider.
 USER app
+RUN python -c "\
+from fastembed import TextEmbedding, ImageEmbedding; \
+M='jinaai/jina-clip-v1'; \
+TextEmbedding(model_name=M, cache_dir='/app/.cache/fastembed'); \
+ImageEmbedding(model_name=M, cache_dir='/app/.cache/fastembed'); \
+print('pesos do jina-clip-v1 embutidos na imagem')"
+
 
 EXPOSE 8000
 

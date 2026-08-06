@@ -145,20 +145,21 @@ def test_retriever_pede_embeddings_em_lote():
     assert "get_query_embeddings(" in fonte, "voltou a embedar uma query por vez"
 
 
-def test_embed_queries_faz_uma_unica_chamada_para_n_textos(monkeypatch):
+def test_embed_queries_faz_uma_unica_passada_para_n_textos(monkeypatch):
+    """Uma passada do ONNX sobre N textos e mais barata que N passadas."""
     from app.services import embedding
 
     chamadas = []
 
-    class ClienteFalso:
-        def multimodal_embed(self, inputs, model, input_type):
-            chamadas.append(list(inputs))
-            return type("R", (), {"embeddings": [[0.0] * 1024 for _ in inputs]})()
+    class TorreFalsa:
+        def embed(self, textos):
+            chamadas.append(list(textos))
+            return [[0.0] * 768 for _ in textos]
 
-    monkeypatch.setattr(embedding, "_get_client", lambda: ClienteFalso())
+    monkeypatch.setattr(embedding, "_texto", lambda: TorreFalsa())
     vetores = embedding.embed_queries(["a", "b", "c", "d"])
 
-    assert len(chamadas) == 1, f"{len(chamadas)} requisicoes para 4 queries"
+    assert len(chamadas) == 1, f"{len(chamadas)} passadas para 4 queries"
     assert len(vetores) == 4
 
 
@@ -313,14 +314,56 @@ def test_uvicorn_confia_no_proxy_para_enxergar_o_ip_real():
 # ---------------------------------------------------------------------------
 
 def test_texto_e_imagem_compartilham_o_mesmo_espaco_vetorial():
-    """Modelos diferentes para texto e imagem produzem vetores incomparaveis:
-    a busca por texto nunca encontraria uma figura."""
+    """As duas torres tem de ser do MESMO modelo: torres de modelos distintos
+    produzem vetores incomparaveis e a busca por texto nunca encontraria uma
+    figura."""
+    from app.services import embedding
+    import inspect
+
+    fonte = inspect.getsource(embedding)
+    assert embedding.MODELO == "jinaai/jina-clip-v1"
+    # as duas torres sao instanciadas com a MESMA constante
+    assert fonte.count("model_name=MODELO") == 2
+
+
+def test_embedding_nao_depende_de_provider_externo():
+    """O ponto da migracao: nenhum SDK de provider no caminho de embedding."""
     from app.config.settings import Settings
 
-    doc = Settings.model_fields["voyage_doc_model"].default
-    query = Settings.model_fields["voyage_query_model"].default
-    assert doc == query, "doc e query em modelos distintos = espacos incomparaveis"
-    assert "multimodal" in doc, "modelo so-de-texto nao consegue embedar imagem"
+    fonte = (BACKEND / "app/services/embedding.py").read_text()
+    assert "voyageai" not in fonte
+    assert "voyage_doc_model" not in Settings.model_fields
+    linhas = [
+        l.strip() for l in (BACKEND / "requirements.txt").read_text().splitlines()
+        if l.strip() and not l.strip().startswith("#")
+    ]
+    assert not any(l.startswith("voyageai") for l in linhas)
+    assert any(l.startswith("fastembed") for l in linhas)
+
+
+def test_dimensao_bate_com_a_migration():
+    """Modelo, EMBEDDING_DIMENSIONS e o vector(N) do schema tem de concordar.
+    Foi o desalinhamento dos tres que deixou a ingestao quebrada por meses."""
+    from app.config.settings import Settings
+
+    assert Settings.model_fields["embedding_dimensions"].default == 768
+    sql = (BACKEND / "migrations/003_embedding_dim_768_local.sql").read_text()
+    assert "vector(768)" in sql
+
+
+def test_pesos_do_modelo_vao_na_imagem():
+    """Sem isto o primeiro visitante depois de cada deploy espera o download
+    dentro da propria pergunta, e um container sem rede nunca responderia."""
+    dockerfile = (BACKEND / "Dockerfile").read_text()
+    assert "jina-clip-v1" in dockerfile
+    assert "FASTEMBED_CACHE_PATH" in dockerfile
+
+
+def test_embedding_tem_teto_de_concorrencia():
+    """2 nucleos, e as outras demos do portfolio rodam na mesma maquina."""
+    from app.services import embedding
+
+    assert embedding._VAGAS is not None
 
 
 def test_gemini_saiu_por_completo():
@@ -349,27 +392,55 @@ def test_imagem_entra_no_indice_mesmo_sem_descricao():
     assert '"sequencia": ([descricao, imagem] if descricao else [imagem])' in fonte
 
 
-def test_embed_images_manda_a_imagem_e_nao_so_a_legenda(monkeypatch):
+class _ImagemFalsa:
+    """Imita PIL.Image o suficiente para `_e_imagem` reconhecer."""
+
+    size = (10, 10)
+    mode = "RGB"
+
+
+def test_embed_images_manda_a_imagem_para_a_torre_de_visao(monkeypatch):
     from app.services import embedding
 
-    capturado = {}
+    recebidas = []
 
-    class ClienteFalso:
-        def multimodal_embed(self, inputs, model, input_type):
-            capturado["inputs"] = inputs
-            return type("R", (), {"embeddings": [[0.0] * 1024 for _ in inputs]})()
+    class TorreFalsa:
+        def embed(self, imagens):
+            recebidas.extend(imagens)
+            return [[0.0] * 768 for _ in imagens]
 
-    monkeypatch.setattr(embedding, "_get_client", lambda: ClienteFalso())
+    monkeypatch.setattr(embedding, "_imagem", lambda: TorreFalsa())
 
-    class ImagemFalsa:
-        pass
-
-    img = ImagemFalsa()
+    img = _ImagemFalsa()
     embedding.embed_images([img], legendas=["um grafico"])
 
-    sequencia = capturado["inputs"][0]
-    assert img in sequencia, "a imagem nao foi enviada ao modelo"
-    assert "um grafico" in sequencia, "a legenda deveria acompanhar a imagem"
+    assert recebidas == [img], "a imagem nao chegou a torre de visao"
+
+
+def test_sequencia_com_imagem_vai_para_visao_e_texto_para_texto(monkeypatch):
+    """`embed_sequences` roteia por modalidade E preserva a ordem de entrada —
+    se embaralhar, o texto de um chunk casa com o vetor de outro."""
+    from app.services import embedding
+
+    class TorreTexto:
+        def embed(self, textos):
+            return [[1.0] * 768 for _ in textos]
+
+    class TorreImagem:
+        def embed(self, imagens):
+            return [[2.0] * 768 for _ in imagens]
+
+    monkeypatch.setattr(embedding, "_texto", lambda: TorreTexto())
+    monkeypatch.setattr(embedding, "_imagem", lambda: TorreImagem())
+
+    img = _ImagemFalsa()
+    saida = embedding.embed_sequences([
+        ["so texto"],
+        ["descricao", img],
+        ["outro texto"],
+    ])
+
+    assert [v[0] for v in saida] == [1.0, 2.0, 1.0], "roteou ou ordenou errado"
 
 
 def test_pagina_escaneada_nao_some_do_indice():
@@ -383,13 +454,18 @@ def test_pagina_escaneada_nao_some_do_indice():
     assert Pagina(numero=1, texto="tem texto").escaneada is False
 
 
-def test_audio_usa_deepgram_porque_voyage_nao_cobre_audio():
+def test_audio_e_video_usam_deepgram():
     from app.core.ingestion.multimodal import transcrever_audio
     from app.config.settings import Settings
 
     assert "deepgram_api_key" in Settings.model_fields
     fonte = inspect.getsource(transcrever_audio)
     assert "api.deepgram.com" in fonte
+
+    # Video tambem: o modelo local nao embeda video, entao ele entra pela fala.
+    from app.core.ingestion.multimodal import processar_video
+
+    assert "transcrever_audio" in inspect.getsource(processar_video)
 
 
 # ---------------------------------------------------------------------------

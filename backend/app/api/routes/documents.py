@@ -276,7 +276,7 @@ async def ingest(request: Request, body: IngestBody, background_tasks: Backgroun
 
 
 def _png(imagem) -> bytes:
-    """PIL.Image -> bytes PNG. O Claude recebe bytes; o Voyage recebe a Image."""
+    """PIL.Image -> bytes PNG. O Claude recebe bytes; a torre de visao recebe a Image."""
     import io
 
     buf = io.BytesIO()
@@ -410,17 +410,16 @@ async def process_ingestion(doc_id: str, user_id: str, storage_path: str):
         elif mime and mime.startswith("video/"):
             from app.core.ingestion.multimodal import processar_video
 
-            filename = storage_path.split("/")[-1]
-            rotulo, video = await loop.run_in_executor(
-                None, processar_video, data, filename
+            # Video entra pela fala. Ver processar_video: o conteudo VISUAL nao
+            # e indexado, e isso e uma decisao, nao um esquecimento.
+            texto, _ = await loop.run_in_executor(
+                None, processar_video, data, mime
             )
-            itens.append({
-                "texto": rotulo,
-                "enriquecido": rotulo,
-                "sequencia": [video],
-                "page": 1,
-                "chunk_index": 0,
-            })
+            if not texto.strip():
+                raise Exception("No speech detected in video")
+            from app.core.ingestion.chunker import chunk_text
+            for ci, ck in enumerate(chunk_text(texto)):
+                itens.append(_texto(ck, 1, ci))
 
         elif mime == "text/plain":
             text = data.decode("utf-8", errors="replace")

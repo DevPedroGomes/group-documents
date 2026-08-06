@@ -26,6 +26,18 @@ async def _lifespan(app: FastAPI):
     codigo, app subindo normal, e toda ingestao falhando em silencio.
     """
     run_migrations()
+
+    # Carrega a torre de texto agora, em segundo plano, para o PRIMEIRO
+    # visitante depois de um deploy nao pagar os ~15 s de carga do modelo
+    # dentro da propria pergunta. Nao e fatal: se falhar, a primeira chamada
+    # carrega sob demanda. A torre de imagem continua preguicosa de proposito —
+    # a maioria dos documentos e texto puro e as duas juntas custam ~1,7 GB.
+    import asyncio
+
+    from app.services.embedding import aquecer
+
+    asyncio.get_running_loop().run_in_executor(None, aquecer)
+
     yield
 
 
