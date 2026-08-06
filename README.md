@@ -9,13 +9,13 @@ This README reflects the current implementation (commit `ccddc06` and forward): 
 ## Overview
 
 - Backend: FastAPI (Python 3.11) serving REST + Server-Sent Events (SSE), background ingestion via FastAPI `BackgroundTasks`.
-- Frontend: Next.js 14 (App Router, TypeScript) with proxy routes that forward auth + SSE to the backend.
+- Frontend: Next.js 16 (App Router, TypeScript) with proxy routes that forward auth + SSE to the backend.
 - Storage: local PostgreSQL 16 with the `pgvector` extension; uploaded files live on a Docker volume mounted at `/app/uploads`.
 - Cache + rate limiter store: Redis 7.
 - LLM: Anthropic Claude (Sonnet 4 for generation, Haiku 4.5 for cheap calls) or any OpenRouter model, selectable via `LLM_PROVIDER`.
 - Embeddings: Voyage AI (`voyage-3-large` for documents, `voyage-3-lite` for queries, 1536 dimensions).
 - Reranking: Cohere `rerank-v3.5` cross-encoder (optional; pipeline degrades to RRF order if absent).
-- Multi-modal ingest: Google Gemini for images, audio, and video (PDFs use `pypdf`).
+- Multi-modal ingest: images are embedded directly by the vision tower (no captioning step); audio and video are transcribed by Deepgram; PDFs use `pypdf`, and pages with no text layer are rendered by PyMuPDF and take the visual path.
 - Auth: local JWT (HS256) issued by `/auth/login` and `/auth/register`, validated per-request by a FastAPI dependency.
 
 Every chunk row carries a `user_id`. Both `retrieve_documents` and `hybrid_search` require that `user_id` and apply it as a WHERE filter on `chunks` before RRF fusion or reranking — there is no cross-tenant leak even if the caller forgot to scope by document.
@@ -25,14 +25,14 @@ Every chunk row carries a `user_id`. Both `retrieve_documents` and `hybrid_searc
 ```mermaid
 flowchart LR
     User([User browser])
-    Next[Next.js 14<br/>App Router + proxy routes]
+    Next[Next.js 16<br/>App Router + proxy routes]
     API[FastAPI backend<br/>slowapi 30/min on hot routes]
     PG[(PostgreSQL 16<br/>pgvector HNSW + tsvector GIN)]
     Redis[(Redis 7<br/>embedding cache + rate limit store)]
-    Voyage[Voyage AI<br/>voyage-3-large / voyage-3-lite]
-    Cohere[Cohere<br/>rerank-v3.5]
+    Voyage[Voyage AI<br/>voyage-multimodal-3.5<br/>text + image, one vector space]
+    Cohere[Cohere<br/>rerank-4-fast, optional]
     LLM[LLM provider<br/>Anthropic native SDK<br/>or OpenRouter via openai SDK]
-    Gemini[Google Gemini<br/>image / audio / video]
+    Deepgram[Deepgram Nova-3<br/>audio / video speech]
     Disk[(Uploads volume<br/>/app/uploads)]
 
     User -->|HTTPS| Next
@@ -43,12 +43,16 @@ flowchart LR
         API -->|"save_file: uploads_root/{user_id}/docs/{uuid4}.{ext}"| Disk
         API -->|BackgroundTask| Ingest[process_ingestion]
         Ingest -->|PDF| PyPDF[pypdf pages]
-        Ingest -->|image / audio / video| Gemini
+        Ingest -->|audio / video| Deepgram
+        Ingest -->|image| Vision[PIL image, embedded as-is]
+        Ingest -->|PDF page with no text layer| Render[PyMuPDF @150dpi]
         PyPDF --> Chunker[tiktoken sentence chunker<br/>500 tokens, 100 overlap]
-        Gemini --> Chunker
+        Deepgram --> Chunker
         Chunker -->|"per-chunk context (Haiku via llm_client)"| Enrich[Contextual enrichment]
         Enrich -->|enriched text| Voyage
-        Voyage -->|1536-dim vectors| PG
+        Vision --> Voyage
+        Render --> Voyage
+        Voyage -->|1024-dim vectors| PG
         Ingest -->|"raw content + enriched_content"| PG
     end
 
@@ -78,16 +82,16 @@ The `app/core/llm_client.py` module is a thin shim: every call site (generator, 
 
 | Concern | Library / version |
 |---|---|
-| Web framework | `fastapi==0.115.0`, `uvicorn[standard]==0.30.0` |
-| ORM / SQL | `sqlalchemy==2.0.32`, `psycopg2-binary==2.9.9` |
-| Vector store binding | `pgvector==0.2.5` |
-| Validation | `pydantic==2.8.2`, `pydantic-settings>=2.0.0` |
+| Web framework | `fastapi>=0.140`, `uvicorn[standard]>=0.51` |
+| ORM / SQL | `sqlalchemy>=2.0.51`, `psycopg2-binary>=2.9.12` |
+| Vector store binding | `pgvector>=0.5` |
+| Validation | `pydantic>=2.13`, `pydantic-settings>=2.0.0` |
 | Auth | `python-jose[cryptography]>=3.3.0`, `bcrypt>=4.0.0` |
 | LLM SDKs | `anthropic>=0.40.0` (native) and `openai>=1.50.0` (OpenRouter path) |
-| Embeddings | `voyageai>=0.3.0` |
-| Reranker | `cohere>=5.0` |
+| Embeddings | `voyageai>=0.3.0` (`voyage-multimodal-3.5`: texto, imagem e video no mesmo espaco vetorial) |
+| Reranker | `cohere>=5.0` (`rerank-4-fast`, opcional; degrada para a ordem do RRF sem a chave) |
 | Tokenization for chunker | `tiktoken>=0.7.0` (`gpt-4o` encoder) |
-| PDF | `pypdf==5.0.1` |
+| PDF | `pypdf>=6.14` |
 | MIME sniffing | `python-magic==0.4.27` (libmagic) |
 | Multi-modal | `google-generativeai>=0.8.0` |
 | Cache | `redis>=5.0` |
@@ -153,7 +157,7 @@ Two entry points, both rate-limited to `30/minute` per IP via `slowapi`:
 Inside `process_ingestion`:
 
 - For `application/pdf`, `extract_pages_from_pdf` produces a list of page strings (whitespace-collapsed). `chunk_document_pages` then runs the tiktoken-based sentence-boundary splitter at `chunk_size=500` tokens with `chunk_overlap=100`.
-- For images / audio / video, `app/core/ingestion/multimodal.py` uploads the bytes to the Gemini Files API, polls until processing completes, and asks `gemini-2.5-flash-preview-04-17` to describe / transcribe. The returned text is then chunked with the same `chunk_text` splitter.
+- For images, `app/core/ingestion/multimodal.py` embeds the image itself; a Claude-written description is stored alongside it to feed BM25 and give the generator something quotable, but it is not what the vector search sees. Audio and video go to Deepgram and are chunked with the same `chunk_text` splitter.
 - For PDFs, `enrich_chunks_with_context` calls the fast model (Haiku via `llm_client.chat_complete`) once per chunk to generate 2-3 sentences of document-level context, which is prepended before embedding (Anthropic's contextual retrieval). Non-PDF flows currently embed the raw chunk and write `enriched_content = NULL`.
 - Embedding is batched (`batch_size=64`) through `voyage-3-large` with `input_type="document"` and stored together with the raw `content` and the prepended `enriched_content` in `chunks`.
 - A 2-3 sentence document summary is generated by the fast model and saved to `documents.summary`. Document status is moved to `completed`; on any exception it is moved to `failed` with the error in `meta->error`.
@@ -287,7 +291,7 @@ Operational checklist (see also `/root/.claude/CLAUDE.md`):
 | `EMBEDDING_CACHE_TTL` | no | `3600` | |
 | `TAVILY_API_KEY` | no | — | If set, Corrective branch will call Tavily. |
 | `GOOGLE_API_KEY` | no | — | Required for image / audio / video ingest. |
-| `GEMINI_MODEL` | no | `gemini-2.5-flash-preview-04-17` | |
+| `DEEPGRAM_API_KEY` | no | — | Audio and video ingestion. Without it those uploads fail with a clear message. |
 | `RATE_LIMIT_REQUESTS` / `RATE_LIMIT_WINDOW_SECONDS` | no | `30` / `60` | Currently informational; the active limit is set in code as `30/minute`. |
 | `ENABLE_INPUT_GUARDRAILS` | no | `true` | Toggles the injection regex set. |
 | `LANGFUSE_ENABLED` / `LANGFUSE_*` | no | `false` / — | Optional observability. |
