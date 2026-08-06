@@ -54,11 +54,36 @@ def cache_embedding(query: str, embedding: list[float]) -> None:
 
 def get_query_embedding(query: str) -> list[float]:
     """Get query embedding with cache-through pattern."""
-    cached = get_cached_embedding(query)
-    if cached is not None:
-        return cached
+    return get_query_embeddings([query])[0]
 
-    from app.services.embedding import embed_query
-    vector = embed_query(query)
-    cache_embedding(query, vector)
-    return vector
+
+def get_query_embeddings(queries: list[str]) -> list[list[float]]:
+    """Embeddings de VARIAS queries, com no maximo UMA chamada ao provider.
+
+    O retriever gera variantes da pergunta (multi-query) e precisa do embedding
+    de cada uma. Pedir uma por vez custava N requisicoes por pergunta — com o
+    padrao `multi_query_count=3`, quatro. A conta Voyage sem meio de pagamento
+    e limitada a 3 requisicoes por MINUTO, entao toda pergunta INEDITA estourava
+    o limite e o chat morria mostrando o erro cru do provider ao visitante.
+    Pergunta repetida funcionava, porque as variantes vinham do cache — o que
+    fazia a falha parecer intermitente em vez de estrutural.
+
+    Uma requisicao resolve todas as variantes que faltam, independente de
+    quantas sejam.
+    """
+    if not queries:
+        return []
+
+    resultados: list[Optional[list[float]]] = [get_cached_embedding(q) for q in queries]
+    faltando = [i for i, v in enumerate(resultados) if v is None]
+
+    if faltando:
+        from app.services.embedding import embed_queries
+
+        novos = embed_queries([queries[i] for i in faltando])
+        for i, vetor in zip(faltando, novos):
+            resultados[i] = vetor
+            cache_embedding(queries[i], vetor)
+
+    # `or []` so satisfaz o tipo: todo indice foi preenchido acima.
+    return [v or [] for v in resultados]

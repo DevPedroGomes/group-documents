@@ -48,15 +48,31 @@ def embed_documents(texts: list[str]) -> list[list[float]]:
     return vectors
 
 
-def embed_query(text: str) -> list[float]:
-    """Embed a search query using Voyage 4 Lite (optimized for queries)."""
+def embed_queries(texts: list[str]) -> list[list[float]]:
+    """Embed varias queries numa UNICA chamada ao provider.
+
+    A API aceita lista. O custo em tokens e o mesmo de chamar uma a uma, mas
+    conta como 1 requisicao em vez de N — e o limite do plano Voyage sem meio
+    de pagamento e por REQUISICAO (3 por minuto), nao por token.
+    """
+    if not texts:
+        return []
     settings = get_settings()
     client = _get_client()
     result = client.embed(
-        [text],
+        texts,
         model=settings.voyage_query_model,
         input_type="query",
     )
-    vector = result.embeddings[0]
-    _assert_dim(vector, settings.voyage_query_model)
-    return vector
+    vectors = result.embeddings
+    if len(vectors) != len(texts):
+        raise RuntimeError(
+            f"Embedding count mismatch: expected {len(texts)}, got {len(vectors)}"
+        )
+    _assert_dim(vectors[0], settings.voyage_query_model)
+    return vectors
+
+
+def embed_query(text: str) -> list[float]:
+    """Embed a search query. Atalho de uma query so sobre `embed_queries`."""
+    return embed_queries([text])[0]

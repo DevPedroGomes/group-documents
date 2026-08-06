@@ -8,7 +8,7 @@ from typing import Optional
 
 from app.config.settings import get_settings
 from app.core.llm_client import chat_complete
-from app.services.embedding_cache import get_query_embedding
+from app.services.embedding_cache import get_query_embeddings
 from app.services.vector_store import hybrid_search
 from app.core.rag.reranker import rerank_documents
 
@@ -70,8 +70,12 @@ def retrieve_documents(
     # 2. Hybrid search per query variant
     all_results: dict[str, dict] = {}  # keyed by chunk id to deduplicate
 
-    for q in all_queries:
-        query_embedding = get_query_embedding(q)
+    # Todos os embeddings numa chamada so. Um por vez eram 4 requisicoes por
+    # pergunta contra o limite de 3/min do plano Voyage sem cartao: toda
+    # pergunta inedita estourava.
+    embeddings = get_query_embeddings(all_queries)
+
+    for q, query_embedding in zip(all_queries, embeddings):
         results = hybrid_search(
             query_embedding=query_embedding,
             query_text=q,
