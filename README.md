@@ -1,5 +1,7 @@
 # BrainHub Team
 
+[![CI](https://github.com/DevPedroGomes/group-documents/actions/workflows/deploy.yml/badge.svg)](https://github.com/DevPedroGomes/group-documents/actions/workflows/deploy.yml)
+
 A multi-tenant document Q&A platform. Each user uploads PDFs, images, audio, and video into their private workspace, and the system extracts content, generates contextual vector embeddings, and answers questions over the corpus with cited sources via a streaming Corrective-RAG pipeline.
 
 This README reflects the current implementation (commit `ccddc06` and forward): tenant isolation enforced at retrieval, libmagic MIME sniffing on upload, multi-provider LLM routing (Anthropic native or OpenRouter), Redis-backed `slowapi` rate limiting, and a hardened Docker topology behind Traefik.
