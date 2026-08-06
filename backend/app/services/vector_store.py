@@ -152,6 +152,10 @@ def hybrid_search(
             "page": data["page"],
             "snippet": data["snippet"],
             "relevance_score": item["score"],
+            # A escala viaja junto com o numero. Sem isto o grader compara um
+            # score de RRF (maximo 2/(k+1), ~0,033 com k=60) contra um limiar
+            # pensado para a relevancia 0..1 da Cohere, e descarta tudo.
+            "score_scale": "rrf",
         })
 
     return results

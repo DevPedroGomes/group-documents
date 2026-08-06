@@ -148,7 +148,13 @@ async def chat(request: Request, body: ChatBody):
             yield _sse("workflow", workflow)
 
             # Step 3: Transform + Web Search (if needed)
-            if needs_web:
+            #
+            # O rewrite so serve de entrada para a busca web. Sem TAVILY_API_KEY
+            # o resultado dele era calculado, mostrado no painel e jogado fora:
+            # uma chamada paga de LLM por pergunta, sem efeito nenhum na
+            # resposta. Nao vale pagar por um rewrite que nao tem para onde ir.
+            settings = get_settings()
+            if needs_web and settings.tavily_api_key:
                 workflow.append({"step": "transform", "status": "in_progress", "details": "Rewriting query..."})
                 yield _sse("workflow", workflow)
 
@@ -162,31 +168,32 @@ async def chat(request: Request, body: ChatBody):
                 yield _sse("workflow", workflow)
 
                 # Web search fallback
-                settings = get_settings()
-                if settings.tavily_api_key:
-                    workflow.append({"step": "web_search", "status": "in_progress", "details": "Searching the web..."})
+                workflow.append({"step": "web_search", "status": "in_progress", "details": "Searching the web..."})
+                yield _sse("workflow", workflow)
+
+                try:
+                    from tavily import TavilyClient
+                    tavily_client = TavilyClient(api_key=settings.tavily_api_key)
+                    web_results = tavily_client.search(transformed_query, max_results=3)
+
+                    for r in web_results.get("results", []):
+                        filtered_docs.append({
+                            "document_id": "web",
+                            "document_title": r.get("title", "Web Result"),
+                            "page": 0,
+                            "snippet": r.get("content", "")[:500],
+                            "relevance_score": r.get("score", 0.5),
+                            # Score do Tavily, nem RRF nem Cohere. Marcado para
+                            # nao ser confundido com nenhuma das duas escalas.
+                            "score_scale": "tavily",
+                        })
+
+                    workflow[-1] = {"step": "web_search", "status": "completed", "details": f"Found {len(web_results.get('results', []))} web results"}
                     yield _sse("workflow", workflow)
-
-                    try:
-                        from tavily import TavilyClient
-                        tavily_client = TavilyClient(api_key=settings.tavily_api_key)
-                        web_results = tavily_client.search(transformed_query, max_results=3)
-
-                        for r in web_results.get("results", []):
-                            filtered_docs.append({
-                                "document_id": "web",
-                                "document_title": r.get("title", "Web Result"),
-                                "page": 0,
-                                "snippet": r.get("content", "")[:500],
-                                "relevance_score": r.get("score", 0.5),
-                            })
-
-                        workflow[-1] = {"step": "web_search", "status": "completed", "details": f"Found {len(web_results.get('results', []))} web results"}
-                        yield _sse("workflow", workflow)
-                    except Exception as e:
-                        logger.warning(f"Web search failed: {e}")
-                        workflow[-1] = {"step": "web_search", "status": "completed", "details": "Web search unavailable"}
-                        yield _sse("workflow", workflow)
+                except Exception as e:
+                    logger.warning(f"Web search failed: {e}")
+                    workflow[-1] = {"step": "web_search", "status": "completed", "details": "Web search unavailable"}
+                    yield _sse("workflow", workflow)
 
             # Send sources
             if filtered_docs:

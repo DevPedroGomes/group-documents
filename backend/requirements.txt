@@ -21,8 +21,6 @@ anthropic>=0.40.0
 openai>=1.50.0
 voyageai>=0.3.0
 cohere>=5.0
-langgraph>=0.2.0
-langchain-core>=0.3.0
 tiktoken>=0.7.0
 
 # Cache

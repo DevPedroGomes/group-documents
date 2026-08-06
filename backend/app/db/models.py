@@ -80,15 +80,7 @@ messages = Table(
     Column("created_at", TIMESTAMP(timezone=True), server_default=func.now()),
 )
 
-semantic_cache = Table(
-    "semantic_cache", metadata,
-    Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
-    Column("query_hash", Text, nullable=False),
-    Column("query_embedding", Vector(EMBEDDING_DIM)),
-    Column("query_text", Text, nullable=False),
-    Column("response_text", Text, nullable=False),
-    Column("citations", JSON),
-    Column("document_ids", ARRAY(UUID(as_uuid=True))),
-    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now()),
-    Column("expires_at", TIMESTAMP(timezone=True)),
-)
+# A tabela `semantic_cache` foi declarada aqui e nunca escrita nem lida por
+# nenhum caminho do codigo — cache semantico de resposta jamais foi
+# implementado. Removida junto com as configs `semantic_cache_*`. A tabela
+# segue no banco, vazia, e pode ser dropada numa migration futura.

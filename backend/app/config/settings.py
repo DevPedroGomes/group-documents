@@ -49,7 +49,12 @@ class Settings(BaseSettings):
 
     # Reranking (Cohere)
     cohere_api_key: Optional[str] = None
-    cohere_rerank_model: str = "rerank-v3.5"
+    # `rerank-v3.5` foi aposentado em 1/jul/2026 e desde 1/ago/2026 a Cohere
+    # serve `rerank-4-fast` no lugar dele automaticamente. Pedir o sucessor
+    # pelo nome em vez de depender da troca silenciosa do fornecedor — e o
+    # score dele tem distribuicao diferente, entao `relevance_threshold` so
+    # vale depois de recalibrado contra ele (ver core/rag/grader.py).
+    cohere_rerank_model: str = "rerank-4-fast"
     enable_reranking: bool = True
 
     # RAG Pipeline
@@ -64,8 +69,10 @@ class Settings(BaseSettings):
     # Cache (Redis)
     redis_url: str = "redis://localhost:6379"
     embedding_cache_ttl: int = 3600
-    semantic_cache_ttl: int = 3600
-    semantic_cache_threshold: float = 0.85
+    # `semantic_cache_ttl` e `semantic_cache_threshold` sairam junto com a
+    # tabela `semantic_cache` do models.py: nenhum codigo lia nenhum dos tres.
+    # A tabela continua existindo no banco, vazia; pode ser dropada numa
+    # migration quando alguem estiver mexendo no schema por outro motivo.
 
     # Web Search Fallback (Tavily)
     tavily_api_key: Optional[str] = None

@@ -56,6 +56,9 @@ def rerank_documents(
         for result in response.results:
             doc = documents[result.index].copy()
             doc["relevance_score"] = result.relevance_score
+            # So aqui o score passa a ser relevancia calibrada 0..1. E a unica
+            # situacao em que o limiar absoluto do grader faz sentido.
+            doc["score_scale"] = "cohere"
             reranked.append(doc)
 
         return reranked
