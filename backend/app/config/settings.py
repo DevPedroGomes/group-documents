@@ -42,10 +42,28 @@ class Settings(BaseSettings):
     # e o que diferencia os dois lados no Voyage. Modelos distintos produzem
     # espacos vetoriais nao-comparaveis — e voyage-3-lite (512 dims) contra
     # voyage-3-large (1024) nem chega a rodar: pgvector rejeita a comparacao.
-    voyage_doc_model: str = "voyage-3-large"
-    voyage_query_model: str = "voyage-3-large"
+    #
+    # `voyage-multimodal-3.5` embeda texto, imagem e video no MESMO espaco.
+    # E o que permite uma pergunta em texto recuperar uma figura: antes a
+    # imagem virava legenda escrita por um LLM e so a legenda era indexada,
+    # entao tudo que a legenda nao mencionasse deixava de existir para a busca.
+    # Pelo mesmo motivo o texto tambem passa por aqui: manter um modelo so de
+    # texto para os chunks colocaria texto e imagem em espacos incomparaveis.
+    # Custo de troca: em corpus 100% texto um modelo dedicado tende a ser um
+    # pouco melhor. O ganho de recuperar figura, tabela e pagina escaneada
+    # compensa num app que se chama "multi-modal".
+    voyage_doc_model: str = "voyage-multimodal-3.5"
+    voyage_query_model: str = "voyage-multimodal-3.5"
     # Precisa bater com o vector(N) das migrations. Ver migrations/002.
     embedding_dimensions: int = 1024
+    # Abaixo disto uma pagina de PDF e tratada como escaneada e vai para o
+    # caminho visual em vez do textual. `pypdf` devolve string vazia (ou quase)
+    # em pagina que e so imagem — e ate hoje essas paginas simplesmente
+    # sumiam do indice, sem erro nenhum.
+    pdf_min_chars_por_pagina: int = 120
+    # DPI do render da pagina escaneada. 150 e legivel para OCR visual sem
+    # estourar o limite de 16 milhoes de pixels do Voyage.
+    pdf_render_dpi: int = 150
 
     # Reranking (Cohere)
     cohere_api_key: Optional[str] = None
@@ -77,9 +95,21 @@ class Settings(BaseSettings):
     # Web Search Fallback (Tavily)
     tavily_api_key: Optional[str] = None
 
-    # Multimodal (Google Gemini)
-    google_api_key: Optional[str] = None
-    gemini_model: str = "gemini-2.5-flash-preview-04-17"
+    # Multimodal
+    #
+    # O Gemini saiu inteiro. Ele era usado para transformar imagem, audio e
+    # video em texto antes de indexar. Dois problemas: o pacote
+    # `google-generativeai` foi descontinuado pelo Google, e o id configurado
+    # (`gemini-2.5-flash-preview-04-17`) e endpoint de preview ja retirado —
+    # ou seja, o caminho multimodal estava morto por dois motivos ao mesmo
+    # tempo, alem da chave vazia.
+    #
+    # Hoje: imagem e video sao embedados DIRETO pelo Voyage multimodal, e a
+    # descricao textual (que serve ao BM25 e ao gerador, nao a busca vetorial)
+    # sai do Claude, que ja esta configurado e pago. Audio o Voyage nao cobre,
+    # entao vai para o Deepgram — mesma chave que o Transcripts ja usa.
+    deepgram_api_key: Optional[str] = None
+    deepgram_model: str = "nova-3"
 
     # Rate Limiting
     rate_limit_requests: int = 30

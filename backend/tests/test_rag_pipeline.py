@@ -151,9 +151,9 @@ def test_embed_queries_faz_uma_unica_chamada_para_n_textos(monkeypatch):
     chamadas = []
 
     class ClienteFalso:
-        def embed(self, texts, model, input_type):
-            chamadas.append(list(texts))
-            return type("R", (), {"embeddings": [[0.0] * 1024 for _ in texts]})()
+        def multimodal_embed(self, inputs, model, input_type):
+            chamadas.append(list(inputs))
+            return type("R", (), {"embeddings": [[0.0] * 1024 for _ in inputs]})()
 
     monkeypatch.setattr(embedding, "_get_client", lambda: ClienteFalso())
     vetores = embedding.embed_queries(["a", "b", "c", "d"])
@@ -301,3 +301,92 @@ def test_uvicorn_confia_no_proxy_para_enxergar_o_ip_real():
     de 30/minuto para o mundo inteiro."""
     dockerfile = (BACKEND / "Dockerfile").read_text()
     assert "--forwarded-allow-ips" in dockerfile
+
+
+# ---------------------------------------------------------------------------
+# 7. Multimodal: o que e embedado, e o que e so texto de apoio
+#
+# Antes, imagem virava legenda escrita por um LLM e SO a legenda era indexada:
+# tudo que a legenda nao mencionava deixava de existir para a busca. E o
+# caminho estava morto duas vezes — pacote `google-generativeai` descontinuado
+# pelo Google e id de modelo (`gemini-2.5-flash-preview-04-17`) ja retirado.
+# ---------------------------------------------------------------------------
+
+def test_texto_e_imagem_compartilham_o_mesmo_espaco_vetorial():
+    """Modelos diferentes para texto e imagem produzem vetores incomparaveis:
+    a busca por texto nunca encontraria uma figura."""
+    from app.config.settings import Settings
+
+    doc = Settings.model_fields["voyage_doc_model"].default
+    query = Settings.model_fields["voyage_query_model"].default
+    assert doc == query, "doc e query em modelos distintos = espacos incomparaveis"
+    assert "multimodal" in doc, "modelo so-de-texto nao consegue embedar imagem"
+
+
+def test_gemini_saiu_por_completo():
+    """Pacote descontinuado e id de modelo retirado nao voltam pela porta dos
+    fundos."""
+    linhas = [
+        l.strip()
+        for l in (BACKEND / "requirements.txt").read_text().splitlines()
+        if l.strip() and not l.strip().startswith("#")
+    ]
+    assert not any(l.startswith("google-generativeai") for l in linhas)
+
+    from app.config.settings import Settings
+
+    assert "gemini_model" not in Settings.model_fields
+    assert "google_api_key" not in Settings.model_fields
+
+    fonte = (BACKEND / "app/core/ingestion/multimodal.py").read_text()
+    assert "genai" not in fonte
+
+
+def test_imagem_entra_no_indice_mesmo_sem_descricao():
+    """O vetor vem da imagem. Falha ao descrever custa recall no BM25, nao o
+    documento inteiro — antes, sem legenda nao havia documento nenhum."""
+    fonte = (BACKEND / "app/api/routes/documents.py").read_text()
+    assert '"sequencia": ([descricao, imagem] if descricao else [imagem])' in fonte
+
+
+def test_embed_images_manda_a_imagem_e_nao_so_a_legenda(monkeypatch):
+    from app.services import embedding
+
+    capturado = {}
+
+    class ClienteFalso:
+        def multimodal_embed(self, inputs, model, input_type):
+            capturado["inputs"] = inputs
+            return type("R", (), {"embeddings": [[0.0] * 1024 for _ in inputs]})()
+
+    monkeypatch.setattr(embedding, "_get_client", lambda: ClienteFalso())
+
+    class ImagemFalsa:
+        pass
+
+    img = ImagemFalsa()
+    embedding.embed_images([img], legendas=["um grafico"])
+
+    sequencia = capturado["inputs"][0]
+    assert img in sequencia, "a imagem nao foi enviada ao modelo"
+    assert "um grafico" in sequencia, "a legenda deveria acompanhar a imagem"
+
+
+def test_pagina_escaneada_nao_some_do_indice():
+    """pypdf devolve string vazia em pagina que e so imagem. Antes essas
+    paginas sumiam sem erro; 'o documento nao diz' respondia algo que estava
+    escrito na pagina."""
+    from app.core.ingestion.pdf_processor import Pagina, extrair_paginas
+
+    assert callable(extrair_paginas)
+    assert Pagina(numero=1, texto="", imagem=object()).escaneada is True
+    assert Pagina(numero=1, texto="tem texto").escaneada is False
+
+
+def test_audio_usa_deepgram_porque_voyage_nao_cobre_audio():
+    from app.core.ingestion.multimodal import transcrever_audio
+    from app.config.settings import Settings
+
+    assert "deepgram_api_key" in Settings.model_fields
+    fonte = inspect.getsource(transcrever_audio)
+    assert "api.deepgram.com" in fonte

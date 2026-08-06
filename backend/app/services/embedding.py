@@ -30,22 +30,58 @@ def _assert_dim(vector: list[float], model: str) -> None:
         )
 
 
-def embed_documents(texts: list[str]) -> list[list[float]]:
-    """Embed document chunks using Voyage 4 Large (optimized for documents)."""
-    if not texts:
+def embed_sequences(inputs: list[list], input_type: str = "document") -> list[list[float]]:
+    """Chamada crua ao endpoint multimodal.
+
+    `inputs` e uma lista de SEQUENCIAS. Cada sequencia e o conteudo de um item
+    e pode misturar str, PIL.Image e Video na ordem que fizer sentido — e o que
+    permite embedar "esta figura, legendada assim" como uma coisa so.
+    """
+    if not inputs:
         return []
     settings = get_settings()
     client = _get_client()
-    result = client.embed(
-        texts,
+    result = client.multimodal_embed(
+        inputs,
         model=settings.voyage_doc_model,
-        input_type="document",
+        input_type=input_type,
     )
     vectors = result.embeddings
-    if len(vectors) != len(texts):
-        raise RuntimeError(f"Embedding count mismatch: expected {len(texts)}, got {len(vectors)}")
+    if len(vectors) != len(inputs):
+        raise RuntimeError(
+            f"Embedding count mismatch: expected {len(inputs)}, got {len(vectors)}"
+        )
     _assert_dim(vectors[0], settings.voyage_doc_model)
     return vectors
+
+
+def embed_documents(texts: list[str]) -> list[list[float]]:
+    """Embed document chunks. Texto entra pelo modelo multimodal de proposito.
+
+    Usar um modelo so-de-texto aqui e o multimodal nas imagens colocaria os
+    dois em espacos vetoriais incomparaveis, e a busca por texto nunca
+    encontraria uma imagem.
+    """
+    if not texts:
+        return []
+    return embed_sequences([[t] for t in texts], input_type="document")
+
+
+def embed_images(images: list, legendas: list[str] | None = None) -> list[list[float]]:
+    """Embed imagens (PIL.Image) direto, sem passar por legenda.
+
+    Quando ha legenda, ela entra JUNTO no mesmo item — o vetor passa a
+    representar imagem e texto ao mesmo tempo, em vez de um ou outro.
+    """
+    if not images:
+        return []
+    if legendas and len(legendas) != len(images):
+        raise ValueError("legendas e images precisam ter o mesmo tamanho")
+    inputs = [
+        ([legendas[i], img] if legendas and legendas[i] else [img])
+        for i, img in enumerate(images)
+    ]
+    return embed_sequences(inputs, input_type="document")
 
 
 def embed_queries(texts: list[str]) -> list[list[float]]:
@@ -57,20 +93,7 @@ def embed_queries(texts: list[str]) -> list[list[float]]:
     """
     if not texts:
         return []
-    settings = get_settings()
-    client = _get_client()
-    result = client.embed(
-        texts,
-        model=settings.voyage_query_model,
-        input_type="query",
-    )
-    vectors = result.embeddings
-    if len(vectors) != len(texts):
-        raise RuntimeError(
-            f"Embedding count mismatch: expected {len(texts)}, got {len(vectors)}"
-        )
-    _assert_dim(vectors[0], settings.voyage_query_model)
-    return vectors
+    return embed_sequences([[t] for t in texts], input_type="query")
 
 
 def embed_query(text: str) -> list[float]:
