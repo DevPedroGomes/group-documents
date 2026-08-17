@@ -768,28 +768,59 @@ function PreviewModal({
   onClose: () => void
 }) {
   const [url, setUrl] = useState('')
+  const [error, setError] = useState(false)
   const [loading, setLoading] = useState(true)
 
+  // O backend responde o arquivo em si (FileResponse), não um JSON com URL
+  // assinada: isso ficou da época em que o storage era o Supabase. Como a rota
+  // exige Authorization, a <img>/<iframe> não pode apontar direto para ela, então
+  // baixamos o corpo e servimos por um blob: URL local, revogado ao fechar.
   useEffect(() => {
-    (async () => {
+    let objectUrl = ''
+    let cancelled = false
+
+    ;(async () => {
       try {
         const token = await getToken()
         const res = await fetch(`/api/document/${id}/preview`, {
           headers: { Authorization: `Bearer ${token}` },
         })
-        const data = await res.json()
-        setUrl(data.signed_url)
+        if (!res.ok) throw new Error(`preview failed: ${res.status}`)
+        const raw = await res.blob()
+        if (cancelled) return
+        // O backend serve com o content-type inferido do nome do arquivo, que
+        // vira application/octet-stream quando o storage_path perde a extensão
+        // e aí o iframe do PDF baixa em vez de renderizar. O mime gravado no
+        // documento é a fonte confiável.
+        const blob = mime ? new Blob([raw], { type: mime }) : raw
+        objectUrl = URL.createObjectURL(blob)
+        setUrl(objectUrl)
+      } catch {
+        if (!cancelled) setError(true)
       } finally {
-        setLoading(false)
+        if (!cancelled) setLoading(false)
       }
     })()
-  }, [id, getToken])
+
+    return () => {
+      cancelled = true
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+    }
+  }, [id, mime, getToken])
 
   const renderPreview = () => {
     if (loading) {
       return (
         <div className="flex items-center justify-center h-full">
           <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+        </div>
+      )
+    }
+
+    if (error || !url) {
+      return (
+        <div className="flex items-center justify-center h-full px-6 text-center text-sm text-muted-foreground">
+          Could not load a preview for this file.
         </div>
       )
     }

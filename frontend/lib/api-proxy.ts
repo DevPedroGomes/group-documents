@@ -60,10 +60,15 @@ export async function proxyToBackend(
     })
   }
 
-  return new Response(await response.text(), {
+  // Repassa o corpo como stream em vez de `response.text()`: decodificar como
+  // texto corrompe qualquer resposta binária (o preview de PDF, imagem e áudio
+  // vem do backend como arquivo, não como JSON).
+  const outHeaders: Record<string, string> = { 'content-type': contentType }
+  const disposition = response.headers.get('content-disposition')
+  if (disposition) outHeaders['content-disposition'] = disposition
+
+  return new Response(response.body, {
     status: response.status,
-    headers: {
-      'content-type': contentType,
-    },
+    headers: outHeaders,
   })
 }
