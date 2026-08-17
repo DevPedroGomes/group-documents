@@ -213,7 +213,9 @@ export default function KnowledgeHub({ getToken }: KnowledgeHubProps) {
       const res = await fetch('/samples/aurora-coffee-handbook.pdf')
       if (!res.ok) throw new Error('Sample not available')
       const blob = await res.blob()
-      const file = new File([blob], 'aurora-coffee-handbook.pdf', {
+      // `File` aqui e o icone do lucide-react (importado acima), nao o
+      // construtor do DOM: sem o globalThis o type check quebra o build.
+      const file = new globalThis.File([blob], 'aurora-coffee-handbook.pdf', {
         type: 'application/pdf',
       })
 
