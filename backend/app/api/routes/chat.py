@@ -1,5 +1,6 @@
 """Chat routes with SSE streaming and thread management."""
 
+import asyncio
 import json
 import logging
 from typing import AsyncGenerator
@@ -8,6 +9,7 @@ from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import insert, text as sqltext
+from starlette.concurrency import iterate_in_threadpool
 
 from app.config.settings import get_settings
 from app.db.engine import engine
@@ -133,15 +135,25 @@ async def chat(request: Request, body: ChatBody):
         full_answer = ""
         citations = []
 
+        # Todo passo caro daqui para baixo e sincrono (LLM, embedding, SQL) e
+        # roda em thread, nunca no event loop. Com 1 worker do uvicorn, uma
+        # unica pergunta segurava o loop por vezes dezenas de segundos e
+        # congelava TODOS os outros requests do app: login, lista de
+        # documentos, ate o /healthz. Mesmo padrao de process_ingestion.
+        loop = asyncio.get_running_loop()
+
         try:
             # Step 1: Retrieve
             yield _sse("workflow", [{"step": "retrieve", "status": "in_progress", "details": "Searching documents..."}])
 
-            documents = retrieve_documents(
-                question=body.message,
-                user_id=user_id,
-                document_ids=body.document_ids,
-                top_k=5,
+            documents = await loop.run_in_executor(
+                None,
+                lambda: retrieve_documents(
+                    question=body.message,
+                    user_id=user_id,
+                    document_ids=body.document_ids,
+                    top_k=5,
+                ),
             )
 
             workflow = [{"step": "retrieve", "status": "completed", "details": f"Found {len(documents)} chunks"}]
@@ -151,7 +163,9 @@ async def chat(request: Request, body: ChatBody):
             workflow.append({"step": "grade", "status": "in_progress", "details": "Analyzing relevance..."})
             yield _sse("workflow", workflow)
 
-            filtered_docs, needs_web = grade_documents(documents)
+            filtered_docs, needs_web = await loop.run_in_executor(
+                None, grade_documents, documents
+            )
 
             workflow[-1] = {
                 "step": "grade",
@@ -171,7 +185,9 @@ async def chat(request: Request, body: ChatBody):
                 workflow.append({"step": "transform", "status": "in_progress", "details": "Rewriting query..."})
                 yield _sse("workflow", workflow)
 
-                transformed_query = transform_query(body.message)
+                transformed_query = await loop.run_in_executor(
+                    None, transform_query, body.message
+                )
 
                 workflow[-1] = {
                     "step": "transform",
@@ -187,7 +203,10 @@ async def chat(request: Request, body: ChatBody):
                 try:
                     from tavily import TavilyClient
                     tavily_client = TavilyClient(api_key=settings.tavily_api_key)
-                    web_results = tavily_client.search(transformed_query, max_results=3)
+                    web_results = await loop.run_in_executor(
+                        None,
+                        lambda: tavily_client.search(transformed_query, max_results=3),
+                    )
 
                     for r in web_results.get("results", []):
                         filtered_docs.append({
@@ -227,10 +246,12 @@ async def chat(request: Request, body: ChatBody):
             workflow.append({"step": "generate", "status": "in_progress", "details": "Generating answer..."})
             yield _sse("workflow", workflow)
 
-            for token in stream_answer(
-                question=body.message,
-                documents=filtered_docs,
-                history=history,
+            async for token in iterate_in_threadpool(
+                stream_answer(
+                    question=body.message,
+                    documents=filtered_docs,
+                    history=history,
+                )
             ):
                 full_answer += token
                 yield _sse("chunk", token)
