@@ -67,12 +67,13 @@ class Settings(BaseSettings):
 
     # Reranking (Cohere)
     cohere_api_key: Optional[str] = None
-    # `rerank-v3.5` foi aposentado em 1/jul/2026 e desde 1/ago/2026 a Cohere
-    # serve `rerank-4-fast` no lugar dele automaticamente. Pedir o sucessor
-    # pelo nome em vez de depender da troca silenciosa do fornecedor — e o
-    # score dele tem distribuicao diferente, entao `relevance_threshold` so
-    # vale depois de recalibrado contra ele (ver core/rag/grader.py).
-    cohere_rerank_model: str = "rerank-4-fast"
+    # `rerank-4-fast` NAO existe no catalogo da Cohere: a geracao nova se
+    # chama `rerank-v4.0-fast` (e `rerank-v4.0-pro`), e `rerank-v3.5` continua
+    # ativo. Com o nome errado a chamada de rerank falhava e o pipeline caia
+    # em silencio na ordem do RRF. O score do v4 tem distribuicao diferente do
+    # v3.5, entao `relevance_threshold` vale recalibrado contra ele (ver
+    # core/rag/grader.py).
+    cohere_rerank_model: str = "rerank-v4.0-fast"
     enable_reranking: bool = True
 
     # RAG Pipeline

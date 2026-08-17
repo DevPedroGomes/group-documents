@@ -14,11 +14,10 @@ de seguranca entao devolvia 2 chunks em vez de 5, e `needs_web_search` ficava
 permanentemente ligado, disparando um rewrite pago de query a cada pergunta.
 
 A licao nao e "religar a Cohere". E que um limiar absoluto nao pode ser
-comparado contra uma escala que o codigo nao controla — ainda mais agora que a
-Cohere aposentou `rerank-v3.5` (1/jul/2026) e passou a servir `rerank-4-fast`
-no lugar dele desde 1/ago/2026, com distribuicao de score declaradamente
-diferente. Qualquer numero fixo aqui volta a estar errado no dia em que o
-fornecedor troca o modelo por baixo.
+comparado contra uma escala que o codigo nao controla: a Cohere serve hoje
+`rerank-v3.5` e a geracao `rerank-v4.0-*`, com distribuicoes de score
+diferentes entre si. Qualquer numero fixo aqui volta a estar errado no dia em
+que o modelo configurado muda.
 
 Entao: o limiar absoluto so se aplica quando o score e sabidamente calibrado.
 Sem isso, nao ha filtragem honesta a fazer — os candidatos que chegam aqui JA

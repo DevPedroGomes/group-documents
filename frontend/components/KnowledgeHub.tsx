@@ -62,6 +62,7 @@ export default function KnowledgeHub({ getToken }: KnowledgeHubProps) {
   const [urlInput, setUrlInput] = useState('')
   const [isCrawling, setIsCrawling] = useState(false)
   const [urlError, setUrlError] = useState<string | null>(null)
+  const [sampleLoading, setSampleLoading] = useState(false)
 
   // Debounce search query
   const debouncedQuery = useDebounce(query, 400)
@@ -199,6 +200,31 @@ export default function KnowledgeHub({ getToken }: KnowledgeHubProps) {
       setUploadingCount(0)
     }
   }
+
+  // Carrega o documento de exemplo pelo mesmo caminho de upload do visitante:
+  // nada de rota especial no backend, entao o que ele ve e o fluxo real.
+  const loadSampleDoc = useCallback(async () => {
+    setSampleLoading(true)
+    setError(null)
+    try {
+      const token = await getToken()
+      if (!token) throw new Error('Not authenticated')
+
+      const res = await fetch('/samples/aurora-coffee-handbook.pdf')
+      if (!res.ok) throw new Error('Sample not available')
+      const blob = await res.blob()
+      const file = new File([blob], 'aurora-coffee-handbook.pdf', {
+        type: 'application/pdf',
+      })
+
+      const doc = await uploadSingleFile(file, token)
+      if (doc) setDocs(prev => [doc, ...prev])
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not load the sample document')
+    } finally {
+      setSampleLoading(false)
+    }
+  }, [getToken])
 
   // Submit URL for crawl + ingest
   const submitUrl = async () => {
@@ -510,7 +536,12 @@ export default function KnowledgeHub({ getToken }: KnowledgeHubProps) {
               ))}
             </div>
           ) : !hasDocuments ? (
-            <EmptyState query={debouncedQuery} onUpload={() => fileRef.current?.click()} />
+            <EmptyState
+              query={debouncedQuery}
+              onUpload={() => fileRef.current?.click()}
+              onSample={loadSampleDoc}
+              sampleLoading={sampleLoading}
+            />
           ) : (
             <motion.div
               layout
@@ -668,7 +699,7 @@ function DocumentCard({
           <p className="text-[10px] font-mono text-neutral-500 mt-0.5 truncate">
             {doc.chunk_count != null && doc.chunk_count > 0
               ? `${doc.chunk_count} chunks`
-              : '— · indexing'}
+              : 'indexing'}
           </p>
         </div>
 
@@ -697,7 +728,17 @@ function DocumentCard({
 }
 
 // Empty State Component
-function EmptyState({ query, onUpload }: { query: string; onUpload: () => void }) {
+function EmptyState({
+  query,
+  onUpload,
+  onSample,
+  sampleLoading,
+}: {
+  query: string
+  onUpload: () => void
+  onSample: () => void
+  sampleLoading: boolean
+}) {
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
@@ -745,9 +786,22 @@ function EmptyState({ query, onUpload }: { query: string; onUpload: () => void }
               <Upload className="h-4 w-4" />
               Upload first document
             </Button>
-            <span className="text-[11px] font-mono text-neutral-500">
-              <span className="text-blue-300">$</span> upload --any <span className="text-neutral-300">pdf|image|audio|video</span>
-            </span>
+            {/* Sem nenhum arquivo a mao o visitante batia numa tela morta.
+                O exemplo e um handbook de suporte ficticio, com um FAQ em
+                portugues, que ja da o que perguntar no chat. */}
+            <Button
+              variant="ghost"
+              onClick={onSample}
+              disabled={sampleLoading}
+              className="gap-2 text-neutral-300"
+            >
+              {sampleLoading ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Sparkles className="h-4 w-4" />
+              )}
+              {sampleLoading ? 'Loading sample...' : 'Try a sample document'}
+            </Button>
           </div>
         </>
       )}

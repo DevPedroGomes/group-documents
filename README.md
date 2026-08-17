@@ -14,7 +14,7 @@ This README reflects the current implementation (commit `ccddc06` and forward): 
 - Cache + rate limiter store: Redis 7.
 - LLM: Anthropic Claude (Sonnet 4 for generation, Haiku 4.5 for cheap calls) or any OpenRouter model, selectable via `LLM_PROVIDER`.
 - Embeddings: Voyage AI (`voyage-3-large` for documents, `voyage-3-lite` for queries, 1536 dimensions).
-- Reranking: Cohere `rerank-v3.5` cross-encoder (optional; pipeline degrades to RRF order if absent).
+- Reranking: Cohere `rerank-v4.0-fast` cross-encoder (optional; pipeline degrades to RRF order if absent).
 - Multi-modal ingest: images are embedded directly by the vision tower (no captioning step); audio and video are transcribed by Deepgram; PDFs use `pypdf`, and pages with no text layer are rendered by PyMuPDF and take the visual path.
 - Auth: local JWT (HS256) issued by `/auth/login` and `/auth/register`, validated per-request by a FastAPI dependency.
 
@@ -30,7 +30,7 @@ flowchart LR
     PG[(PostgreSQL 16<br/>pgvector HNSW + tsvector GIN)]
     Redis[(Redis 7<br/>embedding cache + rate limit store)]
     Voyage[Voyage AI<br/>voyage-multimodal-3.5<br/>text + image, one vector space]
-    Cohere[Cohere<br/>rerank-4-fast, optional]
+    Cohere[Cohere<br/>rerank-v4.0-fast, optional]
     LLM[LLM provider<br/>Anthropic native SDK<br/>or OpenRouter via openai SDK]
     Deepgram[Deepgram Nova-3<br/>audio / video speech]
     Disk[(Uploads volume<br/>/app/uploads)]
@@ -89,7 +89,7 @@ The `app/core/llm_client.py` module is a thin shim: every call site (generator, 
 | Auth | `python-jose[cryptography]>=3.3.0`, `bcrypt>=4.0.0` |
 | LLM SDKs | `anthropic>=0.40.0` (native) and `openai>=1.50.0` (OpenRouter path) |
 | Embeddings | `voyageai>=0.3.0` (`voyage-multimodal-3.5`: texto, imagem e video no mesmo espaco vetorial) |
-| Reranker | `cohere>=5.0` (`rerank-4-fast`, opcional; degrada para a ordem do RRF sem a chave) |
+| Reranker | `cohere>=5.0` (`rerank-v4.0-fast`, opcional; degrada para a ordem do RRF sem a chave) |
 | Tokenization for chunker | `tiktoken>=0.7.0` (`gpt-4o` encoder) |
 | PDF | `pypdf>=6.14` |
 | MIME sniffing | `python-magic==0.4.27` (libmagic) |
@@ -178,7 +178,7 @@ Inside `process_ingestion`:
      - Keyword: `search_vector @@ plainto_tsquery('english', :query_text)`, ordered by `ts_rank` DESC, LIMIT 15.
    - Both branches carry `AND c.user_id = CAST(:user_id AS uuid)` and an optional `AND c.document_id = ANY(...)` filter, **before** RRF.
    - RRF merge with `k=60`. `enriched_content` (when present) is the snippet shown.
-   - The deduplicated candidate pool (best score per chunk id) is reranked by Cohere `rerank-v3.5` if `COHERE_API_KEY` is set; otherwise the top RRF candidates are returned in place.
+   - The deduplicated candidate pool (best score per chunk id) is reranked by Cohere `rerank-v4.0-fast` if `COHERE_API_KEY` is set; otherwise the top RRF candidates are returned in place.
 6. **Grade.** `grade_documents` keeps chunks whose `relevance_score >= 0.7`. If less than half pass, `needs_web_search=True` is signalled (and `transform_query` plus an optional Tavily call are attempted). When everything is filtered out, the top 2 by score are kept as a safety net.
 7. **Sources event.** Citations (`document_id`, `document_title`, `page`, `snippet[:200]`) are emitted as a `sources` SSE event; "web" results from Tavily are excluded from citations.
 8. **Generate.** `stream_answer` builds the system prompt + history + `Context from documents:\n\n... \n\nQuestion: ...` user turn and calls `llm_client.chat_stream` with the configured `generation_model`. Tokens are emitted as `chunk` SSE events.
@@ -279,7 +279,7 @@ Operational checklist (see also `/root/.claude/CLAUDE.md`):
 | `VOYAGE_QUERY_MODEL` | no | `voyage-3-lite` | |
 | `EMBEDDING_DIMENSIONS` | no | `1536` | Must match the `vector(N)` schema. |
 | `COHERE_API_KEY` | no | — | If unset, reranking is skipped. |
-| `COHERE_RERANK_MODEL` | no | `rerank-v3.5` | |
+| `COHERE_RERANK_MODEL` | no | `rerank-v4.0-fast` | |
 | `ENABLE_RERANKING` | no | `true` | |
 | `CHUNK_SIZE` / `CHUNK_OVERLAP` | no | `500` / `100` | Token counts via tiktoken `gpt-4o` encoder. |
 | `SIMILARITY_TOP_K` | no | `5` | |

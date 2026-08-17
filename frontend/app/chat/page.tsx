@@ -199,7 +199,7 @@ function EmptyState({ onSuggestionClick }: { onSuggestionClick: (msg: string) =>
         Ask anything.
       </h2>
       <p className="text-sm text-neutral-400 max-w-md mb-8 leading-relaxed">
-        The pipeline retrieves, grades, rewrites and answers — every claim bound to a source span
+        The pipeline retrieves, grades, rewrites and answers, every claim bound to a source span
         from your selected documents.
       </p>
 

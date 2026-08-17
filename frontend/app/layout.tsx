@@ -4,9 +4,9 @@ import { AuthProvider } from '@/contexts/AuthContext'
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://group-documents.pgdev.com.br"),
-  title: "BrainHub — multimodal RAG that grades its own retrieval",
+  title: "BrainHub: multimodal RAG that grades its own retrieval",
   description:
-    "Upload documents and ask. A LangGraph corrective-RAG pipeline retrieves, reranks, grades what it found, rewrites the query and falls back to web search when the answer is not in your files.",
+    "Upload documents and ask. A corrective-RAG pipeline retrieves, reranks, grades what it found, rewrites the query and falls back to web search when the answer is not in your files.",
   authors: [{ name: "Pedro Gomes", url: "https://gomio.com.br" }],
   creator: "Pedro Gomes",
   // Sem openGraph/twitter o link vira URL crua no LinkedIn, no WhatsApp e no
@@ -16,16 +16,16 @@ export const metadata: Metadata = {
     url: "https://group-documents.pgdev.com.br",
     siteName: "Gomio",
     locale: "en_US",
-    title: "BrainHub — multimodal RAG that grades its own retrieval",
+    title: "BrainHub: multimodal RAG that grades its own retrieval",
     description:
-      "Upload documents and ask. A LangGraph corrective-RAG pipeline retrieves, reranks, grades what it found, rewrites the query and falls back to web search when the answer is not in your files.",
-    images: [{ url: "/og.png", width: 1200, height: 630, alt: "BrainHub — multimodal RAG over your own documents" }],
+      "Upload documents and ask. A corrective-RAG pipeline retrieves, reranks, grades what it found, rewrites the query and falls back to web search when the answer is not in your files.",
+    images: [{ url: "/og.png", width: 1200, height: 630, alt: "BrainHub: multimodal RAG over your own documents" }],
   },
   twitter: {
     card: "summary_large_image",
-    title: "BrainHub — multimodal RAG that grades its own retrieval",
+    title: "BrainHub: multimodal RAG that grades its own retrieval",
     description:
-      "Upload documents and ask. A LangGraph corrective-RAG pipeline retrieves, reranks, grades what it found, rewrites the query and falls back to web search when the answer is not in your files.",
+      "Upload documents and ask. A corrective-RAG pipeline retrieves, reranks, grades what it found, rewrites the query and falls back to web search when the answer is not in your files.",
     images: ["/og.png"],
   },
 };

@@ -19,32 +19,32 @@ const PIPELINE = [
   {
     icon: FileText,
     title: 'Multi-modal ingest',
-    desc: 'PDFs go through pypdf. Images, audio, and video are extracted via Google Gemini. libmagic sniffs MIME at upload, not extension.',
+    desc: 'PDFs go through pypdf. Images and video are embedded directly by Voyage, audio is transcribed by Deepgram. libmagic sniffs MIME at upload, not extension.',
     trace: 'mime: application/pdf · 4.2MB · 287 chunks',
   },
   {
     icon: Cpu,
     title: 'Embed & index',
-    desc: 'Voyage AI dual-tier embeddings — voyage-3-large for documents, voyage-3-lite for queries. tsvector built in parallel for keyword search.',
-    trace: 'voyage-3-large · 1536d · pgvector HNSW',
+    desc: 'One multimodal Voyage model embeds documents and queries, so text, images and video share a single vector space. tsvector built in parallel for keyword search.',
+    trace: 'voyage-multimodal-3.5 · 1024d · pgvector HNSW',
   },
   {
     icon: Search,
     title: 'Hybrid retrieval',
     desc: 'Semantic and BM25 searches run in parallel, fused via Reciprocal Rank Fusion, then reranked by a Cohere cross-encoder for the final top-k.',
-    trace: 'rrf_k=60 · top_k=12 · rerank=8',
+    trace: 'rrf_k=60 · top_k=5 · rerank=5',
   },
   {
     icon: ShieldCheck,
     title: 'Corrective grading',
     desc: 'Retrieved chunks are scored by an LLM grader. Below threshold? Query is rewritten and retried. Still weak? Falls back to Tavily web search.',
-    trace: 'sim_threshold=0.72 · max_retries=2',
+    trace: 'relevance_threshold=0.7 · rewrite + web fallback',
   },
   {
     icon: MessageSquare,
     title: 'Grounded synthesis',
     desc: 'Claude Sonnet writes the answer from verified context only, with strict source citations, streaming token-by-token.',
-    trace: 'claude-sonnet-4 · stream=true · cite=strict',
+    trace: 'claude-sonnet-5 · stream=true · cite=strict',
   },
 ]
 
@@ -58,7 +58,7 @@ const MODALITIES = [
 const STATS = [
   { value: '5',     label: 'Pipeline stages' },
   { value: '4',     label: 'Modalities' },
-  { value: '1536',  label: 'Vector dimensions' },
+  { value: '1024',  label: 'Vector dimensions' },
   { value: '<2s',   label: 'P95 latency' },
 ]
 
@@ -79,7 +79,7 @@ const FEATURES = [
     icon: Globe,
     label: '03 / Fallback',
     title: 'Tavily web pass on weak context',
-    desc: 'When local retrieval scores below threshold and rewriting fails, the pipeline performs a Tavily web pass before answering — never silently fabricates.',
+    desc: 'When local retrieval scores below threshold and rewriting fails, the pipeline performs a Tavily web pass before answering, never silently fabricates.',
   },
   {
     icon: CheckCircle2,
@@ -90,8 +90,8 @@ const FEATURES = [
   {
     icon: Users,
     label: '05 / Workspace',
-    title: 'Shared corpus, private threads',
-    desc: 'Everyone in the team sees the same documents and benefits from the same retrieval. Chat threads and prompt history stay private per user.',
+    title: 'Private workspace per account',
+    desc: 'Documents, retrieval and chat threads are scoped to the account that uploaded them. Nothing is shared across accounts, at any layer.',
   },
   {
     icon: ShieldCheck,
@@ -113,7 +113,7 @@ const STACK = [
   'React 19',
   'Turbopack',
   'Tavily',
-  'Google Gemini',
+  'Deepgram Nova-3',
   'libmagic',
 ]
 
@@ -232,7 +232,7 @@ export default function Landing() {
         className="max-w-7xl mx-auto px-6 sm:px-8 pt-16 pb-20 md:pt-20 md:pb-24"
       >
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-10 lg:gap-12 items-center">
-          {/* Left column — text */}
+          {/* Left column: text */}
           <div className="lg:col-span-7">
             <div className="flex items-center gap-3 mb-8">
               <span className="text-[10px] font-mono uppercase tracking-widest text-blue-400">
@@ -282,7 +282,7 @@ export default function Landing() {
             </div>
           </div>
 
-          {/* Right column — chat preview mock */}
+          {/* Right column: chat preview mock */}
           <div className="lg:col-span-5 lg:pl-4">
             <div
               className="relative rounded-3xl bg-white/[0.04] ring-1 ring-white/10 border-gradient backdrop-blur p-5 sm:p-6 fade-slide-in"
@@ -314,8 +314,7 @@ export default function Landing() {
                 <div className="flex-1 max-w-[85%]">
                   <div className="rounded-2xl rounded-tl-sm bg-white/5 ring-1 ring-white/10 px-3.5 py-2.5 text-sm text-neutral-100 leading-relaxed">
                     Two issues surfaced. First, three vendors lacked SOC 2 attestation by Q3 close.
-                    Second, an unbudgeted <span className="text-blue-300">$48k overrun</span> on the analytics line —
-                    flagged as material in the audit memo.
+                    Second, an unbudgeted <span className="text-blue-300">$48k overrun</span> on the analytics line,                     flagged as material in the audit memo.
                   </div>
 
                   <div className="flex flex-wrap gap-1.5 mt-2.5">
@@ -379,7 +378,7 @@ export default function Landing() {
           <div className="lg:col-span-8 lg:pt-10">
             <p className="text-neutral-400 text-base leading-relaxed max-w-2xl">
               Every question follows the exact same path. When retrieval is weak, the pipeline
-              rewrites the query or falls back to web — it never silently lowers the bar to keep
+              rewrites the query or falls back to web, it never silently lowers the bar to keep
               up appearances.
             </p>
           </div>
@@ -506,7 +505,7 @@ export default function Landing() {
       <section id="auth" className="border-t border-white/10">
         <div className="max-w-6xl mx-auto px-6 sm:px-8 py-20 sm:py-24">
           <div className="grid grid-cols-1 md:grid-cols-12 gap-10 lg:gap-14 items-start">
-            {/* Left — editorial CTA copy */}
+            {/* Left: editorial CTA copy */}
             <div className="md:col-span-7 md:pt-6">
               <span className="text-[10px] font-mono uppercase tracking-widest text-blue-400">
                 Get started
@@ -517,7 +516,7 @@ export default function Landing() {
                 your own Notion.
               </h2>
               <p className="mt-5 text-neutral-400 text-base max-w-lg leading-relaxed">
-                Drop everything your team has into one workspace. Ask anything.
+                Drop everything you have into one workspace. Ask anything.
                 Get cited answers in seconds.
               </p>
 
@@ -532,7 +531,7 @@ export default function Landing() {
               </div>
             </div>
 
-            {/* Right — auth form */}
+            {/* Right: auth form */}
             <div className="md:col-span-5">
               <AuthForm />
             </div>
