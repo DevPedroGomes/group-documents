@@ -384,7 +384,7 @@ export default function KnowledgeHub({ getToken }: KnowledgeHubProps) {
                 Library
               </h1>
               <p className="mt-2 text-neutral-400 text-sm max-w-md leading-relaxed">
-                Search the team corpus. Select documents to take into a chat.
+                Search your corpus. Select documents to take into a chat.
               </p>
             </div>
 
@@ -761,7 +761,7 @@ function EmptyState({
             Nothing matches that.
           </h2>
           <p className="text-sm text-neutral-400 max-w-md mb-7 leading-relaxed">
-            Try a different search term, or drop in something the team is missing.
+            Try a different search term, or drop in what is missing.
           </p>
           <div className="flex flex-wrap items-center gap-4">
             <Button onClick={onUpload} className="gap-2">
@@ -776,7 +776,7 @@ function EmptyState({
       ) : (
         <>
           <h2 className="text-2xl sm:text-3xl font-semibold tracking-tighter text-white mb-3">
-            Drop your team&apos;s
+            Drop your
             <br />
             knowledge in.
           </h2>

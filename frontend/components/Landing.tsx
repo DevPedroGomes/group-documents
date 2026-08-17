@@ -186,7 +186,7 @@ export default function Landing() {
               <FileStack className="h-4 w-4 text-white" />
             </div>
             <span className="font-semibold tracking-tight text-white">BrainHub</span>
-            <span className="hidden sm:inline-block text-[11px] font-mono text-neutral-500 ml-1">/ team</span>
+            <span className="hidden sm:inline-block text-[11px] font-mono text-neutral-500 ml-1">/ rag</span>
           </div>
           <div className="flex items-center gap-2">
             <button
@@ -526,7 +526,7 @@ export default function Landing() {
                 <span>brainhub</span>
                 <span className="text-neutral-700">init</span>
                 <span className="text-neutral-700">--workspace</span>
-                <span className="text-blue-300">your-team</span>
+                <span className="text-blue-300">my-workspace</span>
                 <span className="ml-1 inline-block w-2 h-3.5 bg-blue-300/80 animate-pulse" />
               </div>
             </div>
