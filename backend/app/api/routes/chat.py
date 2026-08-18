@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import time
 from typing import AsyncGenerator
 
 from fastapi import APIRouter, Request, HTTPException
@@ -81,16 +82,96 @@ def get_thread_history(thread_id: str, user_id: str, limit: int = 20) -> list[di
     ]
 
 
-def save_message(thread_id: str, role: str, content: str, citations: list | None = None):
+def save_message(
+    thread_id: str, role: str, content: str, citations: list | None = None
+) -> str | None:
+    """Grava a mensagem e devolve o id dela.
+
+    O id volta porque a trilha de decisao aponta para a resposta que produziu:
+    sem ele a decisao ficaria orfa e o "por que ele respondeu isso?" nao teria
+    ancora na conversa.
+    """
     citations_json = json.dumps(citations) if citations else None
     with engine.begin() as conn:
-        conn.execute(
+        row = conn.execute(
             sqltext("""
                 INSERT INTO messages (id, thread_id, role, content, citations, created_at)
                 VALUES (gen_random_uuid(), :thread_id, :role, :content, CAST(:citations AS jsonb), NOW())
+                RETURNING id
             """),
             {"thread_id": thread_id, "role": role, "content": content, "citations": citations_json},
-        )
+        ).first()
+    return str(row[0]) if row else None
+
+
+def _resumo_trechos(docs: list[dict]) -> list[dict]:
+    """Metadado dos trechos para a trilha: sem o texto, que ja vive em `chunks`."""
+    return [
+        {
+            "document_id": str(d.get("document_id", "")),
+            "document_title": d.get("document_title"),
+            "page": d.get("page"),
+            "score": round(float(d.get("relevance_score", 0) or 0), 6),
+            "score_scale": d.get("score_scale", "rrf"),
+        }
+        for d in docs
+    ]
+
+
+def save_decision(
+    *,
+    user_id: str,
+    thread_id: str,
+    message_id: str | None,
+    question: str,
+    retrieved: list[dict],
+    graded: list[dict],
+    web_used: bool,
+    low_confidence: bool,
+    answered: bool,
+    latency_ms: int,
+) -> None:
+    """Persiste o caminho que produziu uma resposta.
+
+    Nunca derruba a resposta: se a gravacao da trilha falhar, o visitante ja
+    recebeu o texto e perder a trilha e menos grave que devolver erro.
+    """
+    escala = (graded or retrieved or [{}])[0].get("score_scale", "rrf")
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                sqltext("""
+                    INSERT INTO decisions (
+                        user_id, thread_id, message_id, question,
+                        retrieved, graded, considered, kept,
+                        score_scale, reranked, low_confidence, web_used,
+                        answered, latency_ms
+                    ) VALUES (
+                        :user_id, :thread_id, :message_id, :question,
+                        CAST(:retrieved AS jsonb), CAST(:graded AS jsonb), :considered, :kept,
+                        :score_scale, :reranked, :low_confidence, :web_used,
+                        :answered, :latency_ms
+                    )
+                """),
+                {
+                    "user_id": user_id,
+                    "thread_id": thread_id,
+                    "message_id": message_id,
+                    "question": question[:4000],
+                    "retrieved": json.dumps(_resumo_trechos(retrieved)),
+                    "graded": json.dumps(_resumo_trechos(graded)),
+                    "considered": len(retrieved),
+                    "kept": len(graded),
+                    "score_scale": escala,
+                    "reranked": escala == "cohere",
+                    "low_confidence": low_confidence,
+                    "web_used": web_used,
+                    "answered": answered,
+                    "latency_ms": latency_ms,
+                },
+            )
+    except Exception:
+        logger.warning("nao consegui gravar a trilha de decisao", exc_info=True)
 
 
 # --- Chat endpoint (SSE streaming) ---
@@ -135,6 +216,14 @@ async def chat(request: Request, body: ChatBody):
         full_answer = ""
         citations = []
 
+        # A trilha da decisao. Ate aqui esses numeros so existiam dentro do
+        # painel de workflow, que some quando a pagina recarrega.
+        iniciado_em = time.monotonic()
+        recuperados: list[dict] = []
+        aprovados: list[dict] = []
+        baixa_confianca = False
+        usou_web = False
+
         # Todo passo caro daqui para baixo e sincrono (LLM, embedding, SQL) e
         # roda em thread, nunca no event loop. Com 1 worker do uvicorn, uma
         # unica pergunta segurava o loop por vezes dezenas de segundos e
@@ -156,6 +245,7 @@ async def chat(request: Request, body: ChatBody):
                 ),
             )
 
+            recuperados = list(documents)
             workflow = [{"step": "retrieve", "status": "completed", "details": f"Found {len(documents)} chunks"}]
             yield _sse("workflow", workflow)
 
@@ -166,6 +256,10 @@ async def chat(request: Request, body: ChatBody):
             filtered_docs, needs_web = await loop.run_in_executor(
                 None, grade_documents, documents
             )
+            # `needs_web` do grader significa "o lote recuperado foi ruim": e a
+            # mesma condicao que sinaliza baixa confianca na resposta.
+            aprovados = list(filtered_docs)
+            baixa_confianca = bool(needs_web)
 
             workflow[-1] = {
                 "step": "grade",
@@ -220,6 +314,7 @@ async def chat(request: Request, body: ChatBody):
                             "score_scale": "tavily",
                         })
 
+                    usou_web = True
                     workflow[-1] = {"step": "web_search", "status": "completed", "details": f"Found {len(web_results.get('results', []))} web results"}
                     yield _sse("workflow", workflow)
                 except Exception as e:
@@ -278,8 +373,25 @@ async def chat(request: Request, body: ChatBody):
 
         finally:
             # Save assistant message
+            message_id = None
             if full_answer:
-                save_message(thread_id, "assistant", full_answer, citations)
+                message_id = save_message(thread_id, "assistant", full_answer, citations)
+
+            # A trilha e gravada mesmo quando a geracao falhou: saber ate onde
+            # o pipeline chegou antes de quebrar e justamente o que se procura
+            # depois. Nesse caso `message_id` fica nulo e `answered` falso.
+            save_decision(
+                user_id=user_id,
+                thread_id=thread_id,
+                message_id=message_id,
+                question=body.message,
+                retrieved=recuperados,
+                graded=aprovados,
+                web_used=usou_web,
+                low_confidence=baixa_confianca,
+                answered=bool(full_answer),
+                latency_ms=int((time.monotonic() - iniciado_em) * 1000),
+            )
 
     return StreamingResponse(
         generate_sse(),
@@ -290,6 +402,99 @@ async def chat(request: Request, body: ChatBody):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# --- Trilha de decisao ---
+#
+# Responder com a fonte citada e o padrao do mercado. O que quase nenhum RAG
+# mostra e o CAMINHO: quantos trechos foram considerados, quantos sobreviveram
+# ao grader, em que escala esta o score, se o rerank rodou e se a resposta saiu
+# da rede de seguranca. Sem isso, "por que ele respondeu isso?" nao tem resposta
+# depois que a pagina recarrega.
+
+
+@router.get("/decisions/{message_id}")
+@limiter.limit("60/minute")
+async def get_decision(request: Request, message_id: str):
+    """Devolve a trilha que produziu uma resposta especifica."""
+    user_id = await require_user(request)
+
+    with engine.begin() as conn:
+        row = conn.execute(
+            sqltext("""
+                SELECT id, thread_id, message_id, question, retrieved, graded,
+                       considered, kept, score_scale, reranked, low_confidence,
+                       web_used, answered, latency_ms, created_at
+                FROM decisions
+                WHERE message_id = CAST(:message_id AS uuid) AND user_id = CAST(:user_id AS uuid)
+            """),
+            {"message_id": message_id, "user_id": user_id},
+        ).mappings().first()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="No decision trail for that message")
+
+    return _decision_payload(row)
+
+
+@router.get("/decisions")
+@limiter.limit("60/minute")
+async def list_decisions(request: Request, thread_id: str | None = None, limit: int = 50):
+    """Lista as trilhas do usuario, da mais recente para a mais antiga."""
+    user_id = await require_user(request)
+    limit = max(1, min(limit, 200))
+
+    sql = """
+        SELECT id, thread_id, message_id, question, retrieved, graded,
+               considered, kept, score_scale, reranked, low_confidence,
+               web_used, answered, latency_ms, created_at
+        FROM decisions
+        WHERE user_id = CAST(:user_id AS uuid)
+    """
+    params: dict = {"user_id": user_id, "limit": limit}
+    if thread_id:
+        sql += " AND thread_id = CAST(:thread_id AS uuid)"
+        params["thread_id"] = thread_id
+    sql += " ORDER BY created_at DESC LIMIT :limit"
+
+    with engine.begin() as conn:
+        rows = conn.execute(sqltext(sql), params).mappings().all()
+
+    return {"decisions": [_decision_payload(r) for r in rows]}
+
+
+def _decision_payload(row) -> dict:
+    """Formata a linha, explicando a escala do score em vez de so devolver o numero.
+
+    Um score 0,03 e otimo em RRF e pessimo em Cohere. Mandar o numero cru para a
+    tela sem dizer a escala foi exatamente o bug que fazia toda resposta sair
+    com aviso de baixa confianca.
+    """
+    escala = row["score_scale"] or "rrf"
+    explicacao = {
+        "cohere": "Score calibrado do reranker, de 0 a 1.",
+        "rrf": "Score de fusao das buscas (RRF). Fica na casa de 0,01 a 0,03 mesmo quando o trecho e bom.",
+        "tavily": "Score do buscador web, criterio proprio.",
+    }.get(escala, "Escala nao identificada.")
+
+    return {
+        "id": str(row["id"]),
+        "thread_id": str(row["thread_id"]) if row["thread_id"] else None,
+        "message_id": str(row["message_id"]) if row["message_id"] else None,
+        "question": row["question"],
+        "retrieved": row["retrieved"],
+        "graded": row["graded"],
+        "considered": row["considered"],
+        "kept": row["kept"],
+        "score_scale": escala,
+        "score_scale_hint": explicacao,
+        "reranked": row["reranked"],
+        "low_confidence": row["low_confidence"],
+        "web_used": row["web_used"],
+        "answered": row["answered"],
+        "latency_ms": row["latency_ms"],
+        "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+    }
 
 
 @router.get("/threads")
