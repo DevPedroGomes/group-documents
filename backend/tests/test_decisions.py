@@ -312,3 +312,42 @@ def test_corte_filtra_pelo_documento_e_nao_pelo_chunk():
     # a existencia dele.
     fonte = inspect.getsource(vector_store.hybrid_search)
     assert "c.created_at <= CAST(:as_of" not in fonte
+
+
+# ---------------------------------------------------------------------------
+# 9. O grafo sai do que ja esta persistido, sem banco de grafo novo
+# ---------------------------------------------------------------------------
+
+def test_grafo_le_da_trilha_e_isola_por_usuario():
+    fonte = inspect.getsource(chat_route.knowledge_graph)
+    assert "FROM decisions" in fonte
+    assert "user_id = CAST(:user_id AS uuid)" in fonte
+    # A janela e o limite sao presos: sem isso um acervo grande viraria uma
+    # resposta de megabytes e um layout que trava o navegador.
+    assert "min(days, 365)" in fonte
+    assert "min(limit, 1000)" in fonte
+
+
+def test_grafo_nao_conta_o_mesmo_documento_duas_vezes_na_mesma_resposta():
+    # Uma resposta que usou tres trechos do MESMO arquivo mostra uma aresta, e
+    # o peso do documento sobe um, nao tres. Senao um arquivo grande domina o
+    # desenho so por ter mais pedaços.
+    fonte = inspect.getsource(chat_route.knowledge_graph)
+    assert "usados = set()" in fonte
+    assert "if doc_id not in usados:" in fonte
+
+
+def test_web_nao_vira_no_do_acervo():
+    # Resultado de busca web nao e documento do cliente e nao entra no grafo
+    # dele: misturar os dois faria o acervo parecer maior do que e.
+    fonte = inspect.getsource(chat_route.knowledge_graph)
+    assert 'doc_id == "web"' in fonte
+
+
+def test_divergencia_liga_documento_a_documento():
+    # O par de arquivos que se contradiz e o que a pessoa precisa abrir. Ligar
+    # a divergencia a pergunta esconderia justamente isso.
+    fonte = inspect.getsource(chat_route.knowledge_graph)
+    trecho = fonte[fonte.find("conflito ="):]
+    assert '"type": "DIVERGE"' in trecho
+    assert '"source": a' in trecho and '"target": b' in trecho

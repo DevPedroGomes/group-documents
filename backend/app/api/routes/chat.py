@@ -549,6 +549,111 @@ def _decision_payload(row) -> dict:
     }
 
 
+# --- O acervo como grafo ---
+#
+# POR QUE ISTO E UM ENDPOINT E NAO UM BANCO DE GRAFO: a tentacao aqui e trocar
+# Postgres por Neo4j. Nao vale. As arestas que interessam ja existem como
+# relacao no schema (uma decisao usou um documento; dois documentos divergiram;
+# uma pergunta puxou os mesmos arquivos que outra), e montar isso em SQL custa
+# uma query. O valor do grafo esta na TELA, em ver o acervo se conectando; nao
+# no motor. Trocar de banco traria multi-tenancy, backup e operacao novos para
+# resolver um problema que o Postgres ja resolve neste tamanho.
+
+
+@router.get("/graph")
+@limiter.limit("30/minute")
+async def knowledge_graph(request: Request, days: int = 30, limit: int = 300):
+    """Monta o grafo do acervo a partir do que a trilha de decisao ja registrou.
+
+    Nos:   documento (tamanho = quantas vezes foi usado numa resposta)
+           pergunta  (uma por decisao)
+    Arestas:
+      pergunta -> documento : USOU      (o trecho sobreviveu ao grader)
+      documento -> documento: DIVERGE   (a checagem apontou contradicao)
+    """
+    user_id = await require_user(request)
+    days = max(1, min(days, 365))
+    limit = max(10, min(limit, 1000))
+
+    with engine.begin() as conn:
+        linhas = conn.execute(
+            sqltext("""
+                SELECT id, question, graded, conflict, low_confidence, created_at
+                FROM decisions
+                WHERE user_id = CAST(:user_id AS uuid)
+                  AND created_at >= NOW() - CAST(:janela AS interval)
+                ORDER BY created_at DESC
+                LIMIT :limit
+            """),
+            {"user_id": user_id, "janela": f"{days} days", "limit": limit},
+        ).mappings().all()
+
+    documentos: dict[str, dict] = {}
+    perguntas: list[dict] = []
+    arestas: list[dict] = []
+
+    for linha in linhas:
+        did_pergunta = f"q:{linha['id']}"
+        perguntas.append({
+            "id": did_pergunta,
+            "type": "question",
+            "label": (linha["question"] or "")[:90],
+            "low_confidence": bool(linha["low_confidence"]),
+            "created_at": linha["created_at"].isoformat() if linha["created_at"] else None,
+        })
+
+        usados = set()
+        for trecho in (linha["graded"] or []):
+            doc_id = trecho.get("document_id")
+            if not doc_id or doc_id == "web":
+                continue
+            no = documentos.setdefault(doc_id, {
+                "id": f"d:{doc_id}",
+                "type": "document",
+                "label": trecho.get("document_title") or "documento",
+                "uses": 0,
+                "conflicts": 0,
+            })
+            if doc_id not in usados:
+                no["uses"] += 1
+                usados.add(doc_id)
+                arestas.append({
+                    "source": did_pergunta,
+                    "target": no["id"],
+                    "type": "USOU",
+                    "score": trecho.get("score"),
+                })
+
+        # A divergencia liga documento a documento, e e o par que o usuario
+        # precisa abrir: sao os dois arquivos que dizem coisas diferentes.
+        conflito = linha["conflict"] or {}
+        if conflito.get("summary"):
+            ids = [d for d in usados]
+            for i in range(len(ids)):
+                for j in range(i + 1, len(ids)):
+                    a, b = f"d:{ids[i]}", f"d:{ids[j]}"
+                    arestas.append({
+                        "source": a,
+                        "target": b,
+                        "type": "DIVERGE",
+                        "summary": conflito["summary"][:200],
+                    })
+                    for k in (ids[i], ids[j]):
+                        documentos[k]["conflicts"] += 1
+
+    return {
+        "nodes": list(documentos.values()) + perguntas,
+        "edges": arestas,
+        "window_days": days,
+        "legend": {
+            "document": "Documento do seu acervo. Quanto maior, mais respostas ele sustentou.",
+            "question": "Uma pergunta feita ao acervo.",
+            "USOU": "A resposta se apoiou neste documento.",
+            "DIVERGE": "Estes dois documentos se contradisseram numa resposta.",
+        },
+    }
+
+
 @router.get("/threads")
 async def list_threads(request: Request):
     """List user's conversation threads."""
