@@ -175,3 +175,91 @@ def test_leitura_da_trilha_filtra_por_usuario():
     for fn in (chat_route.get_decision, chat_route.list_decisions):
         fonte = inspect.getsource(fn)
         assert "user_id = CAST(:user_id AS uuid)" in fonte
+
+
+# ---------------------------------------------------------------------------
+# 7. Divergencia entre fontes: portao deterministico, aviso nunca decisao
+# ---------------------------------------------------------------------------
+
+from app.core.rag import conflict as conflict_mod
+
+
+def _trecho(doc_id: str, titulo: str, texto: str) -> dict:
+    return {"document_id": doc_id, "document_title": titulo, "page": 1, "snippet": texto}
+
+
+def test_nao_chama_o_modelo_quando_ha_um_documento_so(monkeypatch):
+    # Um documento nao diverge de si mesmo no escopo de uma resposta, e rodar a
+    # checagem ali seria pagar por nada.
+    def explode(**kwargs):
+        raise AssertionError("nao devia chamar o modelo")
+
+    monkeypatch.setattr(conflict_mod, "chat_complete", explode)
+    trechos = [_trecho("d1", "Contrato", "prazo de 30 dias"),
+               _trecho("d1", "Contrato", "entrega em Salvador")]
+    assert conflict_mod.detectar_conflito(trechos) is None
+
+
+def test_avisa_quando_o_modelo_aponta_divergencia(monkeypatch):
+    monkeypatch.setattr(
+        conflict_mod, "chat_complete",
+        lambda **kw: '{"conflict": true, "summary": "O prazo difere entre os documentos.", "sources": ["Contrato", "Aditivo"]}',
+    )
+    aviso = conflict_mod.detectar_conflito([
+        _trecho("d1", "Contrato", "prazo de 30 dias"),
+        _trecho("d2", "Aditivo", "prazo de 15 dias uteis"),
+    ])
+    assert aviso["summary"].startswith("O prazo difere")
+    assert aviso["sources"] == ["Contrato", "Aditivo"]
+
+
+def test_falha_do_modelo_nao_derruba_a_resposta(monkeypatch):
+    def explode(**kw):
+        raise RuntimeError("provider fora do ar")
+
+    monkeypatch.setattr(conflict_mod, "chat_complete", explode)
+    assert conflict_mod.detectar_conflito([
+        _trecho("d1", "A", "x"), _trecho("d2", "B", "y"),
+    ]) is None
+
+
+def test_conflito_sem_explicacao_nao_vira_aviso(monkeypatch):
+    # Alarme sem conteudo treina o usuario a ignorar o alarme.
+    monkeypatch.setattr(conflict_mod, "chat_complete",
+                        lambda **kw: '{"conflict": true, "summary": "  ", "sources": []}')
+    assert conflict_mod.detectar_conflito([
+        _trecho("d1", "A", "x"), _trecho("d2", "B", "y"),
+    ]) is None
+
+
+def test_json_embrulhado_em_cerca_e_lido(monkeypatch):
+    monkeypatch.setattr(
+        conflict_mod, "chat_complete",
+        lambda **kw: '```json\n{"conflict": true, "summary": "diverge", "sources": ["A"]}\n```',
+    )
+    aviso = conflict_mod.detectar_conflito([
+        _trecho("d1", "A", "x"), _trecho("d2", "B", "y"),
+    ])
+    assert aviso and aviso["summary"] == "diverge"
+
+
+def test_deteccao_pode_ser_desligada_por_configuracao(monkeypatch):
+    class Fake:
+        enable_conflict_detection = False
+        fast_model = "x"
+
+    monkeypatch.setattr(conflict_mod, "get_settings", lambda: Fake())
+    monkeypatch.setattr(conflict_mod, "chat_complete",
+                        lambda **kw: (_ for _ in ()).throw(AssertionError("nao devia chamar")))
+    assert conflict_mod.detectar_conflito([
+        _trecho("d1", "A", "x"), _trecho("d2", "B", "y"),
+    ]) is None
+
+
+def test_o_aviso_nao_filtra_nem_reordena_as_fontes():
+    # O invariante do projeto: o modelo redige, nao decide. A divergencia
+    # aparece ao lado da resposta; nenhuma fonte e descartada por causa dela.
+    fonte = inspect.getsource(chat_route.chat)
+    trecho = fonte[fonte.find("detectar_conflito"):fonte.find("# Send sources")]
+    assert "filtered_docs =" not in trecho
+    assert "conflito = await" in trecho

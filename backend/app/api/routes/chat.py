@@ -23,6 +23,7 @@ from app.core.rag.generator import stream_answer
 from app.core.rag.transformer import transform_query
 from app.core.rag.retriever import retrieve_documents
 from app.core.rag.grader import grade_documents
+from app.core.rag.conflict import detectar_conflito
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +131,7 @@ def save_decision(
     low_confidence: bool,
     answered: bool,
     latency_ms: int,
+    conflict: dict | None = None,
 ) -> None:
     """Persiste o caminho que produziu uma resposta.
 
@@ -145,12 +147,12 @@ def save_decision(
                         user_id, thread_id, message_id, question,
                         retrieved, graded, considered, kept,
                         score_scale, reranked, low_confidence, web_used,
-                        answered, latency_ms
+                        answered, latency_ms, conflict
                     ) VALUES (
                         :user_id, :thread_id, :message_id, :question,
                         CAST(:retrieved AS jsonb), CAST(:graded AS jsonb), :considered, :kept,
                         :score_scale, :reranked, :low_confidence, :web_used,
-                        :answered, :latency_ms
+                        :answered, :latency_ms, CAST(:conflict AS jsonb)
                     )
                 """),
                 {
@@ -168,6 +170,7 @@ def save_decision(
                     "web_used": web_used,
                     "answered": answered,
                     "latency_ms": latency_ms,
+                    "conflict": json.dumps(conflict) if conflict else None,
                 },
             )
     except Exception:
@@ -223,6 +226,7 @@ async def chat(request: Request, body: ChatBody):
         aprovados: list[dict] = []
         baixa_confianca = False
         usou_web = False
+        conflito: dict | None = None
 
         # Todo passo caro daqui para baixo e sincrono (LLM, embedding, SQL) e
         # roda em thread, nunca no event loop. Com 1 worker do uvicorn, uma
@@ -322,6 +326,28 @@ async def chat(request: Request, body: ChatBody):
                     workflow[-1] = {"step": "web_search", "status": "completed", "details": "Web search unavailable"}
                     yield _sse("workflow", workflow)
 
+            # Passo: as fontes divergem entre si?
+            #
+            # Roda depois do grade porque so interessa o que de fato sobrou, e
+            # antes do generate porque o aviso acompanha a resposta na tela. O
+            # portao e deterministico (dois ou mais documentos distintos), a
+            # checagem e do modelo, e o resultado e AVISO: nada e filtrado.
+            if len({d.get("document_id") for d in filtered_docs if d.get("document_id") != "web"}) >= 2:
+                workflow.append({"step": "conflict", "status": "in_progress", "details": "Comparing sources..."})
+                yield _sse("workflow", workflow)
+
+                conflito = await loop.run_in_executor(None, detectar_conflito, filtered_docs)
+
+                workflow[-1] = {
+                    "step": "conflict",
+                    "status": "completed",
+                    "details": "Sources disagree" if conflito else "No disagreement found",
+                }
+                yield _sse("workflow", workflow)
+
+                if conflito:
+                    yield _sse("conflict", conflito)
+
             # Send sources
             if filtered_docs:
                 sources = [
@@ -390,6 +416,7 @@ async def chat(request: Request, body: ChatBody):
                 web_used=usou_web,
                 low_confidence=baixa_confianca,
                 answered=bool(full_answer),
+                conflict=conflito,
                 latency_ms=int((time.monotonic() - iniciado_em) * 1000),
             )
 
@@ -424,7 +451,7 @@ async def get_decision(request: Request, message_id: str):
             sqltext("""
                 SELECT id, thread_id, message_id, question, retrieved, graded,
                        considered, kept, score_scale, reranked, low_confidence,
-                       web_used, answered, latency_ms, created_at
+                       web_used, answered, latency_ms, conflict, created_at
                 FROM decisions
                 WHERE message_id = CAST(:message_id AS uuid) AND user_id = CAST(:user_id AS uuid)
             """),
@@ -447,7 +474,7 @@ async def list_decisions(request: Request, thread_id: str | None = None, limit: 
     sql = """
         SELECT id, thread_id, message_id, question, retrieved, graded,
                considered, kept, score_scale, reranked, low_confidence,
-               web_used, answered, latency_ms, created_at
+               web_used, answered, latency_ms, conflict, created_at
         FROM decisions
         WHERE user_id = CAST(:user_id AS uuid)
     """
@@ -492,6 +519,7 @@ def _decision_payload(row) -> dict:
         "low_confidence": row["low_confidence"],
         "web_used": row["web_used"],
         "answered": row["answered"],
+        "conflict": row["conflict"],
         "latency_ms": row["latency_ms"],
         "created_at": row["created_at"].isoformat() if row["created_at"] else None,
     }

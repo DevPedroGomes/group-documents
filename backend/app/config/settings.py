@@ -121,6 +121,11 @@ class Settings(BaseSettings):
 
     # Tetos diarios GLOBAIS (ver core/budget.py). Os rate limits acima limitam
     # UM chamador; nenhum deles limita todos juntos nem alguem criando contas.
+    # Aviso de divergencia entre fontes. Desligavel por env porque e uma
+    # chamada paga a mais por resposta (modelo barato, teto de 220 tokens) e
+    # so dispara quando sobraram trechos de dois ou mais documentos.
+    enable_conflict_detection: bool = True
+
     daily_chat_limit: int = 300
     daily_ingest_limit: int = 100
 
