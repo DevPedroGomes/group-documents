@@ -131,6 +131,8 @@ def _linha(escala: str) -> dict:
         "low_confidence": False,
         "web_used": False,
         "answered": True,
+        "conflict": None,
+        "as_of": None,
         "latency_ms": 1200,
         "created_at": None,
     }
@@ -260,9 +262,16 @@ def test_o_aviso_nao_filtra_nem_reordena_as_fontes():
     # O invariante do projeto: o modelo redige, nao decide. A divergencia
     # aparece ao lado da resposta; nenhuma fonte e descartada por causa dela.
     fonte = inspect.getsource(chat_route.chat)
-    trecho = fonte[fonte.find("detectar_conflito"):fonte.find("# Send sources")]
+    inicio = fonte.find("# Passo: as fontes divergem")
+    fim = fonte.find("# Send sources")
+    assert inicio != -1 and fim > inicio, "o bloco de divergencia mudou de lugar"
+    trecho = fonte[inicio:fim]
+
+    # Roda fora do event loop, como todo passo caro deste arquivo.
+    assert "conflito = await loop.run_in_executor" in trecho
+    # E nao toca na lista de fontes: nada de reatribuir nem reordenar.
     assert "filtered_docs =" not in trecho
-    assert "conflito = await" in trecho
+    assert "filtered_docs.sort" not in trecho
 
 
 # ---------------------------------------------------------------------------
