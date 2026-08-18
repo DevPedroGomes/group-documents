@@ -8,7 +8,7 @@ from typing import AsyncGenerator
 
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 from sqlalchemy import insert, text as sqltext
 from starlette.concurrency import iterate_in_threadpool
 
@@ -34,8 +34,26 @@ class ChatBody(BaseModel):
     message: str
     document_ids: list[str] | None = None
     thread_id: str | None = None
+    # Recorte temporal: responde com o acervo como ele estava nesta data.
+    # Consulta vira auditoria quando da para perguntar "e em janeiro?".
+    as_of: str | None = None
 
     model_config = ConfigDict(str_strip_whitespace=True)
+
+    @field_validator("as_of")
+    @classmethod
+    def _valida_as_of(cls, v: str | None) -> str | None:
+        """Data invalida tem que virar 422 aqui, nao erro de CAST no Postgres."""
+        if not v:
+            return None
+        from datetime import datetime
+
+        texto = v.replace("Z", "+00:00")
+        try:
+            datetime.fromisoformat(texto)
+        except ValueError:
+            raise ValueError("as_of precisa ser uma data ISO, como 2026-01-31 ou 2026-01-31T23:59:59Z")
+        return texto
 
 
 # --- Thread management ---
@@ -132,6 +150,7 @@ def save_decision(
     answered: bool,
     latency_ms: int,
     conflict: dict | None = None,
+    as_of: str | None = None,
 ) -> None:
     """Persiste o caminho que produziu uma resposta.
 
@@ -147,12 +166,13 @@ def save_decision(
                         user_id, thread_id, message_id, question,
                         retrieved, graded, considered, kept,
                         score_scale, reranked, low_confidence, web_used,
-                        answered, latency_ms, conflict
+                        answered, latency_ms, conflict, as_of
                     ) VALUES (
                         :user_id, :thread_id, :message_id, :question,
                         CAST(:retrieved AS jsonb), CAST(:graded AS jsonb), :considered, :kept,
                         :score_scale, :reranked, :low_confidence, :web_used,
-                        :answered, :latency_ms, CAST(:conflict AS jsonb)
+                        :answered, :latency_ms, CAST(:conflict AS jsonb),
+                        CAST(:as_of AS timestamptz)
                     )
                 """),
                 {
@@ -171,6 +191,7 @@ def save_decision(
                     "answered": answered,
                     "latency_ms": latency_ms,
                     "conflict": json.dumps(conflict) if conflict else None,
+                    "as_of": as_of,
                 },
             )
     except Exception:
@@ -245,6 +266,7 @@ async def chat(request: Request, body: ChatBody):
                     question=body.message,
                     user_id=user_id,
                     document_ids=body.document_ids,
+                    as_of=body.as_of,
                     top_k=5,
                 ),
             )
@@ -417,6 +439,7 @@ async def chat(request: Request, body: ChatBody):
                 low_confidence=baixa_confianca,
                 answered=bool(full_answer),
                 conflict=conflito,
+                as_of=body.as_of,
                 latency_ms=int((time.monotonic() - iniciado_em) * 1000),
             )
 
@@ -451,7 +474,7 @@ async def get_decision(request: Request, message_id: str):
             sqltext("""
                 SELECT id, thread_id, message_id, question, retrieved, graded,
                        considered, kept, score_scale, reranked, low_confidence,
-                       web_used, answered, latency_ms, conflict, created_at
+                       web_used, answered, latency_ms, conflict, as_of, created_at
                 FROM decisions
                 WHERE message_id = CAST(:message_id AS uuid) AND user_id = CAST(:user_id AS uuid)
             """),
@@ -474,7 +497,7 @@ async def list_decisions(request: Request, thread_id: str | None = None, limit: 
     sql = """
         SELECT id, thread_id, message_id, question, retrieved, graded,
                considered, kept, score_scale, reranked, low_confidence,
-               web_used, answered, latency_ms, conflict, created_at
+               web_used, answered, latency_ms, conflict, as_of, created_at
         FROM decisions
         WHERE user_id = CAST(:user_id AS uuid)
     """
@@ -520,6 +543,7 @@ def _decision_payload(row) -> dict:
         "web_used": row["web_used"],
         "answered": row["answered"],
         "conflict": row["conflict"],
+        "as_of": row["as_of"].isoformat() if row["as_of"] else None,
         "latency_ms": row["latency_ms"],
         "created_at": row["created_at"].isoformat() if row["created_at"] else None,
     }

@@ -48,6 +48,7 @@ def retrieve_documents(
     question: str,
     user_id: str,
     document_ids: Optional[list[str]] = None,
+    as_of: Optional[str] = None,
     top_k: int = 5,
 ) -> list[dict]:
     """
@@ -82,6 +83,7 @@ def retrieve_documents(
             user_id=user_id,
             top_k=search_top_k,
             document_ids=document_ids,
+            as_of=as_of,
         )
         for r in results:
             rid = r["id"]

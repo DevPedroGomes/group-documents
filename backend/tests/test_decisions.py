@@ -263,3 +263,43 @@ def test_o_aviso_nao_filtra_nem_reordena_as_fontes():
     trecho = fonte[fonte.find("detectar_conflito"):fonte.find("# Send sources")]
     assert "filtered_docs =" not in trecho
     assert "conflito = await" in trecho
+
+
+# ---------------------------------------------------------------------------
+# 8. Corte temporal: responder com o acervo como ele estava numa data
+# ---------------------------------------------------------------------------
+
+import pytest
+from pydantic import ValidationError
+
+from app.services import vector_store
+
+
+def test_as_of_invalido_e_recusado_antes_de_chegar_no_banco():
+    # String livre chegava no CAST do Postgres e virava 500 no meio do stream.
+    with pytest.raises(ValidationError):
+        chat_route.ChatBody(message="oi", as_of="mes passado")
+
+
+@pytest.mark.parametrize("valor", ["2026-01-31", "2026-01-31T23:59:59Z", "2026-01-31T23:59:59+00:00"])
+def test_as_of_aceita_formatos_iso(valor):
+    assert chat_route.ChatBody(message="oi", as_of=valor).as_of
+
+
+def test_as_of_vazio_vira_nulo():
+    assert chat_route.ChatBody(message="oi", as_of="").as_of is None
+
+
+def test_corte_temporal_vale_nas_duas_pernas_da_busca():
+    # A busca e hibrida: filtrar so a perna semantica deixaria o recorte vazar
+    # pela perna de palavra-chave, e o resultado misturaria as duas epocas.
+    fonte = inspect.getsource(vector_store.hybrid_search)
+    assert fonte.count("{data_filter}") == 2
+    assert "d.created_at <= CAST(:as_of AS timestamptz)" in fonte
+
+
+def test_corte_filtra_pelo_documento_e_nao_pelo_chunk():
+    # Reprocessar um documento nao pode faze-lo aparecer num recorte anterior
+    # a existencia dele.
+    fonte = inspect.getsource(vector_store.hybrid_search)
+    assert "c.created_at <= CAST(:as_of" not in fonte

@@ -56,12 +56,19 @@ def hybrid_search(
     user_id: str,
     top_k: int = 5,
     document_ids: Optional[list[str]] = None,
+    as_of: Optional[str] = None,
 ) -> list[dict]:
     """
     Hybrid search: semantic (pgvector) + keyword (tsvector) fused with RRF.
     Returns top_k results sorted by combined RRF score.
 
     `user_id` is REQUIRED — every chunk read is filtered by ownership.
+
+    `as_of` responde com o acervo COMO ELE ESTAVA numa data: so entram
+    documentos ingeridos ate ali. E o que separa consulta de auditoria, e sai
+    barato porque a ingestao ja registra `created_at` em `documents`. Filtra
+    pelo documento, nao pelo chunk: reprocessar um documento nao deve fazer ele
+    aparecer num recorte anterior a existencia dele.
 
     Sobre o campo `snippet`, que e o texto que chega ao gerador:
 
@@ -94,6 +101,11 @@ def hybrid_search(
         "limit": prefetch,
     }
 
+    data_filter = ""
+    if as_of:
+        params["as_of"] = as_of
+        data_filter = "AND d.created_at <= CAST(:as_of AS timestamptz)"
+
     if document_ids:
         valid_ids = []
         for did in document_ids:
@@ -116,6 +128,7 @@ def hybrid_search(
         WHERE 1 - (c.embedding <=> CAST(:qvec AS vector)) >= 0.1
         AND c.user_id = CAST(:user_id AS uuid)
         {doc_filter}
+        {data_filter}
         ORDER BY c.embedding <=> CAST(:qvec AS vector)
         LIMIT :limit
     """)
@@ -130,6 +143,7 @@ def hybrid_search(
         WHERE c.search_vector @@ plainto_tsquery('english', :query_text)
         AND c.user_id = CAST(:user_id AS uuid)
         {doc_filter}
+        {data_filter}
         ORDER BY score DESC
         LIMIT :limit
     """)
