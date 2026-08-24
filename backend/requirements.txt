@@ -23,6 +23,10 @@ voyageai>=0.3.0
 cohere>=5.0
 tiktoken>=0.7.0
 
+# Nucleo compartilhado do portfolio: teto de gasto, trilha de decisao e fila.
+# Pinado por tag: um `main` que anda sozinho quebraria producao sem commit aqui.
+agent-ops @ git+https://github.com/DevPedroGomes/agent-ops.git@v0.1.2
+
 # Cache
 redis>=5.0
 
