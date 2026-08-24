@@ -344,8 +344,11 @@ def test_gemini_saiu_por_completo():
 
 def test_imagem_entra_no_indice_mesmo_sem_descricao():
     """O vetor vem da imagem. Falha ao descrever custa recall no BM25, nao o
-    documento inteiro — antes, sem legenda nao havia documento nenhum."""
-    fonte = (BACKEND / "app/api/routes/documents.py").read_text()
+    documento inteiro — antes, sem legenda nao havia documento nenhum.
+
+    `process_ingestion` mora em `app/jobs/ingestao.py` desde a Fase 2 Task 5;
+    o teste segue o codigo."""
+    fonte = (BACKEND / "app/jobs/ingestao.py").read_text()
     assert '"sequencia": ([descricao, imagem] if descricao else [imagem])' in fonte
 
 
