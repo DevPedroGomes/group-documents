@@ -17,8 +17,10 @@ import os
 
 from agent_ops import queue
 from arq.connections import RedisSettings
+from sqlalchemy import text as sqltext
 
 from app.db.engine import engine
+from app.db.migrate import _LOCK_KEY
 from app.jobs.ingestao import process_ingestion
 
 logger = logging.getLogger(__name__)
@@ -53,26 +55,43 @@ async def _ao_subir(ctx) -> None:
 
     O web (`app/db/migrate.py`) chama o MESMO `aplicar_schema` no proprio boot,
     e no deploy os dois processos sobem ao mesmo tempo. `CREATE TABLE IF NOT
-    EXISTS` nao e atomico entre duas sessoes Postgres concorrentes: pode
-    levantar erro de chave duplicada em `pg_type`/`pg_class` em vez de uma das
-    duas simplesmente vencer em silencio. Essa e uma corrida ESPERADA (nao uma
-    falha de schema), entao aqui — do lado do worker — ela e tolerada: loga e
-    segue. O worker PRECISA subir mesmo sozinho (sem o web por perto), entao
-    nunca faz sentido derrubar o boot por causa dela. O `except` e amplo de
-    proposito (nao so a excecao da corrida), mas o log preserva o traceback e o
-    tipo, entao um problema de schema genuino continua visivel — so nao
-    encerra o worker.
+    EXISTS` nao e atomico entre duas sessoes Postgres concorrentes: sem
+    coordenacao, pode levantar erro de chave duplicada em `pg_type`/`pg_class`
+    em vez de uma das duas simplesmente vencer em silencio.
+
+    A corrida e fechada aqui tomando o MESMO lock advisory que `migrate.py` usa
+    para serializar replicas do web entre si (`_LOCK_KEY`, importado — nao
+    duplicado — de la: duas copias da mesma constante que um dia divergem sao
+    piores que uma corrida ocasional). Com o lock, web e worker esperam a vez
+    um do outro antes de rodar `aplicar_schema`, entao a corrida de
+    `pg_type`/`pg_class` deixa de ser alcancavel.
+
+    O `try/except` continua aqui, agora como cinto-e-suspensorio: o worker
+    PRECISA subir mesmo sozinho (sem o web por perto, ou se o lock falhar por
+    algum motivo de infra), entao nunca faz sentido derrubar o boot por causa
+    disto. O `except` e amplo de proposito (nao so a excecao da corrida), mas o
+    log preserva o traceback e o tipo, entao um problema de schema genuino
+    continua visivel — so nao encerra o worker.
     """
-    try:
-        queue.aplicar_schema(engine)
-    except Exception as exc:
-        logger.exception(
-            "worker.aplicar_schema_tolerado erro=%s: %s — seguindo o boot "
-            "(a tabela existe de um jeito ou de outro; se nao for a corrida "
-            "com o web, o proximo `marcar`/`ler` vai logar de novo)",
-            type(exc).__name__,
-            exc,
-        )
+    with engine.connect() as conn:
+        conn.execute(sqltext("SELECT pg_advisory_lock(:k)"), {"k": _LOCK_KEY})
+        try:
+            queue.aplicar_schema(engine)
+        except Exception as exc:
+            logger.exception(
+                "worker.aplicar_schema_tolerado erro=%s: %s — seguindo o boot "
+                "(a tabela existe de um jeito ou de outro; o log preserva o "
+                "tipo caso nao seja apenas uma corrida)",
+                type(exc).__name__,
+                exc,
+            )
+        finally:
+            # Fecha qualquer transacao pendente antes do unlock, senao o
+            # proprio unlock reabriria uma e a conexao morreria com tx aberta
+            # (mesmo motivo do finally identico em migrate.py).
+            conn.rollback()
+            conn.execute(sqltext("SELECT pg_advisory_unlock(:k)"), {"k": _LOCK_KEY})
+            conn.commit()
 
 
 class WorkerSettings:

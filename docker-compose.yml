@@ -95,6 +95,48 @@ services:
       - "traefik.http.middlewares.group-documents-api-security.headers.referrerPolicy=strict-origin-when-cross-origin"
       - "traefik.http.middlewares.group-documents-api-security.headers.frameDeny=true"
 
+  worker:
+    image: ghcr.io/devpedrogomes/group-documents/backend:latest
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: group-documents-worker
+    restart: unless-stopped
+    command: ["arq", "app.jobs.worker.WorkerSettings"]
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp
+    env_file:
+      - ./backend/.env
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://brainhub:${DB_PASSWORD}@central-db:5432/brainhub
+      - UPLOADS_PATH=/app/uploads
+      - REDIS_URL=redis://redis:6379
+      # Mesmo motivo do backend: metering falha fechado sem isto.
+      - AGENT_OPS_REDIS_URL=redis://redis:6379
+      - AGENT_OPS_PROJETO=brainhub
+    volumes:
+      # O worker LE os arquivos que a API gravou. Sem este mount, toda ingestao
+      # falha com "arquivo nao encontrado" — e falha no worker, longe de quem
+      # subiu o arquivo.
+      - uploads:/app/uploads
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      # Sem HTTP para checar: basta o processo estar de pe.
+      test: ["CMD-SHELL", "pgrep -f 'arq app.jobs.worker' > /dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    networks:
+      - internal
+      - databases
+
   frontend:
     image: ghcr.io/devpedrogomes/group-documents/frontend:latest
     build:
