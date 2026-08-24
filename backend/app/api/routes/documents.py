@@ -150,9 +150,15 @@ async def upload_file(
         logger.error(f"DB error creating document: {e}")
         raise HTTPException(500, "Error creating document record")
 
-    # Idempotencia por (tenant, conteudo): reenviar o mesmo arquivo nao
-    # reprocessa nem recobra. `job_id_de` da o mesmo id na volta, para o
-    # cliente conseguir acompanhar mesmo quando o trabalho ja estava na fila.
+    # O digest identifica ESTA ingestao (a linha criada + o arquivo gravado),
+    # nao o CONTEUDO do arquivo: `doc_id` e `storage_path` sao novos a cada
+    # requisicao. Entao reenviar o mesmo arquivo gera outro digest e roda de
+    # novo — nao ha dedup entre requisicoes, e nao havia como haver: a cota ja
+    # foi consumida acima, antes de qualquer consulta de deduplicacao.
+    # Dedup real exigiria hash do conteudo e uma linha `(tenant, digest)` em
+    # Postgres consultada ANTES do `consumir`, que esta fora de escopo aqui.
+    # O que este digest entrega: um `job_id` deterministico, para o cliente
+    # acompanhar o proprio upload mesmo quando `enfileirar` devolve None.
     digest = digerir(f"{doc_id}:{storage_path}")
     job_id = job_id_de(digest, tenant=user_id)
     try:
@@ -250,9 +256,15 @@ async def crawl_url(request: Request, body: CrawlBody):
         logger.error(f"DB error creating document: {e}")
         raise HTTPException(500, "Error creating document record")
 
-    # Idempotencia por (tenant, conteudo): reenviar o mesmo arquivo nao
-    # reprocessa nem recobra. `job_id_de` da o mesmo id na volta, para o
-    # cliente conseguir acompanhar mesmo quando o trabalho ja estava na fila.
+    # O digest identifica ESTA ingestao (a linha criada + o arquivo gravado),
+    # nao o CONTEUDO do arquivo: `doc_id` e `storage_path` sao novos a cada
+    # requisicao. Entao reenviar o mesmo arquivo gera outro digest e roda de
+    # novo — nao ha dedup entre requisicoes, e nao havia como haver: a cota ja
+    # foi consumida acima, antes de qualquer consulta de deduplicacao.
+    # Dedup real exigiria hash do conteudo e uma linha `(tenant, digest)` em
+    # Postgres consultada ANTES do `consumir`, que esta fora de escopo aqui.
+    # O que este digest entrega: um `job_id` deterministico, para o cliente
+    # acompanhar o proprio upload mesmo quando `enfileirar` devolve None.
     digest = digerir(f"{doc_id}:{storage_path}")
     job_id = job_id_de(digest, tenant=user_id)
     try:
@@ -324,9 +336,15 @@ async def ingest(request: Request, body: IngestBody):
         logger.error(f"DB error creating document: {e}")
         raise HTTPException(500, "Error creating document record")
 
-    # Idempotencia por (tenant, conteudo): reenviar o mesmo arquivo nao
-    # reprocessa nem recobra. `job_id_de` da o mesmo id na volta, para o
-    # cliente conseguir acompanhar mesmo quando o trabalho ja estava na fila.
+    # O digest identifica ESTA ingestao (a linha criada + o arquivo gravado),
+    # nao o CONTEUDO do arquivo: `doc_id` e `storage_path` sao novos a cada
+    # requisicao. Entao reenviar o mesmo arquivo gera outro digest e roda de
+    # novo — nao ha dedup entre requisicoes, e nao havia como haver: a cota ja
+    # foi consumida acima, antes de qualquer consulta de deduplicacao.
+    # Dedup real exigiria hash do conteudo e uma linha `(tenant, digest)` em
+    # Postgres consultada ANTES do `consumir`, que esta fora de escopo aqui.
+    # O que este digest entrega: um `job_id` deterministico, para o cliente
+    # acompanhar o proprio upload mesmo quando `enfileirar` devolve None.
     digest = digerir(f"{doc_id}:{body.storage_path}")
     job_id = job_id_de(digest, tenant=user_id)
     try:
