@@ -27,6 +27,10 @@ tiktoken>=0.7.0
 # Pinado por tag: um `main` que anda sozinho quebraria producao sem commit aqui.
 agent-ops @ git+https://github.com/DevPedroGomes/agent-ops.git@v0.2.0
 
+# Fila durável da ingestão. O `agent-ops` já depende dele, mas declarar aqui
+# torna explícito que este app roda um worker, não só uma API.
+arq>=0.26
+
 # Cache
 redis>=5.0
 

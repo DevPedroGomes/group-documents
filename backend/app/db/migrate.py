@@ -75,6 +75,31 @@ def run_migrations() -> None:
             # aqui e o que permite abrir uma transacao explicita por migration.
             conn.commit()
 
+            # Schema de progresso da fila (`job_progress`). Dono e o pacote
+            # `agent_ops`, nao uma migration numerada aqui — duplicar o DDL
+            # criaria uma segunda fonte de verdade que diverge da primeira.
+            # Fica DENTRO do lock advisory (antes do `finally` que libera),
+            # nao depois: e o que serializa esta chamada contra outra REPLICA
+            # DO WEB subindo ao mesmo tempo — a mesma razao do lock existir
+            # para as migrations numeradas acima. `aplicar_schema` roda em
+            # `CREATE TABLE IF NOT EXISTS`, que nao e atomico entre duas
+            # sessoes Postgres concorrentes sem coordenacao; sem o lock, duas
+            # replicas do web chegando juntas aqui arriscam um erro de chave
+            # duplicada em `pg_type` em vez de uma delas so encontrar a tabela
+            # pronta.
+            #
+            # O que este lock NAO cobre e o worker: `app/jobs/worker.py`
+            # chama o MESMO `aplicar_schema` na propria conexao, sem tomar
+            # este lock (precisa subir mesmo sem o web por perto). No deploy,
+            # web e worker sobem juntos, entao a mesma corrida pode acontecer
+            # entre os dois. Essa metade e tolerada do lado do worker
+            # (`_ao_subir`, que loga e segue) porque so ele pode dar-se ao
+            # luxo de nao ser fatal aqui; este `run_migrations()` continua
+            # deliberadamente fatal para schema realmente quebrado.
+            from agent_ops import queue
+
+            queue.aplicar_schema(engine)
+
             pending = [(v, p) for v, p in migrations if v not in applied]
             if not pending:
                 logger.info("migrate: schema em dia (%d aplicadas)", len(applied))
