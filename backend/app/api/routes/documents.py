@@ -16,7 +16,7 @@ from app.db.models import documents, chunks
 from app.api.dependencies import require_user
 from app.services.file_storage import save_file, get_file, get_file_abspath, delete_file
 from app.api.rate_limit import limiter
-from app.core import budget
+from agent_ops import metering
 from app.core.ingestion.multimodal import descrever_imagem
 from app.core.ingestion.chunker import chunk_document_pages, enrich_chunks_with_context
 
@@ -119,12 +119,16 @@ async def upload_file(
     # enriquecimento contextual chama o LLM uma vez por chunk. Consumido antes
     # de criar a linha, para uma recusa nao deixar documento fantasma no banco.
     try:
-        await budget.consumir("ingest", get_settings().daily_ingest_limit)
-    except budget.TetoAtingido as exc:
+        await metering.consumir("ingest", get_settings().daily_ingest_limit)
+    except metering.TetoIndisponivel as exc:
+        # Backend de cota ilegivel: e indisponibilidade, nao limite atingido.
+        # Sem `Retry-After`, porque ninguem sabe quando o Redis volta.
+        raise HTTPException(status_code=503, detail=exc.mensagem) from exc
+    except metering.TetoAtingido as exc:
         raise HTTPException(
-            status_code=503,
+            status_code=429,
             detail=exc.mensagem,
-            headers={"Retry-After": str(budget.segundos_ate_meia_noite_utc())},
+            headers={"Retry-After": str(metering.segundos_ate_meia_noite_utc())},
         ) from exc
 
     try:
@@ -196,12 +200,16 @@ async def crawl_url(request: Request, body: CrawlBody, background_tasks: Backgro
     # enriquecimento contextual chama o LLM uma vez por chunk. Consumido antes
     # de criar a linha, para uma recusa nao deixar documento fantasma no banco.
     try:
-        await budget.consumir("ingest", get_settings().daily_ingest_limit)
-    except budget.TetoAtingido as exc:
+        await metering.consumir("ingest", get_settings().daily_ingest_limit)
+    except metering.TetoIndisponivel as exc:
+        # Backend de cota ilegivel: e indisponibilidade, nao limite atingido.
+        # Sem `Retry-After`, porque ninguem sabe quando o Redis volta.
+        raise HTTPException(status_code=503, detail=exc.mensagem) from exc
+    except metering.TetoAtingido as exc:
         raise HTTPException(
-            status_code=503,
+            status_code=429,
             detail=exc.mensagem,
-            headers={"Retry-After": str(budget.segundos_ate_meia_noite_utc())},
+            headers={"Retry-After": str(metering.segundos_ate_meia_noite_utc())},
         ) from exc
 
     try:
@@ -247,12 +255,16 @@ async def ingest(request: Request, body: IngestBody, background_tasks: Backgroun
     # enriquecimento contextual chama o LLM uma vez por chunk. Consumido antes
     # de criar a linha, para uma recusa nao deixar documento fantasma no banco.
     try:
-        await budget.consumir("ingest", get_settings().daily_ingest_limit)
-    except budget.TetoAtingido as exc:
+        await metering.consumir("ingest", get_settings().daily_ingest_limit)
+    except metering.TetoIndisponivel as exc:
+        # Backend de cota ilegivel: e indisponibilidade, nao limite atingido.
+        # Sem `Retry-After`, porque ninguem sabe quando o Redis volta.
+        raise HTTPException(status_code=503, detail=exc.mensagem) from exc
+    except metering.TetoAtingido as exc:
         raise HTTPException(
-            status_code=503,
+            status_code=429,
             detail=exc.mensagem,
-            headers={"Retry-After": str(budget.segundos_ate_meia_noite_utc())},
+            headers={"Retry-After": str(metering.segundos_ate_meia_noite_utc())},
         ) from exc
 
     try:

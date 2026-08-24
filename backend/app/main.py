@@ -63,10 +63,16 @@ def create_app() -> FastAPI:
         Publico de proposito: um visitante que bate num limite deve conseguir
         ver que aquilo e uma decisao de projeto, nao um app quebrado. Nao expoe
         nada sensivel — so contadores e os proprios limites.
-        """
-        from app.core import budget
 
-        return await budget.panorama()
+        Os limites vao como argumento porque o pacote nao conhece os tipos de
+        cota deste app; quem os nomeia e quem os configura.
+        """
+        from agent_ops import metering
+
+        s = get_settings()
+        return await metering.panorama(
+            {"chat": s.daily_chat_limit, "ingest": s.daily_ingest_limit}
+        )
 
     # CORS
     cors_origins = [o.strip() for o in settings.cors_origins.split(",")]

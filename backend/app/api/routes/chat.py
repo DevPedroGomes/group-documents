@@ -17,7 +17,7 @@ from app.db.engine import engine
 from app.db.models import threads, messages
 from app.api.dependencies import require_user
 from app.api.rate_limit import limiter
-from app.core import budget
+from agent_ops import metering
 from app.core.guardrails.input_validator import validate_input
 from app.core.rag.generator import stream_answer
 from app.core.rag.transformer import transform_query
@@ -224,12 +224,16 @@ async def chat(request: Request, body: ChatBody):
     # da validacao e da checagem de posse da thread, que sao gratis: pergunta
     # invalida nao deve gastar a cota do proximo visitante.
     try:
-        await budget.consumir("chat", get_settings().daily_chat_limit)
-    except budget.TetoAtingido as exc:
+        await metering.consumir("chat", get_settings().daily_chat_limit)
+    except metering.TetoIndisponivel as exc:
+        # Backend de cota ilegivel: e indisponibilidade, nao limite atingido.
+        # Sem `Retry-After`, porque ninguem sabe quando o Redis volta.
+        raise HTTPException(status_code=503, detail=exc.mensagem) from exc
+    except metering.TetoAtingido as exc:
         raise HTTPException(
-            status_code=503,
+            status_code=429,
             detail=exc.mensagem,
-            headers={"Retry-After": str(budget.segundos_ate_meia_noite_utc())},
+            headers={"Retry-After": str(metering.segundos_ate_meia_noite_utc())},
         ) from exc
 
     # Save user message
@@ -417,7 +421,7 @@ async def chat(request: Request, body: ChatBody):
             # devolve a cota em vez de cobra-la do proximo visitante. Se ja
             # havia texto, o modelo rodou e o gasto foi real — nao devolve.
             if not full_answer:
-                await budget.devolver("chat")
+                await metering.devolver("chat")
 
         finally:
             # Save assistant message

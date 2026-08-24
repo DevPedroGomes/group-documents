@@ -270,7 +270,7 @@ def test_chat_consome_teto_antes_de_qualquer_chamada_paga():
         if isinstance(n, ast.AsyncFunctionDef) and n.name == "chat"
     )
     trecho = ast.get_source_segment(fonte, corpo) or ""
-    pos_teto = trecho.find('budget.consumir("chat"')
+    pos_teto = trecho.find('metering.consumir("chat"')
     pos_stream = trecho.find("generate_sse")
     assert pos_teto != -1, "rota de chat sem teto diario"
     assert pos_teto < pos_stream, "teto consumido depois de comecar a responder"

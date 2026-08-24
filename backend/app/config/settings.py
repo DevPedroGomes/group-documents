@@ -119,8 +119,9 @@ class Settings(BaseSettings):
     # entre um script e uma fila infinita de contas novas.
     auth_rate_limit: str = "5/minute"
 
-    # Tetos diarios GLOBAIS (ver core/budget.py). Os rate limits acima limitam
-    # UM chamador; nenhum deles limita todos juntos nem alguem criando contas.
+    # Tetos diarios GLOBAIS (consumidos via agent_ops.metering). Os rate
+    # limits acima limitam UM chamador; nenhum deles limita todos juntos nem
+    # alguem criando contas.
     # Aviso de divergencia entre fontes. Desligavel por env porque e uma
     # chamada paga a mais por resposta (modelo barato, teto de 220 tokens) e
     # so dispara quando sobraram trechos de dois ou mais documentos.
