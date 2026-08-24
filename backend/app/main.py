@@ -26,7 +26,18 @@ async def _lifespan(app: FastAPI):
     codigo, app subindo normal, e toda ingestao falhando em silencio.
     """
     run_migrations()
+
+    from agent_ops.queue import criar_pool
+
+    # Um pool por processo, aberto no boot: abrir por requisicao criaria uma
+    # conexao nova a cada upload. Se `criar_pool` levantar, o erro propaga
+    # daqui e a app nao termina de subir — o oposto de subir sem `state.fila`
+    # e quebrar so no primeiro upload.
+    app.state.fila = await criar_pool()
+
     yield
+
+    await app.state.fila.aclose()
 
 
 def _rate_limit_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:

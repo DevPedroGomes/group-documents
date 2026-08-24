@@ -6,7 +6,7 @@ import logging
 import asyncio
 from typing import Optional
 
-from fastapi import APIRouter, Request, HTTPException, BackgroundTasks, UploadFile, File, Form
+from fastapi import APIRouter, Request, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import insert, text as sqltext
 
@@ -17,7 +17,13 @@ from app.api.dependencies import require_user
 from app.services.file_storage import save_file, get_file_abspath, delete_file
 from app.api.rate_limit import limiter
 from agent_ops import metering
-from app.jobs.ingestao import process_ingestion
+from agent_ops.decisions import digerir
+from agent_ops.queue import (
+    FilaCheia,
+    FilaIndisponivel,
+    enfileirar,
+    job_id_de,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +81,6 @@ class IngestBody(BaseModel):
 @limiter.limit("30/minute")
 async def upload_file(
     request: Request,
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     title: str = Form(...),
 ):
@@ -145,10 +150,28 @@ async def upload_file(
         logger.error(f"DB error creating document: {e}")
         raise HTTPException(500, "Error creating document record")
 
-    # Trigger background ingestion
-    background_tasks.add_task(process_ingestion, str(doc_id), user_id, storage_path)
+    # Idempotencia por (tenant, conteudo): reenviar o mesmo arquivo nao
+    # reprocessa nem recobra. `job_id_de` da o mesmo id na volta, para o
+    # cliente conseguir acompanhar mesmo quando o trabalho ja estava na fila.
+    digest = digerir(f"{doc_id}:{storage_path}")
+    job_id = job_id_de(digest, tenant=user_id)
+    try:
+        await enfileirar(
+            request.app.state.fila,
+            "ingerir",
+            str(doc_id), user_id, storage_path,
+            digest=digest, tenant=user_id,
+        )
+    except FilaIndisponivel as exc:
+        raise HTTPException(status_code=503, detail=exc.mensagem) from exc
+    except FilaCheia as exc:
+        raise HTTPException(
+            status_code=429,
+            detail=exc.mensagem,
+            headers={"Retry-After": str(exc.retry_after)},
+        ) from exc
 
-    return {"document_id": str(doc_id), "status": "pending"}
+    return {"document_id": str(doc_id), "job_id": job_id, "status": "pending"}
 
 
 class CrawlBody(BaseModel):
@@ -160,7 +183,7 @@ class CrawlBody(BaseModel):
 
 @router.post("/crawl")
 @limiter.limit("10/minute")
-async def crawl_url(request: Request, body: CrawlBody, background_tasks: BackgroundTasks):
+async def crawl_url(request: Request, body: CrawlBody):
     """Fetch a URL, extract its text, and ingest it as a document.
 
     SSRF defenses: scheme allowlist, hostname/IP deny-list, DNS resolution
@@ -227,13 +250,33 @@ async def crawl_url(request: Request, body: CrawlBody, background_tasks: Backgro
         logger.error(f"DB error creating document: {e}")
         raise HTTPException(500, "Error creating document record")
 
-    background_tasks.add_task(process_ingestion, str(doc_id), user_id, storage_path)
-    return {"document_id": str(doc_id), "status": "pending", "title": title}
+    # Idempotencia por (tenant, conteudo): reenviar o mesmo arquivo nao
+    # reprocessa nem recobra. `job_id_de` da o mesmo id na volta, para o
+    # cliente conseguir acompanhar mesmo quando o trabalho ja estava na fila.
+    digest = digerir(f"{doc_id}:{storage_path}")
+    job_id = job_id_de(digest, tenant=user_id)
+    try:
+        await enfileirar(
+            request.app.state.fila,
+            "ingerir",
+            str(doc_id), user_id, storage_path,
+            digest=digest, tenant=user_id,
+        )
+    except FilaIndisponivel as exc:
+        raise HTTPException(status_code=503, detail=exc.mensagem) from exc
+    except FilaCheia as exc:
+        raise HTTPException(
+            status_code=429,
+            detail=exc.mensagem,
+            headers={"Retry-After": str(exc.retry_after)},
+        ) from exc
+
+    return {"document_id": str(doc_id), "job_id": job_id, "status": "pending", "title": title}
 
 
 @router.post("/ingest")
 @limiter.limit("30/minute")
-async def ingest(request: Request, body: IngestBody, background_tasks: BackgroundTasks):
+async def ingest(request: Request, body: IngestBody):
     user_id = await require_user(request)
 
     if not body.title or len(body.title) > 500:
@@ -281,8 +324,28 @@ async def ingest(request: Request, body: IngestBody, background_tasks: Backgroun
         logger.error(f"DB error creating document: {e}")
         raise HTTPException(500, "Error creating document record")
 
-    background_tasks.add_task(process_ingestion, str(doc_id), user_id, body.storage_path)
-    return {"document_id": str(doc_id), "status": "pending"}
+    # Idempotencia por (tenant, conteudo): reenviar o mesmo arquivo nao
+    # reprocessa nem recobra. `job_id_de` da o mesmo id na volta, para o
+    # cliente conseguir acompanhar mesmo quando o trabalho ja estava na fila.
+    digest = digerir(f"{doc_id}:{body.storage_path}")
+    job_id = job_id_de(digest, tenant=user_id)
+    try:
+        await enfileirar(
+            request.app.state.fila,
+            "ingerir",
+            str(doc_id), user_id, body.storage_path,
+            digest=digest, tenant=user_id,
+        )
+    except FilaIndisponivel as exc:
+        raise HTTPException(status_code=503, detail=exc.mensagem) from exc
+    except FilaCheia as exc:
+        raise HTTPException(
+            status_code=429,
+            detail=exc.mensagem,
+            headers={"Retry-After": str(exc.retry_after)},
+        ) from exc
+
+    return {"document_id": str(doc_id), "job_id": job_id, "status": "pending"}
 
 
 @router.get("/documents")
