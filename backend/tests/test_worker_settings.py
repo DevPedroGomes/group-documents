@@ -20,6 +20,8 @@ Sem rede e sem Redis: le a classe, nao sobe worker.
 import inspect
 
 from agent_ops import queue
+from agent_ops.config import get_config
+from arq.connections import RedisSettings
 
 from app.db import migrate
 from app.jobs import worker
@@ -63,3 +65,34 @@ def test_o_timeout_cabe_uma_ingestao_longa():
     # O padrao do arq e 300s. Um PDF grande com enriquecimento por chunk passa
     # disso com folga, e o job seria morto no meio.
     assert worker.WorkerSettings.job_timeout >= 1_800
+
+
+def test_o_worker_resolve_o_redis_pela_config_compartilhada():
+    # As duas pontas da MESMA fila. Lendo a env na mao, o worker tinha default
+    # `redis://redis:6379` e o web (via `get_config`) `redis://localhost:6379`:
+    # faltando a env no container, o web falha alto e o worker atende calado uma
+    # fila que nunca recebe nada.
+    esperado = RedisSettings.from_dsn(get_config().redis_url)
+    assert worker.WorkerSettings.redis_settings.host == esperado.host
+    assert worker.WorkerSettings.redis_settings.port == esperado.port
+
+
+def test_o_health_check_e_renovado_com_frequencia_util():
+    # O healthcheck do compose (`arq ... --check`) le a chave que o worker
+    # renova nesse intervalo. O default do arq e 3600s: um worker morto passaria
+    # ate uma hora "saudavel", sem restart.
+    assert worker.WorkerSettings.health_check_interval <= 60
+
+
+def test_o_lock_do_boot_tem_timeout():
+    import inspect
+
+    fonte = inspect.getsource(worker._ao_subir)
+    assert "lock_timeout" in fonte, (
+        "`pg_advisory_lock` sem timeout espera para sempre pelo lock que "
+        "`run_migrations` segura: o worker sobe e nunca consome job nenhum"
+    )
+    assert fonte.index("lock_timeout") < fonte.index("pg_advisory_lock(")
+    # Dentro do `try` tolerante, senao o timeout derruba o boot em vez de virar
+    # o log que o docstring promete.
+    assert fonte.index("try:") < fonte.index("pg_advisory_lock(")

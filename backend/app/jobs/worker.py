@@ -16,7 +16,7 @@ import asyncio
 import logging
 
 from agent_ops import queue
-import os
+from agent_ops.config import get_config
 from arq.connections import RedisSettings
 from sqlalchemy import text as sqltext
 
@@ -126,8 +126,17 @@ async def _ao_subir(ctx) -> None:
     continua visivel — so nao encerra o worker.
     """
     with engine.connect() as conn:
-        conn.execute(sqltext("SELECT pg_advisory_lock(:k)"), {"k": _LOCK_KEY})
         try:
+            # `pg_advisory_lock` espera para SEMPRE por default, e este e o
+            # MESMO lock que `run_migrations` segura durante o laco inteiro de
+            # migrations. Sem timeout, um boot do web com migration demorada (ou
+            # um lock orfao de uma sessao pendurada) prende o worker no
+            # `on_startup`: o container fica de pe sem consumir job nenhum, que e
+            # a falha mais silenciosa possivel numa fila. Com o timeout, a espera
+            # vira excecao e cai no `except` tolerante abaixo — que e o que este
+            # docstring ja prometia que acontecia.
+            conn.execute(sqltext("SET lock_timeout = '30s'"))
+            conn.execute(sqltext("SELECT pg_advisory_lock(:k)"), {"k": _LOCK_KEY})
             queue.aplicar_schema(engine)
         except Exception as exc:
             logger.exception(
@@ -140,7 +149,9 @@ async def _ao_subir(ctx) -> None:
         finally:
             # Fecha qualquer transacao pendente antes do unlock, senao o
             # proprio unlock reabriria uma e a conexao morreria com tx aberta
-            # (mesmo motivo do finally identico em migrate.py).
+            # (mesmo motivo do finally identico em migrate.py). Destravar um
+            # lock que nao chegou a ser tomado (timeout acima) e no-op: o
+            # Postgres devolve `false` e avisa, nao levanta.
             conn.rollback()
             conn.execute(sqltext("SELECT pg_advisory_unlock(:k)"), {"k": _LOCK_KEY})
             conn.commit()
@@ -149,9 +160,12 @@ async def _ao_subir(ctx) -> None:
 class WorkerSettings:
     functions = [ingerir]
     on_startup = _ao_subir
-    redis_settings = RedisSettings.from_dsn(
-        os.environ.get("AGENT_OPS_REDIS_URL", "redis://redis:6379")
-    )
+    # A MESMA resolucao que o lado que enfileira usa (`queue.criar_pool` tambem
+    # le `get_config().redis_url`). Ler a env na mao aqui criava defaults
+    # divergentes nas duas pontas de uma fila so: faltando a env no container, o
+    # web falhava alto (`localhost` sem Redis) e o worker se conectava calado a
+    # OUTRO Redis, ficando ocioso numa fila que nunca recebe nada.
+    redis_settings = RedisSettings.from_dsn(get_config().redis_url)
     # Dimensionado para a VPS de 2 nucleos. A ingestao e I/O-bound (espera de
     # provider), entao mais de 4 em paralelo compete por CPU sem ganhar vazao.
     max_jobs = 4
@@ -159,3 +173,8 @@ class WorkerSettings:
     # A ingestao de um PDF grande com enriquecimento por chunk passa dos 5min
     # padrao do arq com folga.
     job_timeout = 1_800
+    # De quanto em quanto tempo o worker renova a chave de saude no Redis — a
+    # mesma que `arq ... --check` (o healthcheck do compose) le. O default do
+    # arq e 3600s: com ele, um worker morto continuaria "saudavel" por ate uma
+    # hora, e o `restart` do Docker so agiria depois disso.
+    health_check_interval = 30
