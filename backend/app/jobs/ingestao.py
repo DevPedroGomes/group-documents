@@ -1,7 +1,12 @@
 """Ingestao de um documento: ler → chunk → enriquecer → embedar → gravar.
 
-Movida de `api/routes/documents.py` sem alteracao de comportamento. O caminho
-mais caro do app: o enriquecimento contextual chama o LLM uma vez por chunk.
+Movida de `api/routes/documents.py`. O caminho mais caro do app: o
+enriquecimento contextual chama o LLM uma vez por chunk.
+
+CONTRATO DE FALHA: esta funcao grava `documents.status = 'failed'` e RE-LANCA.
+Ela nao decide estado terminal de job — isso e do envelope em `jobs/worker.py`,
+que e quem sabe se ainda ha tentativa sobrando. Enquanto a excecao morria aqui,
+o envelope via sucesso e gravava `concluido` para um documento `failed`.
 """
 
 import asyncio
@@ -40,6 +45,14 @@ async def process_ingestion(doc_id: str, user_id: str, storage_path: str):
             conn.execute(
                 sqltext("UPDATE documents SET status = 'processing' WHERE id = :id"), {"id": doc_id}
             )
+            # A fila e at-least-once e este job pode reexecutar (retentativa,
+            # SIGTERM no meio do deploy). `add_chunks` e INSERT puro e nao ha
+            # unique em (document_id, chunk_index), entao sem esta limpeza uma
+            # reexecucao ANEXA um segundo conjunto completo de chunks: citacoes
+            # duplicadas, `chunk_count` mentindo, e embedding pago duas vezes.
+            # Fica na MESMA transacao que marca `processing`: ou o documento
+            # entra em reprocessamento com o indice ja limpo, ou nao entra.
+            conn.execute(sqltext("DELETE FROM chunks WHERE document_id = :id"), {"id": doc_id})
 
         # Read file from local storage
         data = get_file(storage_path)
@@ -242,3 +255,11 @@ async def process_ingestion(doc_id: str, user_id: str, storage_path: str):
                 ),
                 {"id": doc_id, "err": str(e)},
             )
+        # Re-lanca de proposito: quem decide se isto e uma retentativa ou o fim
+        # da linha e o envelope em `jobs/worker.py`, nao esta funcao. Engolir
+        # aqui — contrato correto sob `BackgroundTasks`, de onde este bloco veio
+        # sem alteracao — tornava `tentar_de_novo` e `descartar` codigo morto
+        # (`descartado` era inalcancavel), e fazia o job terminar gravando
+        # `concluido` em `job_progress` para um documento marcado como `failed`:
+        # duas fontes duraveis de verdade discordando, com a errada sendo a nova.
+        raise

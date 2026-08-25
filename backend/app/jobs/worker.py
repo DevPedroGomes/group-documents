@@ -12,10 +12,11 @@ a linha fica em `rodando` para sempre — o job some da tela sem erro nenhum.
 
 from __future__ import annotations
 
+import asyncio
 import logging
-import os
 
 from agent_ops import queue
+import os
 from arq.connections import RedisSettings
 from sqlalchemy import text as sqltext
 
@@ -26,22 +27,73 @@ from app.jobs.ingestao import process_ingestion
 logger = logging.getLogger(__name__)
 
 
+def _marcar_documento(doc_id: str, status: str) -> None:
+    """Escreve o estado terminal na LINHA DO DOCUMENTO, nao so em `job_progress`.
+
+    Sao duas fontes duraveis e o frontend le a do documento: ele consulta
+    `/documents` a cada 3s enquanto o status for `processing`. Um job morto que
+    so mexesse em `job_progress` deixaria a linha em `processing` para sempre —
+    o navegador daquele usuario consultando a mesma coisa indefinidamente.
+
+    Melhor esforco, mesmo contrato do `queue.marcar`: perder o estado da tela e
+    ruim, derrubar o envelope (e com ele a dead-letter) por causa de um UPDATE
+    e pior.
+    """
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                sqltext("UPDATE documents SET status = :status WHERE id = :id"),
+                {"status": status, "id": doc_id},
+            )
+    except Exception as exc:
+        logger.exception(
+            "worker.status_documento_falhou doc_id=%s status=%s erro=%s: %s",
+            doc_id, status, type(exc).__name__, exc,
+        )
+
+
 async def ingerir(ctx, doc_id: str, user_id: str, storage_path: str) -> None:
-    """Envelope da ingestao: progresso, retentativa e dead-letter."""
+    """Envelope da ingestao: progresso, retentativa e dead-letter.
+
+    Todo caminho de saida daqui deixa `job_progress` e `documents` CONTANDO A
+    MESMA HISTORIA. Enquanto `process_ingestion` engolia a propria excecao, este
+    envelope caia no `else` e gravava `concluido` para um documento `failed`.
+    """
     job_id = ctx["job_id"]
     queue.marcar(
         engine, job_id, estado="rodando", percentual=0, tentativas=ctx["job_try"]
     )
     try:
         await process_ingestion(doc_id, user_id, storage_path)
+    except asyncio.CancelledError:
+        # `CancelledError` deriva de BaseException, entao o `except Exception`
+        # abaixo NAO a pega. Sem esta clausula, um job que estoura o
+        # `job_timeout` — ou que e cancelado no shutdown do worker — deixa a
+        # linha em `rodando` para sempre e o documento em `processing`, e o
+        # frontend consulta aquele documento a cada 3s indefinidamente. Nao e
+        # caso exotico: o enriquecimento chama o LLM uma vez por chunk, entao um
+        # PDF grande contra um provider lento passa dos 30 min do `job_timeout`.
+        queue.marcar(engine, job_id, estado="falhou",
+                     detalhe="cancelado (timeout ou shutdown do worker)")
+        _marcar_documento(doc_id, "failed")
+        # Re-lanca sempre: cancelamento nao se engole. No SIGTERM do redeploy e
+        # o arq quem reenfileira o job, e engolir aqui o daria por terminado.
+        raise
     except Exception as exc:
         if queue.esgotou(ctx):
             queue.descartar(engine, job_id, motivo=f"{type(exc).__name__}: {exc}")
+            # `descartar` so mexe em `job_progress`. Sem esta linha o documento
+            # fica em `processing` para sempre depois da ultima tentativa.
+            _marcar_documento(doc_id, "failed")
             return
         logger.warning(
             "ingestao.retentativa doc_id=%s tentativa=%d erro=%s",
             doc_id, ctx["job_try"], exc,
         )
+        # `process_ingestion` ja gravou `failed` ao sair. Ainda ha tentativa
+        # sobrando, entao o documento volta para `processing`: senao a UI mostra
+        # falha definitiva enquanto uma retentativa esta agendada.
+        _marcar_documento(doc_id, "processing")
         queue.tentar_de_novo(ctx)
     else:
         queue.marcar(engine, job_id, estado="concluido", percentual=100)
