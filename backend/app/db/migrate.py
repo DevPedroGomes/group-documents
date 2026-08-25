@@ -88,14 +88,17 @@ def run_migrations() -> None:
             # duplicada em `pg_type` em vez de uma delas so encontrar a tabela
             # pronta.
             #
-            # O que este lock NAO cobre e o worker: `app/jobs/worker.py`
-            # chama o MESMO `aplicar_schema` na propria conexao, sem tomar
-            # este lock (precisa subir mesmo sem o web por perto). No deploy,
-            # web e worker sobem juntos, entao a mesma corrida pode acontecer
-            # entre os dois. Essa metade e tolerada do lado do worker
-            # (`_ao_subir`, que loga e segue) porque so ele pode dar-se ao
-            # luxo de nao ser fatal aqui; este `run_migrations()` continua
-            # deliberadamente fatal para schema realmente quebrado.
+            # O worker fecha a MESMA corrida do mesmo jeito: `app/jobs/worker.py`
+            # importa `_LOCK_KEY` daqui e toma este lock no proprio boot antes de
+            # chamar `aplicar_schema`. Entao web e worker subindo juntos no
+            # deploy se serializam, em vez de disputar o `CREATE TABLE`.
+            #
+            # O que continua ASSIMETRICO e a reacao a falha, de proposito: la o
+            # lock tem `lock_timeout` e todo o bloco e tolerante (`_ao_subir`
+            # loga e segue o boot), porque um worker que nao sobe nao consome
+            # fila nenhuma e a espera seria indistinguivel de um worker morto.
+            # Aqui, `run_migrations()` e deliberadamente fatal: e melhor a app
+            # nao subir do que atender trafego com schema divergente do codigo.
             from agent_ops import queue
 
             queue.aplicar_schema(engine)
