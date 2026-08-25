@@ -63,6 +63,16 @@ services:
       # Foi exatamente isso que derrubou a demo depois do deploy da Parte A.
       - AGENT_OPS_REDIS_URL=redis://redis:6379
       - AGENT_OPS_PROJETO=brainhub
+      # Teto de profundidade da fila; acima dele a API recusa com 429 em vez de
+      # aceitar trabalho que nao vai conseguir fazer. O default do pacote e 500,
+      # e 500 aqui nao freia nada: com `max_jobs = 4` e jobs que podem ir ate os
+      # 30 min do `job_timeout`, 500 na fila sao dias de espera enquanto a API
+      # segue respondendo 200 e prometendo o trabalho. 50 e o ponto em que a
+      # promessa ainda e honesta — os ultimos da fila esperam cerca de uma hora
+      # no ritmo tipico (alguns minutos por documento) — e fica abaixo do
+      # `daily_ingest_limit` (100), entao o freio da fila chega a agir antes de
+      # a cota do dia acabar, em vez de ser inalcancavel.
+      - AGENT_OPS_PROFUNDIDADE_MAXIMA=50
     volumes:
       - uploads:/app/uploads
     depends_on:
@@ -113,11 +123,21 @@ services:
       - ./backend/.env
     environment:
       - DATABASE_URL=postgresql+asyncpg://brainhub:${DB_PASSWORD}@central-db:5432/brainhub
+      # `Settings.jwt_secret` e obrigatorio e sem default, e `app/db/engine.py`
+      # instancia as settings no import — que `app/jobs/worker.py` faz. Sem esta
+      # variavel o worker morre no import, ANTES de o arq subir: o container
+      # entra em CrashLoop e a fila nunca e consumida.
+      - JWT_SECRET=${JWT_SECRET}
       - UPLOADS_PATH=/app/uploads
       - REDIS_URL=redis://redis:6379
       # Mesmo motivo do backend: metering falha fechado sem isto.
       - AGENT_OPS_REDIS_URL=redis://redis:6379
       - AGENT_OPS_PROJETO=brainhub
+      # Identico ao backend de proposito. O worker nao enfileira, entao o valor
+      # nao muda o comportamento dele hoje; manter as duas pontas da mesma fila
+      # com a mesma configuracao e o que evita a classe de bug em que cada lado
+      # opera com um numero diferente sem ninguem notar.
+      - AGENT_OPS_PROFUNDIDADE_MAXIMA=50
     volumes:
       # O worker LE os arquivos que a API gravou. Sem este mount, toda ingestao
       # falha com "arquivo nao encontrado" — e falha no worker, longe de quem
@@ -127,8 +147,14 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      # Sem HTTP para checar: basta o processo estar de pe.
-      test: ["CMD-SHELL", "pgrep -f 'arq app.jobs.worker' > /dev/null || exit 1"]
+      # O proprio health check do arq: le no Redis a chave que o worker renova a
+      # cada `health_check_interval` e sai != 0 se ela estiver velha ou ausente.
+      # O que estava aqui antes NUNCA reprovava: `CMD-SHELL` roda
+      # `/bin/sh -c "pgrep -f 'arq app.jobs.worker' ..."`, e a linha de comando
+      # desse proprio shell contem o padrao, entao o `pgrep -f` casava com ele
+      # mesmo — worker morto ou travado seguia "healthy". (E `pgrep` nem existe
+      # na imagem: vem do `procps`, que o Dockerfile nao instala.)
+      test: ["CMD", "arq", "app.jobs.worker.WorkerSettings", "--check"]
       interval: 30s
       timeout: 10s
       retries: 5

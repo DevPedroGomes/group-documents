@@ -67,7 +67,14 @@ jobs:
                   fp.touch()
           pathlib.Path(".env").touch()
           EOF
-      - name: Build + push (so os servicos buildados, nao upstream)
+      # `push` sem argumento empurra TODO servico que tem `build:` — e ignora os
+      # que nao tem (o `redis`, que vem do Docker Hub). A lista na mao omitia o
+      # `worker`; hoje ele escapa por acidente, porque declara a MESMA tag do
+      # `backend` e o push do backend publica a imagem dos dois. No dia em que o
+      # worker ganhar imagem propria (outro Dockerfile, outro contexto), a lista
+      # o deixaria de fora em silencio e a VPS puxaria uma `:latest` velha.
+      # Sem lista, nao ha o que esquecer de atualizar.
+      - name: Build + push (todo servico com `build:`)
         run: |
           docker compose build
-          docker compose push backend frontend
+          docker compose push
