@@ -12,7 +12,7 @@ from sqlalchemy import insert, text as sqltext
 
 from app.config.settings import get_settings
 from app.db.engine import engine
-from app.db.models import documents, chunks
+from app.db.models import documents
 from app.api.dependencies import require_user
 from app.services.file_storage import save_file, get_file_abspath, delete_file
 from app.api.rate_limit import limiter
@@ -67,6 +67,57 @@ def validate_storage_path(path: str) -> bool:
         return False
     pattern = r"^[a-f0-9-]+/docs/[^/]+\.(pdf|png|jpg|jpeg|gif|webp|mp3|mp4|wav|webm|txt)$"
     return bool(re.match(pattern, path, re.IGNORECASE))
+
+
+async def _recusar_e_desfazer(doc_id, storage_path: str, exc: FilaCheia) -> None:
+    """Desfaz os efeitos ja aplicados quando a fila RECUSA o trabalho, e vira HTTP.
+
+    A ordem das rotas e: grava o arquivo -> consome a cota -> cria a linha
+    `pending` -> enfileira. Se o enfileiramento recusa, os TRES primeiros ja
+    aconteceram, e nada os desfazia: a cota do dia era gasta por um trabalho que
+    nunca rodou, o arquivo ficava orfao no volume, e a linha ficava `pending`
+    para sempre — com o frontend consultando aquele documento a cada 3s, para
+    sempre. O comentario acima do `consumir` ja prometia que uma recusa nao
+    deixaria documento fantasma; e este passo que cumpre a promessa.
+
+    Nunca levanta pelo desfazimento em si: o que o chamador precisa receber e o
+    erro da FILA (429/503). Cada passo e melhor-esforco e registrado no log —
+    uma devolucao de cota perdida custa um pouco de folga, e trocar o 429 por um
+    500 esconderia do cliente o unico fato acionavel, que e "tente de novo".
+
+    `FilaIndisponivel` (Redis ilegivel) vira 503 e `FilaCheia` vira 429: a fila
+    cheia tem prazo para voltar, a queda de infra nao tem.
+
+    NAO cobre o outro caminho que tambem gasta cota sem enfileirar: o INSERT do
+    documento falhando (500 logo acima de cada chamada). La nao ha linha para
+    apagar, so cota e arquivo, e o tratamento continua como estava.
+    """
+    # Cota primeiro: e o unico dos tres que custa dinheiro ao proximo visitante.
+    try:
+        await metering.devolver("ingest")
+    except Exception:
+        logger.exception("ingest.devolucao_de_cota_falhou doc_id=%s", doc_id)
+
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                sqltext("DELETE FROM documents WHERE id = :id"), {"id": doc_id}
+            )
+    except Exception:
+        logger.exception("ingest.remocao_do_documento_falhou doc_id=%s", doc_id)
+
+    try:
+        delete_file(storage_path)
+    except Exception:
+        logger.warning(f"File deletion failed for {storage_path}", exc_info=True)
+
+    if isinstance(exc, FilaIndisponivel):
+        raise HTTPException(status_code=503, detail=exc.mensagem) from exc
+    raise HTTPException(
+        status_code=429,
+        detail=exc.mensagem,
+        headers={"Retry-After": str(exc.retry_after)},
+    ) from exc
 
 
 class IngestBody(BaseModel):
@@ -169,13 +220,9 @@ async def upload_file(
             digest=digest, tenant=user_id,
         )
     except FilaIndisponivel as exc:
-        raise HTTPException(status_code=503, detail=exc.mensagem) from exc
+        await _recusar_e_desfazer(doc_id, storage_path, exc)
     except FilaCheia as exc:
-        raise HTTPException(
-            status_code=429,
-            detail=exc.mensagem,
-            headers={"Retry-After": str(exc.retry_after)},
-        ) from exc
+        await _recusar_e_desfazer(doc_id, storage_path, exc)
 
     return {"document_id": str(doc_id), "job_id": job_id, "status": "pending"}
 
@@ -275,13 +322,9 @@ async def crawl_url(request: Request, body: CrawlBody):
             digest=digest, tenant=user_id,
         )
     except FilaIndisponivel as exc:
-        raise HTTPException(status_code=503, detail=exc.mensagem) from exc
+        await _recusar_e_desfazer(doc_id, storage_path, exc)
     except FilaCheia as exc:
-        raise HTTPException(
-            status_code=429,
-            detail=exc.mensagem,
-            headers={"Retry-After": str(exc.retry_after)},
-        ) from exc
+        await _recusar_e_desfazer(doc_id, storage_path, exc)
 
     return {"document_id": str(doc_id), "job_id": job_id, "status": "pending", "title": title}
 
@@ -355,13 +398,9 @@ async def ingest(request: Request, body: IngestBody):
             digest=digest, tenant=user_id,
         )
     except FilaIndisponivel as exc:
-        raise HTTPException(status_code=503, detail=exc.mensagem) from exc
+        await _recusar_e_desfazer(doc_id, body.storage_path, exc)
     except FilaCheia as exc:
-        raise HTTPException(
-            status_code=429,
-            detail=exc.mensagem,
-            headers={"Retry-After": str(exc.retry_after)},
-        ) from exc
+        await _recusar_e_desfazer(doc_id, body.storage_path, exc)
 
     return {"document_id": str(doc_id), "job_id": job_id, "status": "pending"}
 
