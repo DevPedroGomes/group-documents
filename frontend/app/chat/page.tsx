@@ -9,6 +9,7 @@ import { ChatHistory } from '@/components/chat/ChatHistory'
 import { ChatMessage, ThinkingMessage } from '@/components/chat/ChatMessage'
 import { ChatInput } from '@/components/chat/ChatInput'
 import { LiveVoice } from '@/components/chat/LiveVoice'
+import { DecisionTrail } from '@/components/chat/DecisionTrail'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
@@ -157,6 +158,11 @@ function ChatPageContent() {
               </div>
             </motion.div>
           )}
+
+          {/* A trilha existia no backend desde a migracao 003 e nao tinha como ser
+              vista: faltava a rota proxy. E o que separa este projeto de um chat
+              de provedor, que devolve a resposta e nunca o caminho ate ela. */}
+          <DecisionTrail threadId={threadId} className="mb-3" />
 
           {/* A conversa por voz fica ACIMA do campo de texto, e nao numa pagina
               propria, porque ela nao e outro produto: e outro jeito de perguntar
