@@ -129,6 +129,21 @@ class Settings(BaseSettings):
 
     daily_chat_limit: int = 300
     daily_ingest_limit: int = 100
+    # A conversa de voz e um teto SEPARADO porque o gasto dela nao se parece com
+    # o do chat: e uma sessao aberta, medida em minutos de audio, e nao uma
+    # pergunta por vez. Somar as duas no mesmo balde faria uma conversa longa
+    # apagar a cota de texto do dia inteiro.
+    daily_realtime_limit: int = 40
+
+    # --- Conversa por voz (WebRTC contra a Realtime API da OpenAI) ---
+    # Este e o UNICO lugar do app que fala com a OpenAI: o resto e Anthropic ou
+    # OpenRouter para geracao, Voyage para embedding e Cohere para rerank. Sem
+    # `openai_api_key` a rota devolve 503 e o resto do app segue igual, entao
+    # desligar a voz nao derruba nada.
+    enable_realtime: bool = True
+    openai_api_key: Optional[str] = None
+    realtime_model: str = "gpt-realtime-2.1"
+    realtime_voice: str = "marin"
 
     # Guardrails
     enable_input_guardrails: bool = True

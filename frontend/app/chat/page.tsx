@@ -8,6 +8,7 @@ import { ChatHeader } from '@/components/chat/ChatHeader'
 import { ChatHistory } from '@/components/chat/ChatHistory'
 import { ChatMessage, ThinkingMessage } from '@/components/chat/ChatMessage'
 import { ChatInput } from '@/components/chat/ChatInput'
+import { LiveVoice } from '@/components/chat/LiveVoice'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
@@ -156,6 +157,11 @@ function ChatPageContent() {
               </div>
             </motion.div>
           )}
+
+          {/* A conversa por voz fica ACIMA do campo de texto, e nao numa pagina
+              propria, porque ela nao e outro produto: e outro jeito de perguntar
+              ao mesmo acervo. A trilha que ela mostra e a mesma que o chat grava. */}
+          <LiveVoice pronto={documentIds.length > 0} />
 
           <ChatInput
             onSend={sendMessage}

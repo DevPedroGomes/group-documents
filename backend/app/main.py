@@ -82,7 +82,11 @@ def create_app() -> FastAPI:
 
         s = get_settings()
         return await metering.panorama(
-            {"chat": s.daily_chat_limit, "ingest": s.daily_ingest_limit}
+            {
+                "chat": s.daily_chat_limit,
+                "ingest": s.daily_ingest_limit,
+                "realtime": s.daily_realtime_limit,
+            }
         )
 
     # CORS
@@ -99,10 +103,12 @@ def create_app() -> FastAPI:
     from app.api.routes.auth import router as auth_router
     from app.api.routes.documents import router as documents_router
     from app.api.routes.chat import router as chat_router
+    from app.api.routes.realtime import router as realtime_router
 
     app.include_router(auth_router)
     app.include_router(documents_router)
     app.include_router(chat_router)
+    app.include_router(realtime_router)
 
     return app
 

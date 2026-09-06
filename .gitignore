@@ -45,8 +45,13 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+# Ancorados em backend/ de proposito. Sem a ancora, `lib/` casa em QUALQUER
+# profundidade e engole `frontend/lib/*.ts`, que e codigo-fonte: os arquivos ja
+# versionados continuavam visiveis, mas todo arquivo NOVO ali era ignorado em
+# silencio e o build quebrava no runner, que faz checkout limpo. Aconteceu em
+# 06/09/2026 com `frontend/lib/realtime-session.ts`.
+backend/lib/
+backend/lib64/
 parts/
 sdist/
 var/
