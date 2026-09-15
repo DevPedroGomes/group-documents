@@ -304,7 +304,26 @@ def test_corte_temporal_vale_nas_duas_pernas_da_busca():
     # pela perna de palavra-chave, e o resultado misturaria as duas epocas.
     fonte = inspect.getsource(vector_store.hybrid_search)
     assert fonte.count("{data_filter}") == 2
-    assert "d.created_at <= CAST(:as_of AS timestamptz)" in fonte
+    assert "d.uploaded_at <= CAST(:as_of AS timestamptz)" in fonte
+
+
+def test_colunas_de_documents_usadas_na_busca_existem_na_migration():
+    # O assert de texto acima prende UM nome. Este cruza duas fontes de verdade:
+    # a coluna que o SQL referencia como d.<col> tem de existir no CREATE TABLE.
+    # Sem isto, trocar o nome da coluna passa verde e quebra so em producao.
+    import re
+
+    fonte = inspect.getsource(vector_store.hybrid_search)
+    usadas = set(re.findall(r"\bd\.([a-z_]+)", fonte))
+
+    baseline = (BACKEND / "migrations" / "001_baseline.sql").read_text()
+    corpo = baseline.split("CREATE TABLE IF NOT EXISTS documents", 1)[1].split(");", 1)[0]
+    declaradas = set(re.findall(r"^\s*([a-z_]+)\s+[A-Z]", corpo, re.M))
+
+    assert usadas, "nenhuma coluna de documents encontrada na busca"
+    assert usadas <= declaradas, (
+        f"a busca referencia colunas que documents nao tem: {sorted(usadas - declaradas)}"
+    )
 
 
 def test_corte_filtra_pelo_documento_e_nao_pelo_chunk():
