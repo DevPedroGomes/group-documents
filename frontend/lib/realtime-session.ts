@@ -54,6 +54,12 @@ export class RealtimeSession {
   private audio: HTMLAudioElement | null = null
   private threadId: string | null = null
   private readonly cb: Callbacks
+  /** Ha uma resposta do modelo em curso. A API recusa `response.create` enquanto houver. */
+  private respostaAtiva = false
+  /** A busca acabou antes da fala de preenchimento; o pedido espera o `response.done`. */
+  private respostaPendente = false
+  /** `response.function_call_arguments.done` tambem e emitido em resposta cancelada. */
+  private jaDisparados = new Set<string>()
 
   constructor(cb: Callbacks = {}) {
     this.cb = cb
@@ -144,16 +150,33 @@ export class RealtimeSession {
       return
     }
 
-    // O modelo pediu a busca. Chega dentro do response.done concluido.
-    if (tipo === 'response.done') {
-      const saidas = ((ev.response as Record<string, unknown>)?.output ?? []) as Array<
-        Record<string, unknown>
-      >
-      for (const item of saidas) {
-        if (item.type === 'function_call' && item.name === 'buscar_no_acervo') {
-          await this.executarBusca(String(item.call_id), String(item.arguments ?? '{}'))
-        }
+    if (tipo === 'response.created') {
+      this.respostaAtiva = true
+      return
+    }
+
+    // A busca comeca AQUI, e nao no `response.done`. Os argumentos ja estao
+    // completos e a fala de preenchimento da MESMA resposta ainda esta tocando,
+    // entao os 5-15s de RAG rodam POR BAIXO da fala em vez de depois dela. Com o
+    // gatilho no `response.done` a frase tocava, acabava, e o silencio voltava
+    // inteiro. O evento tambem e emitido quando a resposta e cancelada, dai o
+    // `jaDisparados`.
+    if (tipo === 'response.function_call_arguments.done') {
+      const callId = String(ev.call_id ?? '')
+      if (ev.name === 'buscar_no_acervo' && callId && !this.jaDisparados.has(callId)) {
+        this.jaDisparados.add(callId)
+        void this.executarBusca(callId, String(ev.arguments ?? '{}'))
       }
+      return
+    }
+
+    if (tipo === 'response.done') {
+      this.respostaAtiva = false
+      if (this.respostaPendente) {
+        this.respostaPendente = false
+        this.enviar({ type: 'response.create' })
+      }
+      return
     }
   }
 
@@ -176,14 +199,18 @@ export class RealtimeSession {
           data_de_referencia: dataDeReferencia,
           thread_id: this.threadId,
         }),
+        // Sem isto, um backend pendurado nao e silencio de 15s: e silencio sem fim.
+        signal: AbortSignal.timeout(20_000),
       })
-      saida = r.ok
-        ? await r.json()
-        : { trechos: [], baixa_confianca: true, erro: 'search failed' }
+      // `erro` e campo PROPRIO, nao `baixa_confianca`. Sem separar, o prompt
+      // tratava backend fora do ar como busca vazia e o agente afirmava que nao
+      // estava nos documentos da pessoa — falso, e justamente a falha que este
+      // acervo existe para impedir.
+      saida = r.ok ? await r.json() : { trechos: [], erro: 'search_unavailable' }
     } catch {
       // Erro da busca vira RESULTADO, nao excecao: o modelo precisa poder dizer
       // que nao conseguiu, e um tool call sem resposta trava o turno inteiro.
-      saida = { trechos: [], baixa_confianca: true, erro: 'search failed' }
+      saida = { trechos: [], erro: 'search_unavailable' }
     }
 
     this.cb.onBusca?.({
@@ -198,8 +225,15 @@ export class RealtimeSession {
       type: 'conversation.item.create',
       item: { type: 'function_call_output', call_id: callId, output: JSON.stringify(saida) },
     })
-    this.enviar({ type: 'response.create' })
-    this.cb.onEstado?.('falando')
+    // A API recusa `response.create` com uma resposta ativa. Se a fala de
+    // preenchimento ainda esta gerando, o `response.done` dispara por nos.
+    if (this.respostaAtiva) {
+      this.respostaPendente = true
+    } else {
+      this.enviar({ type: 'response.create' })
+    }
+    // 'falando' sai daqui: quem sabe que ha audio e o `output_audio_buffer.started`.
+    // Setar aqui fazia o rotulo mentir por ~1s antes de existir som.
   }
 
   private enviar(payload: unknown): void {
@@ -215,6 +249,9 @@ export class RealtimeSession {
     this.dc = null
     this.pc = null
     this.audio = null
+    this.respostaAtiva = false
+    this.respostaPendente = false
+    this.jaDisparados.clear()
     this.cb.onEstado?.('parado')
   }
 }
