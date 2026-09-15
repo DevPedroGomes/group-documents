@@ -281,8 +281,8 @@ async def executar_busca(request: Request, body: BuscaPedido) -> BuscaResposta:
     return BuscaResposta(
         trechos=[
             Trecho(
-                texto=t.get("content", ""),
-                arquivo=t.get("document_title") or t.get("file_name", ""),
+                texto=t.get("snippet") or "",
+                arquivo=t.get("document_title") or "",
                 pagina=t.get("page"),
             )
             for t in aprovados

@@ -188,3 +188,33 @@ def test_resposta_vazia_e_valida_e_nao_erro():
 def test_o_trecho_devolvido_nomeia_a_fonte(campo):
     """O agente cita o arquivo em voz alta: sem o nome, não há como citar."""
     assert campo in rt.Trecho.model_fields
+
+
+def test_a_voz_le_a_mesma_chave_de_texto_que_a_busca_produz():
+    """O bug que este teste existe para impedir.
+
+    A rota de voz lia `t["content"]`, mas todo o caminho de busca devolve a
+    chave `snippet`. O agente recebia o nome do arquivo e a pagina com o texto
+    VAZIO e, como o prompt proibe responder de memoria, dizia "nao esta nos
+    seus documentos" em 100% das perguntas. Nada na UI denunciava: ela mostra
+    so a contagem de trechos, e a contagem estava certa.
+
+    A suite nao pegou porque os testes de voz asseveram o texto-fonte. Este
+    cruza duas fontes: as chaves que a busca PRODUZ e as que a voz LE.
+    """
+    import re
+
+    from app.services import vector_store
+
+    # Só o dict que hybrid_search DEVOLVE. Olhar o módulo inteiro afrouxa o
+    # teste: "content" aparece lá em outro contexto e deixa o bug passar.
+    produzidas = set(
+        re.findall(r'"([a-z_]+)":', inspect.getsource(vector_store.hybrid_search))
+    )
+    lidas = set(re.findall(r't\.get\("([a-z_]+)"', inspect.getsource(rt)))
+
+    assert lidas, "nenhuma leitura de trecho encontrada na rota de voz"
+    faltando = lidas - produzidas
+    assert not faltando, (
+        f"a voz le chaves que a busca nunca devolve: {sorted(faltando)}"
+    )

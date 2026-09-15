@@ -104,7 +104,7 @@ def hybrid_search(
     data_filter = ""
     if as_of:
         params["as_of"] = as_of
-        data_filter = "AND d.created_at <= CAST(:as_of AS timestamptz)"
+        data_filter = "AND d.uploaded_at <= CAST(:as_of AS timestamptz)"
 
     if document_ids:
         valid_ids = []
