@@ -218,3 +218,78 @@ def test_a_voz_le_a_mesma_chave_de_texto_que_a_busca_produz():
     assert not faltando, (
         f"a voz le chaves que a busca nunca devolve: {sorted(faltando)}"
     )
+
+
+# ---------------------------------------------------------------------------
+# A sessao precisa CONFIGURAR o que o navegador escuta
+# ---------------------------------------------------------------------------
+
+FRONTEND = Path(__file__).resolve().parents[2] / "frontend"
+
+
+def test_transcricao_da_entrada_e_configurada_porque_o_navegador_a_escuta():
+    """Cruza os dois lados em vez de prender uma string.
+
+    `audio.input.transcription` nasce null na API. Sem configurar, o evento
+    `conversation.item.input_audio_transcription.completed` NUNCA e emitido — e
+    `realtime-session.ts` tem um listener para ele. O resultado era um listener
+    morto e metade da linha do tempo do painel vazia: so a fala do agente
+    aparecia, a da pessoa nunca.
+    """
+    sessao = FRONTEND / "lib" / "realtime-session.ts"
+    escuta = "input_audio_transcription.completed" in sessao.read_text()
+
+    fonte = inspect.getsource(rt.criar_sessao)
+    configura = '"transcription"' in fonte
+
+    assert escuta, "o navegador deixou de escutar a transcricao da entrada"
+    assert configura, (
+        "o navegador escuta input_audio_transcription.completed, mas a sessao nao "
+        "configura audio.input.transcription — o evento nunca sera emitido"
+    )
+
+
+def test_turn_detection_e_explicito_e_nao_herdado():
+    """O default e threshold 0.5 / silencio 500ms, e ninguem sabia disso.
+
+    Com a frase de preenchimento o agente fala muito mais, e 0.5 realimenta pelo
+    alto-falante. 500ms tambem corta quem pausa para pensar.
+    """
+    fonte = inspect.getsource(rt.criar_sessao)
+    assert '"turn_detection"' in fonte, "turn_detection voltou a ser herdado do default"
+    assert '"silence_duration_ms"' in fonte
+    assert '"threshold"' in fonte
+
+
+def test_o_modelo_e_mandado_falar_antes_de_buscar():
+    """A busca leva de 5 a 15s e a pessoa ouve silencio absoluto nesse intervalo.
+
+    A obrigacao vive em DOIS lugares de proposito: no prompt e na descricao da
+    tool. O modelo le a descricao no instante em que decide chamar, que e
+    exatamente quando precisa saber que a chamada e lenta.
+    """
+    assert "holding phrase" in rt.INSTRUCOES
+    assert "silence" in rt.FERRAMENTA_BUSCA["description"]
+
+
+def test_erro_de_busca_e_campo_proprio_e_o_prompt_sabe_le_lo():
+    """Lista vazia e "nao esta no acervo". `erro` e "nao consegui olhar".
+
+    Sem separar, um 500 do backend fazia o agente afirmar com confianca que o
+    documento da pessoa nao continha aquilo — falso, e justamente a falha que
+    este acervo existe para impedir.
+    """
+    assert "erro" in rt.BuscaResposta.model_fields
+    assert "`erro`" in rt.INSTRUCOES, "o contrato tem o campo, mas o prompt nao o le"
+
+
+def test_a_busca_dispara_antes_do_fim_da_resposta():
+    """Se o gatilho volta para `response.done`, a frase de preenchimento perde o efeito.
+
+    Ela tocaria, terminaria, e so entao a busca comecaria: o silencio volta
+    inteiro, apenas deslocado. O disparo em `function_call_arguments.done`
+    sobrepoe a busca a fala.
+    """
+    sessao = (FRONTEND / "lib" / "realtime-session.ts").read_text()
+    assert "response.function_call_arguments.done" in sessao
+    assert "AbortSignal.timeout" in sessao, "fetch sem timeout e silencio sem fim"

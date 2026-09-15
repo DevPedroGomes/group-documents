@@ -72,7 +72,11 @@ FERRAMENTA_BUSCA = {
         "documents — never answer from memory. Rephrase what they said into a clear "
         "search question: spoken language is terse and the documents are not. "
         "Pass `data_de_referencia` only when the person asks about a specific point "
-        "in time, like 'what was the policy in March 2025'."
+        "in time, like 'what was the policy in March 2025'. "
+        # O orcamento de latencia vive AQUI, e nao so no prompt: o modelo le a
+        # descricao no instante em que decide chamar, que e quando precisa saber.
+        "This search takes several seconds to run, and the person hears silence the "
+        "whole time — always say a short holding phrase out loud before calling it."
     ),
     "parameters": {
         "type": "object",
@@ -112,8 +116,21 @@ would never find out is exactly the failure this archive exists to prevent.
 WHEN THE QUESTION IS ABOUT A DATE: pass `data_de_referencia` and say which cutoff \
 you used, so the person knows the answer is about that date and not about today.
 
+BEFORE EVERY SEARCH, SAY SOMETHING FIRST. Always speak a short, neutral holding \
+phrase out loud — "Let me check that", "One moment", "Let me look that up" — and \
+then call buscar_no_acervo in the same turn. Never call the search in silence: it \
+takes several seconds and the person hears nothing at all in the meantime. Vary the \
+phrase, and never let it hint at whether you will find the answer or not.
+
+IF THE SEARCH IS TAKING LONG and the person speaks again, say you are still \
+looking. Never leave them in silence for more than ten seconds.
+
 When the search comes back empty, say plainly that it is not in the documents. Do \
 not fill the gap.
+
+IF THE RESULT CARRIES AN `erro` FIELD, the archive could not be reached. Say the \
+search is temporarily unavailable and offer to try again. Do NOT say it is not in \
+the documents — that is a different thing, and saying it would be false.
 
 You are being heard, not read. Two or three sentences. No lists, no markdown, no \
 headings, no citation markers — if the source matters, name the file out loud. \
@@ -161,6 +178,13 @@ class BuscaResposta(BaseModel):
     baixa_confianca: bool
     divergencia: dict | None = None
     """Preenchido quando duas ou mais fontes respondem diferente à mesma pergunta."""
+    erro: str | None = None
+    """A busca NAO rodou (backend fora do ar, timeout).
+
+    Campo proprio, e nao `baixa_confianca`, porque os dois casos sao diferentes e
+    o prompt trata cada um de um jeito: vazio significa "nao esta no acervo";
+    `erro` significa "nao consegui olhar". Sem essa separacao, um 500 fazia o
+    agente afirmar com confianca que o documento da pessoa nao continha aquilo."""
 
 
 @router.post("/session", response_model=SessaoResposta)
@@ -198,7 +222,30 @@ async def criar_sessao(request: Request) -> SessaoResposta:
             "type": "realtime",
             "model": settings.realtime_model,
             "instructions": INSTRUCOES,
-            "audio": {"output": {"voice": settings.realtime_voice}},
+            "audio": {
+                "input": {
+                    # Sem isto a transcricao da entrada nasce null e o evento
+                    # `input_audio_transcription.completed` nunca chega: metade
+                    # da linha do tempo do painel ficava vazia. Sem `language` de
+                    # proposito — o prompt manda o agente trocar de idioma junto
+                    # com a pessoa, e pinar um idioma mataria isso.
+                    "transcription": {"model": settings.realtime_transcribe_model},
+                    "noise_reduction": {"type": "near_field"},
+                    # Explicito em vez de herdado. O default e threshold 0.5 e
+                    # silencio de 500ms; com a frase de preenchimento o agente
+                    # fala muito mais e 0.5 realimenta pelo alto-falante. 500ms
+                    # tambem corta quem pausa para pensar — portugues falado tem
+                    # pausa mais longa que isso.
+                    "turn_detection": {
+                        "type": "server_vad",
+                        "threshold": 0.65,
+                        "prefix_padding_ms": 300,
+                        "silence_duration_ms": 700,
+                        "create_response": True,
+                    },
+                },
+                "output": {"voice": settings.realtime_voice},
+            },
             "tools": [FERRAMENTA_BUSCA],
             "tool_choice": "auto",
         }

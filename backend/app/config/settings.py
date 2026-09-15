@@ -144,6 +144,12 @@ class Settings(BaseSettings):
     openai_api_key: Optional[str] = None
     realtime_model: str = "gpt-realtime-2.1"
     realtime_voice: str = "marin"
+    realtime_transcribe_model: str = "gpt-4o-mini-transcribe"
+    """Transcreve a fala da PESSOA. Sem isto `audio.input.transcription` nasce
+    null e o evento `input_audio_transcription.completed` nunca e emitido, entao
+    o que ela fala nunca aparece no painel. E cobrado a parte. A doc lista
+    tambem `gpt-live-transcribe` e `gpt-realtime-whisper`; este e o que a
+    referencia oficial da OpenAI usa, e e o mais barato."""
 
     # Guardrails
     enable_input_guardrails: bool = True
