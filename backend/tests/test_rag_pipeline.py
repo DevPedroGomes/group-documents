@@ -473,7 +473,7 @@ def test_a_consulta_usa_a_mesma_config_textual_do_trigger():
     from app.services import vector_store
 
     migration = _sql_sem_comentarios(
-        (BACKEND / "migrations" / "006_busca_textual_neutra.sql").read_text()
+        (BACKEND / "migrations" / "001_baseline.sql").read_text()
     )
     no_trigger = re.search(r"to_tsvector\(\s*'([a-z]+)'", migration)
 
@@ -485,17 +485,26 @@ def test_a_consulta_usa_a_mesma_config_textual_do_trigger():
     )
 
 
-def test_nenhum_lado_da_busca_textual_fixa_ingles():
-    """O acervo e multilingue; `english` fazia stemming errado em portugues."""
+def test_trocar_a_config_textual_exige_medir_antes():
+    """Este teste existe por causa de um erro que quase foi para producao.
+
+    A intuicao era que `english` num acervo portugues fazia stemming errado e
+    que `simple` seria mais neutro. Medido contra o banco de producao, o oposto:
+    o stemmer ingles remove o `-s` final e plural portugues tambem termina em
+    `-s`, entao ele acerta o caso comum por acidente. Com `simple`,
+    "documentos" deixou de casar os 5 chunks que casava. `portuguese` empatou
+    com `english` nos 8 termos testados.
+
+    A solucao real e idioma POR DOCUMENTO, nao uma configuracao global. Ate la,
+    quem trocar esta constante tem de trocar o trigger junto E medir o recall
+    antes — nao ha ganho conhecido em mexer.
+    """
     from app.services import vector_store
 
-    codigo = inspect.getsource(vector_store.hybrid_search)
-    assert "'english'" not in codigo
-
-    migration = _sql_sem_comentarios(
-        (BACKEND / "migrations" / "006_busca_textual_neutra.sql").read_text()
+    assert vector_store.TEXT_SEARCH_CONFIG == "english", (
+        "trocar a configuracao textual sem medir o recall ja derrubou a busca "
+        "uma vez; ver o comentario em vector_store.py"
     )
-    assert "'english'" not in migration
 
 
 def test_sentenca_sem_pontuacao_nao_vira_chunk_ilimitado():
