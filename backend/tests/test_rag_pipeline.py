@@ -441,3 +441,85 @@ def test_bloco_com_cache_control_sobrevive_a_traducao():
     }]
     bloco = _to_openai_messages(mensagens, None)[0]["content"][0]
     assert bloco.get("cache_control") == {"type": "ephemeral"}
+
+
+# ---------------------------------------------------------------------------
+# A busca por palavra-chave e o chunk que nao cabia
+# ---------------------------------------------------------------------------
+
+
+def _sql_sem_comentarios(sql: str) -> str:
+    """So o SQL executavel.
+
+    O cabecalho da 006 CITA o `to_tsvector('english', ...)` antigo para explicar
+    o que estava errado — sem tirar os comentarios, o teste le a explicacao como
+    se fosse a configuracao em vigor.
+    """
+    return "\n".join(
+        linha for linha in sql.splitlines() if not linha.lstrip().startswith("--")
+    )
+
+
+def test_a_consulta_usa_a_mesma_config_textual_do_trigger():
+    """Cruza dois arquivos em vez de prender uma string.
+
+    Indexar com uma configuracao e consultar com outra devolve vazio, sem erro
+    nenhum: o Postgres aceita as duas chamadas e simplesmente nao casa nada. Era
+    assim que o `english` do trigger convivia com um acervo em portugues sem
+    ninguem notar — a perna vetorial disfarcava.
+    """
+    import re
+
+    from app.services import vector_store
+
+    migration = _sql_sem_comentarios(
+        (BACKEND / "migrations" / "006_busca_textual_neutra.sql").read_text()
+    )
+    no_trigger = re.search(r"to_tsvector\(\s*'([a-z]+)'", migration)
+
+    assert no_trigger, "o trigger da 006 deixou de declarar a configuracao textual"
+    assert no_trigger.group(1) == vector_store.TEXT_SEARCH_CONFIG, (
+        f"o trigger indexa com '{no_trigger.group(1)}' e a consulta usa "
+        f"'{vector_store.TEXT_SEARCH_CONFIG}' — a busca por palavra-chave "
+        f"devolveria vazio em silencio"
+    )
+
+
+def test_nenhum_lado_da_busca_textual_fixa_ingles():
+    """O acervo e multilingue; `english` fazia stemming errado em portugues."""
+    from app.services import vector_store
+
+    codigo = inspect.getsource(vector_store.hybrid_search)
+    assert "'english'" not in codigo
+
+    migration = _sql_sem_comentarios(
+        (BACKEND / "migrations" / "006_busca_textual_neutra.sql").read_text()
+    )
+    assert "'english'" not in migration
+
+
+def test_sentenca_sem_pontuacao_nao_vira_chunk_ilimitado():
+    """Uma pagina de tabela ou de contrato em caixa alta e UMA sentenca.
+
+    O laco so fecha um chunk quando ja ha algo acumulado; com a lista vazia a
+    condicao e falsa e a sentenca entrava inteira, de qualquer tamanho. O chunk
+    estourava o limite do embedding, e o trecho que chegava ao gerador era a
+    pagina toda.
+    """
+    from app.core.ingestion.chunker import _token_count, chunk_text
+
+    teto = 500
+    sem_pontuacao = "PALAVRA " * 4000
+    chunks = chunk_text(sem_pontuacao, max_tokens=teto)
+
+    assert len(chunks) > 1, "a sentenca gigante continuou saindo em um chunk so"
+    maior = max(_token_count(c) for c in chunks)
+    assert maior <= teto, f"chunk com {maior} tokens acima do teto de {teto}"
+
+
+def test_texto_normal_continua_saindo_inteiro():
+    """O teto nao pode picotar quem ja cabia."""
+    from app.core.ingestion.chunker import chunk_text
+
+    texto = "Primeira frase. Segunda frase aqui. Terceira e ultima."
+    assert chunk_text(texto, max_tokens=500) == [texto]

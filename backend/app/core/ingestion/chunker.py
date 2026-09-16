@@ -22,14 +22,50 @@ def _token_count(text: str) -> int:
     return len(_encoder.encode(text))
 
 
+def _quebrar_em_sentencas(text: str, max_tokens: int) -> list[str]:
+    """Divide em sentencas e impoe um TETO por sentenca.
+
+    O laco de `chunk_text` so fecha um chunk quando `current_chunk` ja tem algo:
+    com ele vazio a condicao e falsa e a sentenca entra inteira, qualquer que
+    seja o tamanho. Como o whitespace ja foi colapsado antes, uma pagina sem
+    pontuacao — tabela, balanco, contrato em caixa alta — e UMA sentenca, e
+    virava um chunk de tamanho ilimitado: estoura o limite do embedding, e o
+    trecho que chega ao gerador vira a pagina toda.
+
+    Aqui a sentenca grande demais e partida por palavras. O corte fica pior que
+    um corte por sentenca, mas o chunk passa a existir.
+    """
+    import re
+
+    sentencas = re.split(r"(?<=[.!?])\s+", text)
+    saida: list[str] = []
+
+    for sent in sentencas:
+        if _token_count(sent) <= max_tokens:
+            saida.append(sent)
+            continue
+
+        palavras = sent.split()
+        pedaco: list[str] = []
+        for palavra in palavras:
+            candidato = pedaco + [palavra]
+            if pedaco and _token_count(" ".join(candidato)) > max_tokens:
+                saida.append(" ".join(pedaco))
+                pedaco = [palavra]
+            else:
+                pedaco = candidato
+        if pedaco:
+            saida.append(" ".join(pedaco))
+
+    return saida
+
+
 def chunk_text(text: str, max_tokens: int = 500, overlap: int = 100) -> list[str]:
     """
     Split text into chunks of max_tokens with overlap.
     Uses sentence boundaries for semantic coherence.
     """
-    import re
-
-    sentences = re.split(r"(?<=[.!?])\s+", text)
+    sentences = _quebrar_em_sentencas(text, max_tokens)
     chunks = []
     current_chunk: list[str] = []
     current_tokens = 0
