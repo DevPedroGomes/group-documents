@@ -50,6 +50,12 @@ def add_chunks(
     return len(recs)
 
 
+# A MESMA configuracao usada pelo trigger em migrations/006. Indexar com uma
+# e consultar com outra devolve vazio — ha teste cruzando os dois arquivos.
+# `simple` porque o acervo e multilingue: ver a motivacao na propria migration.
+TEXT_SEARCH_CONFIG = "simple"
+
+
 def hybrid_search(
     query_embedding: list[float],
     query_text: str,
@@ -99,6 +105,7 @@ def hybrid_search(
         "query_text": query_text,
         "user_id": user_id,
         "limit": prefetch,
+        "ts_config": TEXT_SEARCH_CONFIG,
     }
 
     data_filter = ""
@@ -137,10 +144,10 @@ def hybrid_search(
     keyword_sql = sqltext(f"""
         SELECT c.id, c.document_id, d.title as document_title, c.page,
                left(c.content, 4000) as snippet,
-               ts_rank(c.search_vector, plainto_tsquery('english', :query_text)) as score
+               ts_rank(c.search_vector, plainto_tsquery(:ts_config, :query_text)) as score
         FROM chunks c
         JOIN documents d ON c.document_id = d.id
-        WHERE c.search_vector @@ plainto_tsquery('english', :query_text)
+        WHERE c.search_vector @@ plainto_tsquery(:ts_config, :query_text)
         AND c.user_id = CAST(:user_id AS uuid)
         {doc_filter}
         {data_filter}
