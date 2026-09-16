@@ -293,3 +293,52 @@ def test_a_busca_dispara_antes_do_fim_da_resposta():
     sessao = (FRONTEND / "lib" / "realtime-session.ts").read_text()
     assert "response.function_call_arguments.done" in sessao
     assert "AbortSignal.timeout" in sessao, "fetch sem timeout e silencio sem fim"
+
+
+# ---------------------------------------------------------------------------
+# A conversa que cai, e a cota que some sem conversa nenhuma
+# ---------------------------------------------------------------------------
+
+
+def test_cota_volta_quando_a_credencial_nao_e_cunhada():
+    """O teto e consumido ANTES do mint de proposito: uma conversa de voz e
+    aberta, e sem isso um visitante segura a linha e gasta o dia sozinho. Essa
+    decisao fica.
+
+    O que este teste prende e o outro caso: quando NOS falhamos em criar a
+    sessao, ela nunca existiu, e cobrar por ela gasta uma das 40 diarias sem
+    ninguem ter falado. Mesmo padrao ja usado em documents.py e chat.py.
+    """
+    fonte = inspect.getsource(rt.criar_sessao)
+    pos_consumo = fonte.index('consumir("realtime"')
+    pos_devolucao = fonte.find('devolver("realtime"')
+
+    assert pos_devolucao > 0, "a rota consome a cota e nunca devolve"
+    assert pos_devolucao > pos_consumo, "a devolucao precisa vir depois do consumo"
+    assert "httpx.HTTPError" in fonte[pos_consumo:pos_devolucao], (
+        "a devolucao tem de estar no caminho de falha do mint, nao no caminho feliz"
+    )
+
+
+def test_a_queda_da_conexao_e_observada():
+    """Uma falha de ICE mata o data channel.
+
+    Com isso o handler de `error` do canal nunca dispara, e a tela fica em
+    "Listening" com a bolinha verde pulsando para sempre. O estado do
+    RTCPeerConnection e o unico lugar onde a queda e observavel.
+    """
+    sessao = (FRONTEND / "lib" / "realtime-session.ts").read_text()
+    assert "onconnectionstatechange" in sessao, "a queda de conexao voltou a ser silenciosa"
+    assert "'failed'" in sessao and "'disconnected'" in sessao
+
+
+def test_a_validade_da_credencial_nao_e_descartada():
+    """O backend calcula `expires_at` e devolve; o front ignorava.
+
+    A credencial so autentica o POST de SDP inicial, entao expirar depois nao
+    derruba a chamada. Mas se a pessoa demora a liberar o microfone ela expira
+    ANTES, e o erro exibido era um generico "Could not open the voice
+    connection" — que manda investigar a coisa errada.
+    """
+    sessao = (FRONTEND / "lib" / "realtime-session.ts").read_text()
+    assert "expires_at" in sessao, "o front voltou a descartar a validade da credencial"
