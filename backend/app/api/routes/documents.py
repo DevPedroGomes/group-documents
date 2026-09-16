@@ -432,7 +432,17 @@ async def list_documents(request: Request, query: Optional[str] = None, semantic
                 return {"items": []}
 
     with engine.begin() as conn:
-        base_sql = "SELECT id, title, mime, status, summary, chunk_count FROM documents WHERE user_id = CAST(:user_id AS uuid)"
+        # `erro` vinha sendo gravado em meta->>'error' e nunca projetado: a tela
+        # mostrava um badge "Failed" sem causa e sem saida. `preso` cobre o
+        # outro silencio — se a fila perde o job, o documento fica em
+        # pending/processing para sempre e o browser faz polling indefinido.
+        base_sql = (
+            "SELECT id, title, mime, status, summary, chunk_count, "
+            "meta->>'error' AS erro, "
+            "(status IN ('pending','processing') "
+            " AND uploaded_at < now() - interval '30 minutes') AS preso "
+            "FROM documents WHERE user_id = CAST(:user_id AS uuid)"
+        )
         params: dict = {"user_id": user_id}
 
         if relevant_ids is not None:
