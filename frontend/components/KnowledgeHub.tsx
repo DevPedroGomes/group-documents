@@ -39,6 +39,10 @@ interface Document {
   title: string
   mime: string
   status: 'pending' | 'processing' | 'completed' | 'failed'
+  /** Causa da falha, de meta->>'error'. Sem ela o badge "Failed" e um beco sem saida. */
+  erro?: string | null
+  /** Em pending/processing ha mais de 30 min: a fila perdeu o job. */
+  preso?: boolean
   summary?: string
   chunk_count?: number
 }
@@ -605,6 +609,17 @@ function DocumentCard({
   }
 
   const getStatusBadge = () => {
+    // Um documento parado ha mais de 30 min nao esta "processando": a fila
+    // perdeu o job. Mostrar o spinner para sempre faz a pessoa esperar por algo
+    // que nao vai acontecer.
+    if (doc.preso) {
+      return (
+        <Badge variant="destructive" className="gap-1" title="Nothing has picked this up. Try uploading it again.">
+          <AlertCircle className="h-3 w-3" />
+          Stalled
+        </Badge>
+      )
+    }
     switch (doc.status) {
       case 'pending':
         return (
@@ -628,10 +643,11 @@ function DocumentCard({
           </Badge>
         )
       case 'failed':
+        // A causa ja era gravada em meta->>'error' e nunca chegava aqui.
         return (
-          <Badge variant="destructive" className="gap-1">
+          <Badge variant="destructive" className="gap-1" title={doc.erro ?? undefined}>
             <AlertCircle className="h-3 w-3" />
-            Failed
+            {doc.erro ? 'Failed — hover for details' : 'Failed'}
           </Badge>
         )
     }

@@ -236,7 +236,16 @@ async def process_ingestion(doc_id: str, user_id: str, storage_path: str):
 
         # Update document
         with engine.begin() as conn:
-            update_sql = "UPDATE documents SET status = 'completed', chunk_count = :count"
+            # `meta - 'error'` apaga a causa da tentativa ANTERIOR. Sem isto o
+            # erro fica grudado num documento que depois foi reprocessado com
+            # sucesso: em producao ha 6 documentos `completed` carregando um
+            # "You have not yet added your payment method" de uma falha antiga
+            # da Voyage. Qualquer tela que mostre a causa passaria a acusar
+            # erro em documento que funcionou.
+            update_sql = (
+                "UPDATE documents SET status = 'completed', chunk_count = :count, "
+                "meta = COALESCE(meta, '{}'::jsonb) - 'error'"
+            )
             update_params: dict = {"id": doc_id, "count": len(itens)}
             if summary:
                 update_sql += ", summary = :summary"
