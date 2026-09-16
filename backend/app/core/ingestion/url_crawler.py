@@ -114,40 +114,57 @@ def _normalize_host(hostname: str) -> Tuple[Optional[str], str]:
 
 
 def is_safe_url(url: str) -> Tuple[bool, str]:
+    """Compatibilidade: valida e descarta o IP. Use `validar_e_resolver` em
+    qualquer caminho que va de fato BUSCAR a URL — validar um IP e conectar em
+    outro e a janela de DNS rebinding."""
+    ok, err, _ip = validar_e_resolver(url)
+    return ok, err
+
+
+def validar_e_resolver(url: str) -> Tuple[bool, str, Optional[str]]:
+    """Valida a URL e devolve o IP aprovado, para que a conexao use ESSE IP.
+
+    Sem devolver o IP, quem chama so pode entregar o hostname ao cliente HTTP,
+    que resolve o DNS DE NOVO. Entre as duas resolucoes cabe um servidor DNS
+    hostil com TTL 0: a primeira responde um IP publico e passa na validacao, a
+    segunda responde 127.0.0.1 e a conexao vai para la.
+
+    Isso foi reproduzido: com o getaddrinfo alternando a resposta, o crawler
+    buscou um servidor em 127.0.0.1 e devolveu o conteudo dele. Ha teste."""
     try:
         parsed = urlparse(url)
 
         if parsed.scheme not in ("http", "https"):
-            return False, f"scheme '{parsed.scheme}' not allowed (use http or https)"
+            return False, f"scheme '{parsed.scheme}' not allowed (use http or https)", None
 
         host, err = _normalize_host(parsed.hostname or "")
         if err:
-            return False, err
+            return False, err, None
 
         if host in _DENY_HOSTS:
-            return False, f"hostname blocked: {host}"
+            return False, f"hostname blocked: {host}", None
 
         try:
             port = parsed.port
         except ValueError:
-            return False, "invalid port"
+            return False, "invalid port", None
         if port and port in _BLOCKED_PORTS:
-            return False, f"port {port} not allowed"
+            return False, f"port {port} not allowed", None
 
         ip_literal: Optional[ipaddress._BaseAddress] = None
         if host.startswith("[") and host.endswith("]"):
             try:
                 ip_literal = ipaddress.IPv6Address(host[1:-1])
             except ValueError:
-                return False, "invalid IPv6 literal"
+                return False, "invalid IPv6 literal", None
         else:
             if "." in host and all(c.isdigit() or c == "." for c in host):
                 if not _DOTTED_QUAD.match(host):
-                    return False, f"obfuscated/malformed IPv4 blocked: {host}"
+                    return False, f"obfuscated/malformed IPv4 blocked: {host}", None
                 try:
                     ip_literal = ipaddress.IPv4Address(host)
                 except ValueError:
-                    return False, f"invalid IPv4: {host}"
+                    return False, f"invalid IPv4: {host}", None
             else:
                 try:
                     ip_literal = ipaddress.IPv6Address(host)
@@ -157,18 +174,19 @@ def is_safe_url(url: str) -> Tuple[bool, str]:
         if ip_literal is not None:
             ok, err = _check_ip(ip_literal)
             if not ok:
-                return False, err
-            return True, ""
+                return False, err, None
+            return True, "", str(ip_literal)
 
         try:
             infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
         except socket.gaierror as e:
-            return False, f"DNS lookup failed for {host}: {e}"
+            return False, f"DNS lookup failed for {host}: {e}", None
 
         if not infos:
-            return False, f"no DNS records for {host}"
+            return False, f"no DNS records for {host}", None
 
         seen = set()
+        aprovado: Optional[str] = None
         for info in infos:
             sockaddr = info[4]
             ip_str = sockaddr[0]
@@ -180,15 +198,19 @@ def is_safe_url(url: str) -> Tuple[bool, str]:
             try:
                 ip_obj = ipaddress.ip_address(ip_str)
             except ValueError:
-                return False, f"DNS returned invalid IP: {ip_str}"
+                return False, f"DNS returned invalid IP: {ip_str}", None
             ok, err = _check_ip(ip_obj)
             if not ok:
-                return False, err
+                return False, err, None
+            # TODOS os IPs do host precisam passar; o primeiro aprovado e o que
+            # a conexao vai usar, para nao sobrar escolha ao resolvedor.
+            if aprovado is None:
+                aprovado = ip_str
 
-        return True, ""
+        return True, "", aprovado
 
     except Exception as e:
-        return False, f"URL validation error: {e}"
+        return False, f"URL validation error: {e}", None
 
 
 def _strip_html(html: str) -> Tuple[str, Optional[str]]:
@@ -226,12 +248,47 @@ def fetch_and_extract(url: str) -> Tuple[str, Optional[str]]:
         follow_redirects=False,
     ) as client:
         for _ in range(MAX_REDIRECTS):
-            ok, err = is_safe_url(current)
+            ok, err, ip = validar_e_resolver(current)
             if not ok:
                 raise ValueError(f"URL blocked: {err}")
+            if ip is None:
+                raise ValueError("URL blocked: no validated IP")
 
+            # Conecta no IP QUE FOI VALIDADO, nao no hostname. Entregar o
+            # hostname ao httpx o faria resolver o DNS de novo, e entre as duas
+            # resolucoes cabe um servidor hostil com TTL 0 — reproduzido: a 1a
+            # resposta passava na validacao e a 2a levava a conexao para
+            # 127.0.0.1. O Host header e o SNI continuam com o nome original,
+            # entao o site responde certo e o certificado e conferido contra o
+            # nome, nao contra o IP.
+            alvo = httpx.URL(current)
+            host_header = alvo.netloc.decode("ascii")
+            ip_para_url = f"[{ip}]" if ":" in ip else ip
+            url_pinada = alvo.copy_with(host=ip_para_url)
+            extensions = {"sni_hostname": alvo.host} if alvo.scheme == "https" else {}
+
+            # `stream` em vez de `get`: o corpo e lido em pedacos e a conexao
+            # e cortada assim que passa do teto. Com `get`, o download inteiro
+            # ja estava na memoria quando o tamanho era conferido — um servidor
+            # hostil anunciando 5 MB e mandando 5 GB enchia a RAM antes da
+            # checagem acontecer.
             try:
-                r = client.get(current)
+                with client.stream(
+                    "GET",
+                    url_pinada,
+                    headers={"Host": host_header},
+                    extensions=extensions,
+                ) as r:
+                    if not r.is_redirect:
+                        corpo = bytearray()
+                        for pedaco in r.iter_bytes():
+                            corpo.extend(pedaco)
+                            if len(corpo) > MAX_BYTES:
+                                raise ValueError(
+                                    f"page too large (>{MAX_BYTES // (1024*1024)} MB)"
+                                )
+                        conteudo = bytes(corpo)
+                        encoding = r.encoding or "utf-8"
             except httpx.HTTPError as e:
                 raise ValueError(f"fetch failed: {e}") from e
 
@@ -250,12 +307,8 @@ def fetch_and_extract(url: str) -> Tuple[str, Optional[str]]:
             ):
                 raise ValueError(f"unsupported content-type: {content_type}")
 
-            if len(r.content) > MAX_BYTES:
-                raise ValueError(
-                    f"page too large (>{MAX_BYTES // (1024*1024)} MB)"
-                )
-
-            html = r.text
+            # o teto ja foi imposto durante o download, acima
+            html = conteudo.decode(encoding, errors="replace")
             text, page_title = _strip_html(html)
             if not text or len(text) < 30:
                 raise ValueError("no meaningful text extracted from page")
