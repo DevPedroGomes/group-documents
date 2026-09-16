@@ -50,10 +50,22 @@ def add_chunks(
     return len(recs)
 
 
-# A MESMA configuracao usada pelo trigger em migrations/006. Indexar com uma
-# e consultar com outra devolve vazio — ha teste cruzando os dois arquivos.
-# `simple` porque o acervo e multilingue: ver a motivacao na propria migration.
-TEXT_SEARCH_CONFIG = "simple"
+# A MESMA configuracao com que o trigger da 001 indexa. Indexar com uma e
+# consultar com outra devolve VAZIO, sem erro nenhum — ha teste cruzando os
+# dois arquivos.
+#
+# Por que continua 'english' num acervo que e portugues: foi medido contra o
+# banco de producao, e a intuicao estava errada. O stemmer ingles remove o `-s`
+# final, e plural portugues tambem termina em `-s`, entao ele acerta o caso
+# comum por acidente. Trocar para 'simple' DERRUBA o recall ("documentos"
+# casava 5 chunks e passa a casar 0, porque sem stemming nao encontra
+# "documento"), e 'portuguese' empata com 'english' em todos os 8 termos
+# testados.
+#
+# A escolha certa nao e uma configuracao global e sim uma POR DOCUMENTO, com
+# coluna de idioma detectada na ingestao. Enquanto isso nao existir, mexer aqui
+# so troca de lugar quem fica errado.
+TEXT_SEARCH_CONFIG = "english"
 
 
 def hybrid_search(
