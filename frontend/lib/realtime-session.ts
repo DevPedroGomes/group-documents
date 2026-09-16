@@ -80,11 +80,22 @@ export class RealtimeSession {
       const e = await r.json().catch(() => ({ detail: 'Realtime is unavailable' }))
       throw new Error(e.detail ?? 'Realtime is unavailable')
     }
-    const { client_secret, thread_id } = (await r.json()) as {
+    const { client_secret, thread_id, expires_at } = (await r.json()) as {
       client_secret: string
       thread_id: string
+      expires_at: number
     }
     this.threadId = thread_id
+
+    // O backend calcula e devolve `expires_at`, e ele vinha sendo descartado. A
+    // credencial so autentica o POST de SDP inicial — depois do WebRTC de pe,
+    // expirar nao derruba a chamada. Mas se a pessoa demora a liberar o
+    // microfone, ela expira ANTES do POST, e o erro que aparecia era um
+    // generico "Could not open the voice connection".
+    const expiraEm = expires_at * 1000 - Date.now()
+    if (expiraEm <= 0) {
+      throw new Error('The voice session expired before it opened. Try again.')
+    }
 
     // 2. Microfone. Sem echoCancellation o modelo escuta a propria voz pelo
     //    alto-falante e se interrompe sozinho num loop.
@@ -94,6 +105,17 @@ export class RealtimeSession {
 
     const pc = new RTCPeerConnection()
     this.pc = pc
+
+    // Sem isto uma queda nao aparece em lugar nenhum: uma falha de ICE mata o
+    // data channel, entao o handler de `error` dele nunca dispara, e a tela
+    // fica em "Listening" com a bolinha verde pulsando para sempre. O estado
+    // do RTCPeerConnection e o unico lugar onde a queda e observavel.
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+        this.cb.onErro?.('The voice connection dropped. Try again.')
+        this.desconectar()
+      }
+    }
 
     this.audio = new Audio()
     this.audio.autoplay = true

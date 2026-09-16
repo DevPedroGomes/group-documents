@@ -261,6 +261,11 @@ async def criar_sessao(request: Request) -> SessaoResposta:
             r.raise_for_status()
             dados = r.json()
     except httpx.HTTPError as e:
+        # A sessao nao chegou a existir: cobrar por ela gastaria uma das 40
+        # diarias sem ninguem ter falado. O teto continua sendo consumido ANTES
+        # do mint de proposito (ver acima) — o que muda aqui e so o caso em que
+        # NOS falhamos em cria-la. Mesmo padrao de documents.py e chat.py.
+        await metering.devolver("realtime")
         logger.warning("realtime: falha ao cunhar credencial: %s", e)
         raise HTTPException(503, "Realtime voice is unavailable") from e
 
