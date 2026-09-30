@@ -5,6 +5,7 @@ EIXO proprio. Dois eixos diferentes tem cosseno 0, abaixo do piso de 0,1 da
 perna semantica; entao consultar com um eixo que nenhum trecho usa isola a
 perna de palavra-chave, e consultar com o eixo do trecho garante a semantica.
 """
+import re
 from datetime import date, datetime
 from pathlib import Path
 
@@ -74,16 +75,17 @@ def _docs(resultados: list[dict]) -> list[str]:
 # ---------------------------------------------------------------------------
 
 def test_pergunta_completa_em_portugues_acha_o_trecho_pela_palavra_chave(banco_limpo):
-    """Com 'english' e AND, "qual", "o", "pra" viravam termos obrigatorios e a
-    pergunta nao casava nada. O eixo da consulta nao e de trecho nenhum: quem
-    acha e a perna textual, e sem acento na pergunta."""
+    """Com 'english' e AND, "qual", "o", "de" viravam termos obrigatorios e a
+    pergunta nao casava nada. Com OR, se alguma metade deixasse "de" virar
+    termo, a ata (que so tem "de" em comum) voltaria junto. O eixo da consulta
+    nao e de trecho nenhum: quem acha e a perna textual, e sem acento."""
     u = _usuario()
     politica = _documento(u, "Politica comercial")
     _trecho(u, politica, "Resposta: o frete nacional é grátis acima de 150 reais.", eixo=1)
     ata = _documento(u, "Ata")
     _trecho(u, ata, "Revisão dos indicadores do mês anterior no setor de Logística.", eixo=2)
 
-    resultados = _buscar(u, "qual o valor minimo pra ter frete gratis?")
+    resultados = _buscar(u, "qual o valor minimo de frete gratis?")
 
     assert _docs(resultados) == [politica]
 
@@ -109,6 +111,31 @@ def test_trigger_e_consulta_usam_as_mesmas_configs(banco_limpo):
     assert _buscar(u, "how long does international shipping take?")
 
 
+FUNCIONAIS = (
+    "qual o de para da em um que não é com os as do no na uma por mais até você "
+    "what is the of for to in a and on it with was this that are"
+)
+
+
+def test_nenhuma_metade_emite_palavra_funcional_de_nenhuma_lingua(banco_limpo):
+    """Com OR e `ts_rank` sem IDF, um trecho que casa so "de" pontua perto de um
+    que casa o assunto. Cada metade descarta as stopwords das duas linguas, e a
+    consulta do app nao leva nenhuma delas."""
+    from app.db.engine import engine
+    from app.services.vector_store import TEXT_SEARCH_CONFIGS, TSQUERY_SQL
+
+    with engine.begin() as conn:
+        for cfg in TEXT_SEARCH_CONFIGS:
+            vetor = conn.execute(sqltext(f"SELECT to_tsvector('{cfg}', :t)::text"), {"t": FUNCIONAIS}).scalar()
+            assert vetor == "", f"{cfg} emite palavra funcional: {vetor}"
+        consulta = conn.execute(
+            sqltext(f"SELECT {TSQUERY_SQL}::text"),
+            {"query_text": "Qual é o valor mínimo de frete grátis? What is the minimum for free shipping?"},
+        ).scalar()
+    termos = set(re.findall(r"'([^']+)'", consulta))
+    assert termos and not termos & {"qual", "o", "de", "e", "é", "what", "is", "the", "for"}, termos
+
+
 def test_a_008_recalcula_o_vetor_das_linhas_que_ja_existiam(banco_limpo):
     """Linha gravada pelo trigger antigo ('english') tem de ser reindexada pela
     migration; reaplicar a 008 tambem prova que ela e idempotente."""
@@ -129,21 +156,28 @@ def test_a_008_recalcula_o_vetor_das_linhas_que_ja_existiam(banco_limpo):
 
 def test_conjunto_ouro_nao_regride(banco_limpo):
     """A config textual so muda medindo. Roda a perna de palavra-chave do app
-    (trigger + TSQUERY_SQL) sobre o acervo e as perguntas-ouro do script de
-    avaliacao; o piso fica um pouco abaixo do medido na adocao (pt recall@45
-    0,95 e MRR 0,99; en MRR 1,00; nenhuma pergunta sem resultado)."""
-    from scripts.avaliar_busca_textual import _agregar, _app_como_candidato, medir, perguntas_ouro, semear
+    (trigger + TSQUERY_SQL) no acervo e nas perguntas-ouro do script de
+    avaliacao, com empate contado contra. Pisos um pouco abaixo do medido na
+    adocao (pt originais: recall@45 0,94 e MRR 0,98; sem acento MRR 1,00;
+    ingles MRR 0,90) e ruido zero: nenhum top-5 casado so por palavra funcional.
+    Sem piso para `regra-vocab-diferente`: la a perna textual nao acha nada, e
+    o script diz isso; quem responde e a semantica."""
+    from scripts.avaliar_busca_textual import GRUPOS, _agregar, _app_como_candidato, medir, perguntas_ouro, semear
     from scripts.gerar_acervo_demo import gerar
 
     trechos = semear(gerar(500))
     linhas = medir([_app_como_candidato()], perguntas_ouro(), trechos)["candidatos"]["APP"]["perguntas"]
-    pt = _agregar([x for x in linhas if x["idioma"] == "pt"])
+    originais = {g for g, origem in GRUPOS.items() if origem == "original"}
+    pt = _agregar([x for x in linhas if x["idioma"] == "pt" and x["grupo"] in originais])
+    sem_acento = _agregar([x for x in linhas if x["grupo"] == "sem-acento"])
     en = _agregar([x for x in linhas if x["idioma"] == "en"])
 
-    assert pt["zero"] == 0 and en["zero"] == 0
-    assert pt["recall@45"] >= 0.9, pt
-    assert pt["mrr"] >= 0.95, pt
-    assert en["mrr"] >= 0.95, en
+    assert pt["recall@45"] >= 0.9 and pt["mrr"] >= 0.95, pt
+    assert sem_acento["mrr"] >= 0.9, sem_acento
+    assert en["mrr"] >= 0.85, en
+    for grupo in GRUPOS:
+        a = _agregar([x for x in linhas if x["grupo"] == grupo])
+        assert a["ruido@5"] in (None, 0), (grupo, a)
 
 
 # ---------------------------------------------------------------------------

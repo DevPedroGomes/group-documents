@@ -51,25 +51,27 @@ def add_chunks(
     return len(recs)
 
 
-# As MESMAS configuracoes com que o trigger da 008 indexa (o vetor e a soma das
-# duas). Indexar com uma e consultar com outra devolve VAZIO, sem erro nenhum;
-# ha teste de integracao cruzando trigger e consulta.
+# As MESMAS configs com que o trigger da 008 indexa (o vetor e a soma das
+# duas); indexar com uma e consultar com outra devolve VAZIO, sem erro. Cada
+# metade descarta as stopwords das DUAS linguas: com OR e `ts_rank` sem IDF,
+# "de"/"o"/"the" virando termo fariam trecho sem relacao pontuar.
 #
-# Medido com scripts/avaliar_busca_textual.py (acervo demo de 500 documentos,
-# 46 perguntas em portugues e 10 em ingles, LIMIT 45). O que valia antes
-# ('english' com AND de todos os termos) deixava 89% das perguntas em portugues
-# sem NENHUM resultado (MRR 0,11) e 70% das em ingles (MRR 0,30): "qual", "o",
-# "de", "para" viravam termos obrigatorios. 'portuguese' com AND quase nao
-# muda (80% vazias). O que decide e casar QUALQUER termo, com `ts_rank`
-# ordenando por quantos casaram:
-#   portuguese, OR ............... pt recall@45 0,87  MRR 0,87   en MRR 0,90
-#   portuguese+english, OR ....... pt recall@45 0,87  MRR 0,90   en MRR 1,00
-#   pt sem acento, OR ............ pt recall@45 0,95  MRR 0,99   en MRR 0,90
-#   pt sem acento+english, OR .... pt recall@45 0,95  MRR 0,99   en MRR 1,00  <- esta
-# Sem acento pesa quando a pessoa digita "alfandega" e o documento diz
-# "alfândega"; o ingles cobre documento em ingles. Diferenca entre as duas
-# ultimas linhas e de uma ou duas perguntas.
-TEXT_SEARCH_CONFIGS = ("portugues_sem_acento", "english")
+# Medido com scripts/avaliar_busca_textual.py num acervo SINTETICO de moldes
+# (demo, 500 documentos; LIMIT 45; empate contado contra). MRR so da perna
+# textual, antes ('english' com AND de todos os termos) -> agora:
+#   pergunta literal do molde (5) ...................... 1,00 -> 1,00
+#   reescrita com o vocabulario do molde (20) .......... 0,00 -> 0,95
+#   outros tipos de documento (15) ..................... 0,00 -> 1,00
+#   digitada sem acento (6, grupo pos-hoc) ............. 0,00 -> 1,00
+#   ingles: manual + 60 distratores (10, 1 relevante) .. 0,30 -> 0,90
+#   pergunta com OUTRAS palavras (20, grupo pos-hoc) ... 0,00 -> 0,01
+#     (ordem aleatoria da 0,18 nesse grupo)
+# O que isto NAO mostra: nos grupos altos quase toda pergunta tem um termo que
+# so existe nos documentos relevantes, entao o OR reduz a tarefa a achar um
+# termo raro. Quando a pessoa usa outras palavras, a perna textual nao acha
+# nada e quem responde e a semantica. Nao mede a busca hibrida, o reranker nem
+# trecho com o contexto do enriquecimento.
+TEXT_SEARCH_CONFIGS = ("busca_portugues", "busca_ingles")
 
 # Como a pergunta vira tsquery: `plainto_tsquery` normaliza com cada config e o
 # AND entre os termos vira OR. Constante para o script de avaliacao medir

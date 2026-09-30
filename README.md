@@ -175,7 +175,7 @@ Inside `process_ingestion`:
    - All queries are embedded in one call: `get_query_embeddings` (cache-through against Redis with key `emb:{model}:{input_type}:{sha256(query)}`, TTL 3600 s) -> `voyage-multimodal-3.5` for the misses.
    - `hybrid_search(query_embedding, query_text, user_id=..., top_k=15, document_ids=...)` runs two SQL queries against `chunks` joined to `documents`:
      - Semantic: `1 - (embedding <=> :qvec) >= 0.1`, ordered by cosine distance, LIMIT 15.
-     - Keyword: `search_vector @@` the question's terms OR-ed (configs `portugues_sem_acento` + `english`, migration 008), ordered by `ts_rank` DESC, LIMIT 15.
+     - Keyword: `search_vector @@` the question's terms OR-ed (configs `busca_portugues` + `busca_ingles`, migration 008; each drops the stopwords of both languages), ordered by `ts_rank` DESC, LIMIT 15.
    - Both branches carry `AND c.user_id = CAST(:user_id AS uuid)` and an optional `AND c.document_id = ANY(...)` filter, **before** RRF.
    - RRF merge with `k=60`. `enriched_content` (when present) is the snippet shown.
    - The deduplicated candidate pool (best score per chunk id) is reranked by Cohere `rerank-v4.0-fast` if `COHERE_API_KEY` is set; otherwise the top RRF candidates are returned in place.
