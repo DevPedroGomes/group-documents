@@ -2,6 +2,8 @@ services:
   # MIGRATED 2026-05-07 -> central-db (/opt/docker/central-db).
   # Service kept commented for rollback. Volume pgdata preserved.
   # Rollback: uncomment, change backend DATABASE_URL host from central-db to postgres, remove `databases` from networks, re-add depends_on.
+  # O schema nao vem de script de init do Postgres: o backend aplica as
+  # migrations de backend/migrations ao subir, num banco vazio ou existente.
   # postgres:
   #   image: pgvector/pgvector:pg16
   #   container_name: group-documents-db
@@ -12,7 +14,6 @@ services:
   #     POSTGRES_PASSWORD: ${DB_PASSWORD}
   #   volumes:
   #     - pgdata:/var/lib/postgresql/data
-  #     - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql
   #   healthcheck:
   #     test: ["CMD-SHELL", "pg_isready -U brainhub -d brainhub"]
   #     interval: 10s
