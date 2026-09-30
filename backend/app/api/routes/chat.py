@@ -24,7 +24,7 @@ from app.core.rag.transformer import transform_query
 from app.core.rag.retriever import reconsultar, retrieve_documents
 from app.core.rag.grader import grade_documents
 from app.core.rag.conflict import detectar_conflito, vale_checar
-from app.core.rag.web import buscar_na_web
+from app.core.rag.web import buscar_na_web, e_web
 
 logger = logging.getLogger(__name__)
 
@@ -140,10 +140,6 @@ def save_message(
     return str(row[0]) if row else None
 
 
-def _e_web(d: dict) -> bool:
-    return d.get("kind") == "web" or d.get("document_id") == "web"
-
-
 def _resumo_trechos(docs: list[dict]) -> list[dict]:
     """Metadado dos trechos para a trilha: sem o texto, que ja vive em `chunks`.
 
@@ -152,7 +148,7 @@ def _resumo_trechos(docs: list[dict]) -> list[dict]:
     """
     return [
         {
-            "document_id": None if _e_web(d) or not d.get("document_id") else str(d["document_id"]),
+            "document_id": None if e_web(d) or not d.get("document_id") else str(d["document_id"]),
             "document_title": d.get("document_title"),
             "page": d.get("page"),
             "score": round(float(d.get("relevance_score", 0) or 0), 6),
@@ -175,7 +171,7 @@ def _resultado_da_checagem(checagem) -> dict | None:
 
 def _citacao(d: dict) -> dict:
     """Citacao no contrato do SSE `sources` (e em `messages.citations`)."""
-    web = _e_web(d)
+    web = e_web(d)
     return {
         "kind": "web" if web else "document",
         "document_id": None if web or not d.get("document_id") else str(d["document_id"]),
@@ -211,7 +207,7 @@ def save_decision(
     # A escala da decisao e a dos trechos do ACERVO: o score do Tavily entra em
     # `graded` com a propria etiqueta, mas nao diz se o rerank rodou.
     escala = next(
-        (d.get("score_scale", "rrf") for d in [*graded, *retrieved] if not _e_web(d)),
+        (d.get("score_scale", "rrf") for d in [*graded, *retrieved] if not e_web(d)),
         "rrf",
     )
     try:
@@ -240,7 +236,7 @@ def save_decision(
                     "graded": json.dumps(_resumo_trechos(graded)),
                     "considered": len(retrieved),
                     # Quantos trechos do acervo o grader manteve; web nao passa por ele.
-                    "kept": sum(1 for d in graded if not _e_web(d)),
+                    "kept": sum(1 for d in graded if not e_web(d)),
                     "score_scale": escala,
                     "reranked": escala == "cohere",
                     "low_confidence": low_confidence,

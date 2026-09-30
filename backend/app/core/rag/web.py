@@ -19,6 +19,11 @@ from app.config.settings import get_settings
 _MAX_CHARS = 1500
 
 
+def e_web(trecho: dict) -> bool:
+    """Resultado web, no formato atual (`kind`) ou no legado (`document_id: "web"`)."""
+    return trecho.get("kind") == "web" or trecho.get("document_id") == "web"
+
+
 def _url_navegavel(url: str) -> bool:
     """So http(s): a url vira link clicavel na tela, e `javascript:` seria XSS."""
     partes = urlparse(url)

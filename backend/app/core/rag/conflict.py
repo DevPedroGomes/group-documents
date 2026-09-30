@@ -37,6 +37,7 @@ import logging
 from app.config.settings import get_settings
 from app.core.llm_client import chat_complete
 from app.core.rag.delimitacao import trecho_do_acervo
+from app.core.rag.web import e_web
 
 logger = logging.getLogger(__name__)
 
@@ -58,16 +59,12 @@ Answer with a JSON object and nothing else:
 Use in "sources" the titles exactly as they appear in the title attribute. If there is no disagreement, answer {"conflict": false, "summary": "", "sources": []}."""
 
 
-def _e_web(t: dict) -> bool:
-    return t.get("kind") == "web" or t.get("document_id") == "web"
-
-
 def _trechos_para_checar(trechos: list[dict]) -> list[dict]:
     """Os trechos do ACERVO que vao ao modelo. Resultado web nao e documento
     da pessoa e nao conta como fonte que diverge."""
     return [
         t for t in trechos
-        if not _e_web(t) and t.get("document_id") and (t.get("snippet") or "").strip()
+        if not e_web(t) and t.get("document_id") and (t.get("snippet") or "").strip()
     ][:_MAX_TRECHOS]
 
 
