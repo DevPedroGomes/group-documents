@@ -692,8 +692,9 @@ def relatorio(resultado: dict) -> str:
         for nome, c in resultado["candidatos"].items():
             a = _agregar([x for x in c["perguntas"] if filtro(x)])
             ruido = "-" if a["ruido@5"] is None else f"{a['ruido@5']:.3f}"
+            descricao = c["descricao"].replace("|", "\\|")  # `||` quebraria a coluna
             out.append(
-                f"| {nome} | {c['descricao']} | {a['recall@5']:.3f} | {a['recall@15']:.3f} | "
+                f"| {nome} | {descricao} | {a['recall@5']:.3f} | {a['recall@15']:.3f} | "
                 f"{a['recall@45']:.3f} | {a['mrr']:.3f} | {a['p@5']:.3f} | {ruido} | {a['zero']:.1f} |"
             )
         out.append("")
