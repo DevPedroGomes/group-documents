@@ -315,36 +315,70 @@ def test_as_of_vazio_vira_nulo():
 # 9. O grafo sai do que ja esta persistido, sem banco de grafo novo
 # ---------------------------------------------------------------------------
 
-def test_grafo_le_da_trilha_e_isola_por_usuario():
-    fonte = inspect.getsource(chat_route.knowledge_graph)
-    assert "FROM decisions" in fonte
-    assert "user_id = CAST(:user_id AS uuid)" in fonte
-    # A janela e o limite sao presos: sem isso um acervo grande viraria uma
-    # resposta de megabytes e um layout que trava o navegador.
-    assert "min(days, 365)" in fonte
-    assert "min(limit, 1000)" in fonte
+# Leitura da trilha isolada por usuario, com SQL real: tests/test_integracao_chat.py
+# (test_grafo_so_mostra_as_decisoes_do_dono).
+
+
+def _decisao(ident: str, graded: list[dict], conflito: dict | None = None) -> dict:
+    return {"id": ident, "question": f"pergunta {ident}", "graded": graded,
+            "conflict": conflito, "low_confidence": False, "created_at": None}
+
+
+def _usado(doc_id: str, titulo: str, score: float = 0.9) -> dict:
+    return {"document_id": doc_id, "document_title": titulo, "page": 1, "score": score,
+            "score_scale": "cohere", "document_date": None, "url": None}
+
+
+def _arestas(tipo: str, arestas: list[dict]) -> list[tuple[str, str]]:
+    return [(a["source"], a["target"]) for a in arestas if a["type"] == tipo]
 
 
 def test_grafo_nao_conta_o_mesmo_documento_duas_vezes_na_mesma_resposta():
-    # Uma resposta que usou tres trechos do MESMO arquivo mostra uma aresta, e
-    # o peso do documento sobe um, nao tres. Senao um arquivo grande domina o
-    # desenho so por ter mais pedaços.
-    fonte = inspect.getsource(chat_route.knowledge_graph)
-    assert "usados = set()" in fonte
-    assert "if doc_id not in usados:" in fonte
+    """Tres trechos do mesmo arquivo: uma aresta, e o peso sobe um, nao tres.
+    Senao um arquivo grande domina o desenho so por ter mais pedacos."""
+    docs, perguntas, arestas = chat_route._montar_grafo([
+        _decisao("1", [_usado("d1", "Contrato"), _usado("d1", "Contrato"), _usado("d1", "Contrato")]),
+    ])
+
+    assert [(d["id"], d["uses"]) for d in docs] == [("d:d1", 1)]
+    assert _arestas("USOU", arestas) == [("q:1", "d:d1")]
+    assert [p["id"] for p in perguntas] == ["q:1"]
 
 
 def test_web_nao_vira_no_do_acervo():
-    # Resultado de busca web nao e documento do cliente e nao entra no grafo
-    # dele: misturar os dois faria o acervo parecer maior do que e.
-    fonte = inspect.getsource(chat_route.knowledge_graph)
-    assert 'doc_id == "web"' in fonte
+    """Resultado web nao e documento do cliente: misturar os dois faria o
+    acervo parecer maior do que e."""
+    web = {"document_id": None, "document_title": "Site", "page": None, "score": 0.8,
+           "score_scale": "tavily", "url": "https://exemplo.com"}
+    legado = {"document_id": "web", "document_title": "Site", "page": 0, "score": 0.5}
+
+    docs, _, arestas = chat_route._montar_grafo([_decisao("1", [_usado("d1", "Contrato"), web, legado])])
+
+    assert [d["id"] for d in docs] == ["d:d1"]
+    assert _arestas("USOU", arestas) == [("q:1", "d:d1")]
 
 
-def test_divergencia_liga_documento_a_documento():
-    # O par de arquivos que se contradiz e o que a pessoa precisa abrir. Ligar
-    # a divergencia a pergunta esconderia justamente isso.
-    fonte = inspect.getsource(chat_route.knowledge_graph)
-    trecho = fonte[fonte.find("conflito ="):]
-    assert '"type": "DIVERGE"' in trecho
-    assert '"source": a' in trecho and '"target": b' in trecho
+def test_divergencia_liga_so_o_par_citado():
+    """Antes ligava todo par de documentos usados: tres documentos e um aviso
+    entre dois deles viravam tres arestas DIVERGE."""
+    conflito = {"summary": "O prazo difere.", "sources": ["contrato ", "Aditivo"], "vigente": "Aditivo"}
+
+    docs, _, arestas = chat_route._montar_grafo([_decisao("1", [
+        _usado("d1", "Contrato"), _usado("d2", "Aditivo"), _usado("d3", "Ata"),
+    ], conflito)])
+
+    assert _arestas("DIVERGE", arestas) == [("d:d1", "d:d2")]
+    assert {d["id"]: d["conflicts"] for d in docs} == {"d:d1": 1, "d:d2": 1, "d:d3": 0}
+
+
+def test_titulo_que_nao_mapeia_nao_cria_aresta():
+    conflito = {"summary": "Diverge.", "sources": ["Contrato", "Documento que nao foi usado"]}
+    ambiguo = {"summary": "Diverge.", "sources": ["Politica", "Contrato"]}
+
+    _, _, arestas = chat_route._montar_grafo([
+        _decisao("1", [_usado("d1", "Contrato"), _usado("d2", "Aditivo")], conflito),
+        # Dois documentos com o mesmo titulo: nao da para saber qual divergiu.
+        _decisao("2", [_usado("d1", "Contrato"), _usado("d4", "Politica"), _usado("d5", "Politica")], ambiguo),
+    ])
+
+    assert _arestas("DIVERGE", arestas) == []

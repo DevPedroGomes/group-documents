@@ -140,3 +140,35 @@ def test_trilha_so_e_lida_pelo_dono_e_traz_as_consultas(cliente):
     # Filtrar so por message_id deixaria qualquer um ler a trilha de outro.
     assert cliente.get(f"/decisions/{message_id}", headers=cab_outro).status_code == 404
     assert cliente.get("/decisions", headers=cab_outro).json() == {"decisions": []}
+
+
+# ---------------------------------------------------------------------------
+# Grafo: sai da trilha, so do dono
+# ---------------------------------------------------------------------------
+
+def test_grafo_so_mostra_as_decisoes_do_dono(cliente):
+    from app.api.routes.chat import save_decision
+
+    dono, cab_dono = _registrar(cliente, "dono@exemplo.com")
+    _, cab_outro = _registrar(cliente, "outro@exemplo.com")
+    trechos = [
+        {"document_id": "00000000-0000-0000-0000-00000000000d", "document_title": "Contrato",
+         "page": 1, "relevance_score": 0.9, "score_scale": "cohere"},
+        {"document_id": "00000000-0000-0000-0000-00000000000e", "document_title": "Aditivo",
+         "page": 1, "relevance_score": 0.8, "score_scale": "cohere"},
+    ]
+    save_decision(
+        user_id=dono, thread_id=_thread_com_mensagens(dono, 0), message_id=None,
+        question="qual o prazo?", retrieved=trechos, graded=trechos, web_used=False,
+        low_confidence=False, answered=True, latency_ms=10,
+        conflict={"summary": "O prazo difere.", "sources": ["Contrato", "Aditivo"], "vigente": "Aditivo"},
+    )
+
+    grafo = cliente.get("/graph", headers=cab_dono).json()
+    assert sorted(n["id"] for n in grafo["nodes"] if n["type"] == "document") == [
+        "d:00000000-0000-0000-0000-00000000000d", "d:00000000-0000-0000-0000-00000000000e",
+    ]
+    assert [e["type"] for e in grafo["edges"]].count("DIVERGE") == 1
+
+    vazio = cliente.get("/graph", headers=cab_outro).json()
+    assert vazio["nodes"] == [] and vazio["edges"] == []

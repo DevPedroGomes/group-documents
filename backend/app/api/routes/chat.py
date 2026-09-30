@@ -650,6 +650,79 @@ def _decision_payload(row) -> dict:
 # resolver um problema que o Postgres ja resolve neste tamanho.
 
 
+def _montar_grafo(linhas) -> tuple[list[dict], list[dict], list[dict]]:
+    """Nos de documento, nos de pergunta e arestas, a partir das decisoes.
+
+    A aresta DIVERGE liga SO os documentos cujos titulos o aviso citou em
+    `conflict.sources`, mapeados para `document_id` pelos trechos de `graded`
+    da mesma decisao. Antes ligava todo par de documentos usados na resposta,
+    e o grafo acusava de contradicao arquivos que nem estavam em causa. Titulo
+    que nao mapeia (ou que mapeia para mais de um documento) nao gera aresta.
+    """
+    documentos: dict[str, dict] = {}
+    perguntas: list[dict] = []
+    arestas: list[dict] = []
+
+    for linha in linhas:
+        did_pergunta = f"q:{linha['id']}"
+        perguntas.append({
+            "id": did_pergunta,
+            "type": "question",
+            "label": (linha["question"] or "")[:90],
+            "low_confidence": bool(linha["low_confidence"]),
+            "created_at": linha["created_at"].isoformat() if linha["created_at"] else None,
+        })
+
+        usados = set()
+        ids_por_titulo: dict[str, set[str]] = {}
+        for trecho in (linha["graded"] or []):
+            doc_id = trecho.get("document_id")
+            # Resultado web nao e documento do acervo e nao vira no.
+            if not doc_id or doc_id == "web" or trecho.get("url"):
+                continue
+            titulo = " ".join(str(trecho.get("document_title") or "").split()).casefold()
+            ids_por_titulo.setdefault(titulo, set()).add(doc_id)
+            no = documentos.setdefault(doc_id, {
+                "id": f"d:{doc_id}",
+                "type": "document",
+                "label": trecho.get("document_title") or "documento",
+                "uses": 0,
+                "conflicts": 0,
+            })
+            if doc_id not in usados:
+                no["uses"] += 1
+                usados.add(doc_id)
+                arestas.append({
+                    "source": did_pergunta,
+                    "target": no["id"],
+                    "type": "USOU",
+                    "score": trecho.get("score"),
+                })
+
+        # A divergencia liga documento a documento, e e o par que o usuario
+        # precisa abrir: sao os dois arquivos que dizem coisas diferentes.
+        conflito = linha["conflict"] or {}
+        if not conflito.get("summary"):
+            continue
+        citados: list[str] = []
+        for fonte in conflito.get("sources") or []:
+            ids = ids_por_titulo.get(" ".join(str(fonte).split()).casefold(), set())
+            if len(ids) == 1 and next(iter(ids)) not in citados:
+                citados.append(next(iter(ids)))
+        for i in range(len(citados)):
+            for j in range(i + 1, len(citados)):
+                arestas.append({
+                    "source": f"d:{citados[i]}",
+                    "target": f"d:{citados[j]}",
+                    "type": "DIVERGE",
+                    "summary": conflito["summary"][:200],
+                })
+                for k in (citados[i], citados[j]):
+                    documentos[k]["conflicts"] += 1
+
+    return list(documentos.values()), perguntas, arestas
+
+
 @router.get("/graph")
 @limiter.limit("30/minute")
 async def knowledge_graph(request: Request, days: int = 30, limit: int = 300):
@@ -678,61 +751,10 @@ async def knowledge_graph(request: Request, days: int = 30, limit: int = 300):
             {"user_id": user_id, "janela": f"{days} days", "limit": limit},
         ).mappings().all()
 
-    documentos: dict[str, dict] = {}
-    perguntas: list[dict] = []
-    arestas: list[dict] = []
-
-    for linha in linhas:
-        did_pergunta = f"q:{linha['id']}"
-        perguntas.append({
-            "id": did_pergunta,
-            "type": "question",
-            "label": (linha["question"] or "")[:90],
-            "low_confidence": bool(linha["low_confidence"]),
-            "created_at": linha["created_at"].isoformat() if linha["created_at"] else None,
-        })
-
-        usados = set()
-        for trecho in (linha["graded"] or []):
-            doc_id = trecho.get("document_id")
-            if not doc_id or doc_id == "web":
-                continue
-            no = documentos.setdefault(doc_id, {
-                "id": f"d:{doc_id}",
-                "type": "document",
-                "label": trecho.get("document_title") or "documento",
-                "uses": 0,
-                "conflicts": 0,
-            })
-            if doc_id not in usados:
-                no["uses"] += 1
-                usados.add(doc_id)
-                arestas.append({
-                    "source": did_pergunta,
-                    "target": no["id"],
-                    "type": "USOU",
-                    "score": trecho.get("score"),
-                })
-
-        # A divergencia liga documento a documento, e e o par que o usuario
-        # precisa abrir: sao os dois arquivos que dizem coisas diferentes.
-        conflito = linha["conflict"] or {}
-        if conflito.get("summary"):
-            ids = [d for d in usados]
-            for i in range(len(ids)):
-                for j in range(i + 1, len(ids)):
-                    a, b = f"d:{ids[i]}", f"d:{ids[j]}"
-                    arestas.append({
-                        "source": a,
-                        "target": b,
-                        "type": "DIVERGE",
-                        "summary": conflito["summary"][:200],
-                    })
-                    for k in (ids[i], ids[j]):
-                        documentos[k]["conflicts"] += 1
+    documentos, perguntas, arestas = _montar_grafo(linhas)
 
     return {
-        "nodes": list(documentos.values()) + perguntas,
+        "nodes": documentos + perguntas,
         "edges": arestas,
         "window_days": days,
         "legend": {
