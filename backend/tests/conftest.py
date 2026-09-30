@@ -8,6 +8,13 @@ segue sem rede e sem chave.
 import os
 import sys
 import uuid
+import warnings
+
+# O PyMuPDF e compilado com SWIG, que registra tipos sem `__module__`; o Python
+# 3.12 avisa uma vez por tipo no import e outra no fim do processo. Nao e
+# codigo deste repositorio. O filtro vale so para essa mensagem.
+_AVISO_SWIG = r"builtin type (SwigPyPacked|SwigPyObject|swigvarlink) has no __module__ attribute"
+warnings.filterwarnings("ignore", message=_AVISO_SWIG, category=DeprecationWarning)
 
 os.environ.setdefault("DATABASE_URL", "postgresql://x:x@localhost:1/x")
 os.environ.setdefault("JWT_SECRET", "segredo-de-teste-com-32-bytes-ou-mais")
@@ -27,6 +34,7 @@ def pytest_configure(config):
         "markers",
         "integration: usa Postgres real (pgvector); exige TEST_DATABASE_URL, senao e pulado",
     )
+    config.addinivalue_line("filterwarnings", f"ignore:{_AVISO_SWIG}:DeprecationWarning")
 
 
 def _trocar_engine(antigo, novo) -> None:
