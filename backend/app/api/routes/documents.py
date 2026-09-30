@@ -7,6 +7,7 @@ roda um worker so) cada um deles congelaria todos os outros requests do app.
 
 import os
 import re
+import uuid
 import logging
 import asyncio
 from datetime import date
@@ -497,7 +498,7 @@ def _listar_documentos(user_id: str, relevant_ids: list[str] | None):
         params: dict = {"user_id": user_id}
 
         if relevant_ids is not None:
-            base_sql += " AND id = ANY(:ids)"
+            base_sql += " AND id = ANY(CAST(:ids AS uuid[]))"
             params["ids"] = relevant_ids
         else:
             base_sql += " ORDER BY uploaded_at DESC"
@@ -572,6 +573,14 @@ async def list_documents(
     return {"items": items}
 
 
+def _e_uuid(valor: str) -> bool:
+    try:
+        uuid.UUID(str(valor))
+        return True
+    except ValueError:
+        return False
+
+
 def _caminho_do_documento(doc_id: str, user_id: str) -> str | None:
     with engine.begin() as conn:
         row = conn.execute(
@@ -585,6 +594,10 @@ def _caminho_do_documento(doc_id: str, user_id: str) -> str | None:
 async def preview(request: Request, doc_id: str):
     """Return the file content for an owned document. 404 (not 403) on mismatch."""
     user_id = await require_user(request)
+
+    # Id que nao e UUID nao e documento de ninguem: 404 igual ao de um id alheio.
+    if not _e_uuid(doc_id):
+        raise HTTPException(404, "Document not found")
 
     storage_path = await run_in_threadpool(_caminho_do_documento, doc_id, user_id)
     if not storage_path:

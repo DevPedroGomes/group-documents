@@ -578,3 +578,38 @@ def test_a_voz_so_grava_trilha_na_thread_da_propria_pessoa(voz_real):
     with engine.begin() as conn:
         gravadas = [str(t) for (t,) in conn.execute(sqltext("SELECT thread_id FROM decisions"))]
     assert gravadas == [propria]
+
+
+def test_busca_semantica_da_biblioteca_pela_rota_acha_o_documento(banco_limpo, monkeypatch):
+    """Pela rota, contra o banco migrado; so o embedding e dublado. A lista de
+    ids ia como text[] e `uuid = text` derrubava a rota com 500 sempre que
+    alguma coisa casava."""
+    from fastapi.testclient import TestClient
+    from agent_ops import metering
+
+    from app.api.rate_limit import limiter
+    from app.api.routes import documents as rotas
+    from app.main import create_app
+    from app.services import embedding_cache
+
+    u = _usuario()
+    acha = _documento(u, "Politica comercial")
+    _trecho(u, acha, "frete gratis acima de 150 reais", eixo=1)
+    outro = _documento(u, "Ata")
+    _trecho(u, outro, "indicadores do mes", eixo=2)
+
+    async def usuario(_request):
+        return u
+
+    async def consumir(*a, **k):
+        return None
+
+    monkeypatch.setattr(rotas, "require_user", usuario)
+    monkeypatch.setattr(metering, "consumir", consumir)
+    monkeypatch.setattr(embedding_cache, "get_query_embedding", lambda q: _eixo(1))
+    monkeypatch.setattr(limiter, "enabled", False)
+
+    resposta = TestClient(create_app()).get("/documents", params={"semantic_query": "frete"})
+
+    assert resposta.status_code == 200, resposta.text
+    assert [i["id"] for i in resposta.json()["items"]] == [acha]
