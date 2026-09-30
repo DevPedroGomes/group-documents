@@ -40,17 +40,20 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import uuid
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import insert
 
 from agent_ops import metering
-from app.api.dependencies import require_user
+from app.api.dependencies import consumir_cota, require_user
 from app.api.rate_limit import limiter
-from app.api.routes.chat import save_decision
+from app.api.routes.chat import save_decision, validar_data_iso, validate_thread_ownership
 from app.config.settings import get_settings
+from app.core import chamadas_pagas
+from app.core.guardrails.input_validator import validate_input
 from app.core.rag.conflict import detectar_conflito
 from app.core.rag.grader import grade_documents
 from app.core.rag.retriever import retrieve_documents
@@ -156,11 +159,27 @@ class SessaoResposta(BaseModel):
 
 
 class BuscaPedido(BaseModel):
-    pergunta: str
+    pergunta: str = Field(min_length=1, max_length=1000)
     data_de_referencia: str | None = None
     thread_id: str | None = None
+    document_ids: list[str] | None = None
+    """A mesma selecao de documentos do chat: a busca fica restrita a eles."""
 
     model_config = ConfigDict(str_strip_whitespace=True)
+
+    @field_validator("data_de_referencia")
+    @classmethod
+    def _valida_data(cls, v: str | None) -> str | None:
+        return validar_data_iso(v, "data_de_referencia")
+
+    @field_validator("document_ids")
+    @classmethod
+    def _valida_ids(cls, v: list[str] | None) -> list[str] | None:
+        # Id invalido e 422 aqui: mais adiante ele seria descartado em silencio,
+        # e uma selecao so de ids invalidos viraria busca no acervo inteiro.
+        for doc_id in v or []:
+            uuid.UUID(doc_id)
+        return v
 
 
 class Trecho(BaseModel):
@@ -291,33 +310,61 @@ async def executar_busca(request: Request, body: BuscaPedido) -> BuscaResposta:
     conseguiria ver documento de outra pessoa.
     """
     user_id = await require_user(request)
+    settings = get_settings()
 
-    if not body.pergunta:
-        raise HTTPException(400, "Pergunta vazia")
+    if not settings.enable_realtime:
+        raise HTTPException(503, "Realtime voice is disabled")
+
+    # O mesmo filtro de entrada do chat: a pergunta vem do modelo de voz, que
+    # repete o que a pessoa falou, e o texto chega ao gerador da mesma forma.
+    valida, motivo = validate_input(body.pergunta)
+    if not valida:
+        raise HTTPException(400, motivo)
+
+    # A trilha grava `thread_id`; sem esta checagem, qualquer um penduraria
+    # decisoes na conversa de outra pessoa.
+    if body.thread_id and not await asyncio.to_thread(
+        validate_thread_ownership, body.thread_id, user_id
+    ):
+        raise HTTPException(403, "Thread does not belong to this user")
+
+    # Teto proprio, consumido depois das checagens gratis e antes de qualquer
+    # chamada paga. Sem ele, uma sessao de voz aberta disparava buscas sem fim.
+    await consumir_cota("realtime_busca", settings.daily_realtime_tool_limit)
 
     iniciado_em = time.monotonic()
-    loop = asyncio.get_running_loop()
 
-    # Todo passo caro daqui é síncrono (LLM, embedding, SQL) e vai para thread,
-    # nunca para o event loop. Com voz isso é mais grave que no chat: segurar o
-    # loop atrasa o `function_call_output`, e o agente fica mudo no meio da frase.
-    recuperacao = await loop.run_in_executor(
-        None,
-        lambda: retrieve_documents(
-            question=body.pergunta,
-            user_id=user_id,
-            as_of=body.data_de_referencia,
-            top_k=5,
-        ),
-    )
-    recuperados = recuperacao.documents
-    aprovados, baixa_confianca = await loop.run_in_executor(None, grade_documents, recuperados)
+    # Todo passo caro daqui e sincrono (LLM, embedding, SQL) e vai para thread,
+    # nunca para o event loop: segurar o loop atrasa o `function_call_output`,
+    # e o agente fica mudo no meio da frase. `to_thread`, e nao
+    # `run_in_executor`, porque ele leva o contexto que `medir` observa.
+    with chamadas_pagas.medir() as pagas:
+        try:
+            recuperacao = await asyncio.to_thread(
+                retrieve_documents,
+                question=body.pergunta,
+                user_id=user_id,
+                document_ids=body.document_ids,
+                as_of=body.data_de_referencia,
+                top_k=5,
+            )
+            recuperados = recuperacao.documents
+            aprovados, baixa_confianca = await asyncio.to_thread(grade_documents, recuperados)
 
-    divergencia = None
-    if aprovados:
-        divergencia = await loop.run_in_executor(None, detectar_conflito, aprovados)
+            divergencia = None
+            if aprovados:
+                divergencia = await asyncio.to_thread(detectar_conflito, aprovados)
+        except Exception as exc:
+            logger.exception("realtime: a busca da tool falhou")
+            # Cota so volta se nenhum provider chegou a cobrar.
+            if not pagas:
+                await metering.devolver("realtime_busca")
+            # O navegador transforma o erro no campo `erro` do resultado, que o
+            # prompt manda falar como "busca indisponivel", nao "nao esta la".
+            raise HTTPException(503, "Search is temporarily unavailable") from exc
 
-    save_decision(
+    await asyncio.to_thread(
+        save_decision,
         user_id=user_id,
         thread_id=body.thread_id,
         message_id=None,  # a fala não vira linha em `messages`: ela vive na sessão da OpenAI

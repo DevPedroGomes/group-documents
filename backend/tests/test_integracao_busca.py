@@ -508,3 +508,73 @@ def test_consulta_semantica_roda_com_ef_search_derivado_do_limit(banco_limpo):
     with engine.connect() as conn:
         depois = conn.execute(sqltext("SELECT current_setting('hnsw.ef_search', true)")).scalar()
     assert depois not in ("100", "600"), "o ajuste vazou da transacao da busca"
+
+
+# ---------------------------------------------------------------------------
+# A tool de voz contra a busca e o banco de verdade
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def voz_real(banco_limpo, monkeypatch):
+    """A rota da tool com SQL de verdade; LLM, embedding e cota viram dubles."""
+    from agent_ops import metering
+    from fastapi.testclient import TestClient
+
+    from app.api.rate_limit import limiter
+    from app.config.settings import get_settings
+    from app.core.rag import retriever
+    from app.main import create_app
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "cohere_api_key", None)
+    monkeypatch.setattr(settings, "enable_conflict_detection", False)
+
+    async def consumir(*_a, **_k):
+        return 0
+
+    monkeypatch.setattr(metering, "consumir", consumir)
+    monkeypatch.setattr(retriever, "chat_complete", lambda **_kw: "")  # sem variantes
+    monkeypatch.setattr(retriever, "get_query_embeddings", lambda consultas: [_eixo(1) for _ in consultas])
+    monkeypatch.setattr(limiter, "enabled", False)
+
+    cliente = TestClient(create_app())
+    r = cliente.post("/auth/register", json={"email": "voz@exemplo.com.br", "password": "uma-senha-longa-123"})
+    assert r.status_code == 200, r.text
+    cliente.headers["Authorization"] = f"Bearer {r.json()['access_token']}"
+    return cliente, r.json()["user"]["id"]
+
+
+def test_a_voz_le_o_texto_que_a_busca_de_verdade_devolve(voz_real):
+    """A voz lia `content` e a busca devolve `snippet`: o agente recebia o
+    arquivo com texto vazio e dizia "nao esta nos documentos" sempre."""
+    cliente, uid = voz_real
+    _trecho(uid, _documento(uid, "Politica comercial"), "O prazo de entrega e de 15 dias uteis.", eixo=1)
+
+    r = cliente.post("/realtime/tool/buscar", json={"pergunta": "qual o prazo de entrega?"})
+
+    assert r.status_code == 200, r.text
+    (primeiro,) = r.json()["trechos"]
+    assert primeiro == {"texto": "O prazo de entrega e de 15 dias uteis.",
+                        "arquivo": "Politica comercial", "pagina": 1}
+
+
+def test_a_voz_so_grava_trilha_na_thread_da_propria_pessoa(voz_real):
+    from app.db.engine import engine
+
+    cliente, uid = voz_real
+    with engine.begin() as conn:
+        def thread(dono: str) -> str:
+            return str(conn.execute(
+                sqltext("INSERT INTO threads (user_id) VALUES (:u) RETURNING id"), {"u": dono}
+            ).scalar_one())
+
+        alheia, propria = thread(_usuario()), thread(uid)
+
+    recusada = cliente.post("/realtime/tool/buscar", json={"pergunta": "qual o prazo?", "thread_id": alheia})
+    aceita = cliente.post("/realtime/tool/buscar", json={"pergunta": "qual o prazo?", "thread_id": propria})
+
+    assert recusada.status_code == 403
+    assert aceita.status_code == 200, aceita.text
+    with engine.begin() as conn:
+        gravadas = [str(t) for (t,) in conn.execute(sqltext("SELECT thread_id FROM decisions"))]
+    assert gravadas == [propria]

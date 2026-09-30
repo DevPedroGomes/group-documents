@@ -4,6 +4,7 @@ import logging
 from typing import TYPE_CHECKING, Optional
 
 from app.config.settings import get_settings
+from app.core import chamadas_pagas
 
 if TYPE_CHECKING:
     import cohere
@@ -60,6 +61,7 @@ def rerank_documents(
             documents=texts,
             top_n=min(top_n, len(documents)),
         )
+        chamadas_pagas.registrar("cohere")
 
         reranked = []
         for result in response.results:

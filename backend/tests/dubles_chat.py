@@ -3,6 +3,9 @@
 LLM (multi-query, rewrite, divergencia e geracao), embedding, busca hibrida,
 Tavily e as gravacoes no banco. A rota /chat roda de verdade pelo TestClient e
 o teste le o SSE. Sem rede, sem banco, sem chave.
+
+Como os providers de verdade, os dubles de LLM e de embedding anotam em
+`chamadas_pagas` quando voltam com sucesso: e o que decide devolver cota.
 """
 
 from __future__ import annotations
@@ -38,6 +41,7 @@ class Cenario:
         self.buscas: list[dict] = []
         self.embeddings: list[list[str]] = []
         self.resposta_multi_query: str | Exception = "variante um\nvariante dois"
+        self.erro_embedding: Exception | None = None
         self.prompts_multi_query: list[str] = []
         self.reescrita = "pergunta reescrita"
         self.reescritas: list[str] = []
@@ -81,6 +85,7 @@ def instalar(monkeypatch, cenario: Cenario) -> None:
     """Troca os pontos de saida do pipeline pelos dubles do cenario."""
     from app.api.routes import chat as chat_route
     from app.config.settings import get_settings
+    from app.core import chamadas_pagas
     from app.core.rag import conflict, generator, retriever, transformer
 
     settings = get_settings()
@@ -137,10 +142,14 @@ def instalar(monkeypatch, cenario: Cenario) -> None:
         cenario.prompts_multi_query.append(kw["messages"][-1]["content"])
         if isinstance(cenario.resposta_multi_query, Exception):
             raise cenario.resposta_multi_query
+        chamadas_pagas.registrar("llm")
         return cenario.resposta_multi_query
 
     def embeddings(textos):
         cenario.embeddings.append(list(textos))
+        if cenario.erro_embedding:
+            raise cenario.erro_embedding
+        chamadas_pagas.registrar("voyage")
         return [[0.0] * 4 for _ in textos]
 
     def busca(**kw):
@@ -159,6 +168,7 @@ def instalar(monkeypatch, cenario: Cenario) -> None:
         resposta = cenario.resposta_conflito
         if cenario.depois_de_responder_conflito:
             cenario.depois_de_responder_conflito()
+        chamadas_pagas.registrar("llm")
         return resposta
 
     def gerar(**kw):

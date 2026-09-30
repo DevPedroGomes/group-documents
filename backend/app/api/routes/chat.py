@@ -33,6 +33,21 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def validar_data_iso(v: str | None, campo: str = "as_of") -> str | None:
+    """Recorte no tempo: vazio vira None, e data invalida tem que virar 422 na
+    validacao do corpo, nao erro de CAST no Postgres."""
+    if not v:
+        return None
+    from datetime import datetime
+
+    texto = v.replace("Z", "+00:00")
+    try:
+        datetime.fromisoformat(texto)
+    except ValueError:
+        raise ValueError(f"{campo} precisa ser uma data ISO, como 2026-01-31 ou 2026-01-31T23:59:59Z")
+    return texto
+
+
 class ChatBody(BaseModel):
     message: str
     document_ids: list[str] | None = None
@@ -46,17 +61,7 @@ class ChatBody(BaseModel):
     @field_validator("as_of")
     @classmethod
     def _valida_as_of(cls, v: str | None) -> str | None:
-        """Data invalida tem que virar 422 aqui, nao erro de CAST no Postgres."""
-        if not v:
-            return None
-        from datetime import datetime
-
-        texto = v.replace("Z", "+00:00")
-        try:
-            datetime.fromisoformat(texto)
-        except ValueError:
-            raise ValueError("as_of precisa ser uma data ISO, como 2026-01-31 ou 2026-01-31T23:59:59Z")
-        return texto
+        return validar_data_iso(v)
 
 
 # --- Thread management ---

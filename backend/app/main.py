@@ -86,6 +86,7 @@ def create_app() -> FastAPI:
                 "chat": s.daily_chat_limit,
                 "ingest": s.daily_ingest_limit,
                 "realtime": s.daily_realtime_limit,
+                "realtime_busca": s.daily_realtime_tool_limit,
             }
         )
 

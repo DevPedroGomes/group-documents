@@ -138,6 +138,11 @@ class Settings(BaseSettings):
     # pergunta por vez. Somar as duas no mesmo balde faria uma conversa longa
     # apagar a cota de texto do dia inteiro.
     daily_realtime_limit: int = 40
+    # Cada busca que o agente de voz dispara (`/realtime/tool/buscar`) paga
+    # multi-query, embedding, rerank e checagem de divergencia. Teto proprio,
+    # e nao o do chat: uma conversa faz varias buscas, e o teto de sessoes nao
+    # limita quantas uma sessao aberta dispara.
+    daily_realtime_tool_limit: int = 400
 
     # --- Conversa por voz (WebRTC contra a Realtime API da OpenAI) ---
     # Este e o UNICO lugar do app que fala com a OpenAI: o resto e Anthropic ou

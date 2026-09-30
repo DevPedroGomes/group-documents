@@ -1,6 +1,7 @@
 import voyageai
 
 from app.config.settings import get_settings
+from app.core import chamadas_pagas
 
 _client = None
 
@@ -51,6 +52,7 @@ def embed_sequences(inputs: list[list], input_type: str = "document") -> list[li
         raise RuntimeError(
             f"Embedding count mismatch: expected {len(inputs)}, got {len(vectors)}"
         )
+    chamadas_pagas.registrar("voyage")
     _assert_dim(vectors[0], settings.voyage_doc_model)
     return vectors
 

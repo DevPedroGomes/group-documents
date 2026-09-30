@@ -14,6 +14,7 @@ import re
 from typing import Generator, Optional
 
 from app.config.settings import get_settings
+from app.core import chamadas_pagas
 
 
 logger = logging.getLogger(__name__)
@@ -41,8 +42,11 @@ def chat_complete(
     `messages` should be in [{role, content}] form (works for both providers).
     """
     if _is_openrouter():
-        return _openrouter_complete(model, max_tokens, messages, system, temperature)
-    return _anthropic_complete(model, max_tokens, messages, system, temperature)
+        texto = _openrouter_complete(model, max_tokens, messages, system, temperature)
+    else:
+        texto = _anthropic_complete(model, max_tokens, messages, system, temperature)
+    chamadas_pagas.registrar("llm")
+    return texto
 
 
 def chat_stream(
