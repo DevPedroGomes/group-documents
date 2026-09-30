@@ -86,8 +86,70 @@ def test_falha_da_condensacao_busca_com_a_pergunta_original(chat):
     cliente, cenario = chat
     cenario.historico = list(HISTORICO)
     cenario.resposta_multi_query = RuntimeError("provider fora do ar")
+    cenario.acervo["e em marco de 2025?"] = [trecho("c1", "d1", "Politica"), trecho("c2", "d1", "Politica")]
 
     perguntar(cliente, "e em marco de 2025?")
 
     assert [b["query_text"] for b in cenario.buscas] == ["e em marco de 2025?"]
     assert cenario.decisoes[0]["queries"] == ["e em marco de 2025?"]
+
+
+# ---------------------------------------------------------------------------
+# CRAG: com baixa confianca, reescreve e RECONSULTA O ACERVO
+# ---------------------------------------------------------------------------
+
+def test_baixa_confianca_reconsulta_o_acervo_com_a_reescrita(chat):
+    cliente, cenario = chat
+    cenario.acervo["qual o prazo?"] = [trecho("c1", "d1", "Politica")]  # um so: baixa confianca (rrf)
+    cenario.reescrita = "qual o prazo de entrega do pedido?"
+    cenario.acervo[cenario.reescrita] = [trecho("c2", "d2", "Manual", score=0.031),
+                                         trecho("c1", "d1", "Politica", score=0.01)]
+
+    evs = perguntar(cliente, "qual o prazo?")
+
+    # Tres buscas do multi-query e UMA com a reescrita, sem multi-query dela.
+    assert [b["query_text"] for b in cenario.buscas] == [
+        "qual o prazo?", "variante um", "variante dois", cenario.reescrita,
+    ]
+    assert "qual o prazo?" in cenario.reescritas[0]
+    (decisao,) = cenario.decisoes
+    assert decisao["queries"][-1] == cenario.reescrita
+    assert [t["id"] for t in decisao["retrieved"]] == ["c2", "c1"]
+    assert decisao["retrieved"][1]["relevance_score"] == 0.03, "fusao nao manteve o maior score"
+    assert decisao["low_confidence"] is False
+    assert do_tipo(evs, "done")[0]["low_confidence"] is False
+    assert "LOW CONFIDENCE" not in cenario.geracoes[0]["system"]
+    passos = [p["step"] for p in do_tipo(evs, "workflow")[-1]]
+    assert passos[:5] == ["retrieve", "grade", "transform", "requery", "regrade"]
+
+
+def test_lote_saudavel_nao_paga_reescrita(chat):
+    cliente, cenario = chat
+    cenario.acervo["qual o prazo?"] = [trecho("c1", "d1", "Politica"), trecho("c2", "d1", "Politica")]
+
+    evs = perguntar(cliente, "qual o prazo?")
+
+    assert cenario.reescritas == []
+    assert len(cenario.buscas) == 3
+    assert do_tipo(evs, "done")[0]["low_confidence"] is False
+
+
+def test_continua_baixa_confianca_avisa_o_gerador_e_o_done(chat):
+    cliente, cenario = chat  # acervo vazio para tudo
+
+    evs = perguntar(cliente, "qual o prazo?")
+
+    assert [b["query_text"] for b in cenario.buscas][-1] == "pergunta reescrita"
+    assert "LOW CONFIDENCE" in cenario.geracoes[0]["system"]
+    assert do_tipo(evs, "done")[0]["low_confidence"] is True
+    assert cenario.decisoes[0]["low_confidence"] is True
+
+
+def test_reescrita_igual_a_pergunta_nao_repete_a_busca(chat):
+    cliente, cenario = chat
+    cenario.reescrita = "Qual o prazo?"
+
+    perguntar(cliente, "qual o prazo?")
+
+    assert len(cenario.buscas) == 3
+    assert "pergunta reescrita" not in cenario.decisoes[0]["queries"]

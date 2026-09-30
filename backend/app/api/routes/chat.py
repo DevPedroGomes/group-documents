@@ -21,7 +21,7 @@ from agent_ops import metering
 from app.core.guardrails.input_validator import validate_input
 from app.core.rag.generator import stream_answer
 from app.core.rag.transformer import transform_query
-from app.core.rag.retriever import retrieve_documents
+from app.core.rag.retriever import reconsultar, retrieve_documents
 from app.core.rag.grader import grade_documents
 from app.core.rag.conflict import detectar_conflito
 
@@ -324,13 +324,10 @@ async def chat(request: Request, body: ChatBody):
             workflow.append({"step": "grade", "status": "in_progress", "details": "Analyzing relevance..."})
             yield _sse("workflow", workflow)
 
-            filtered_docs, needs_web = await loop.run_in_executor(
+            filtered_docs, baixa_confianca = await loop.run_in_executor(
                 None, grade_documents, documents
             )
-            # `needs_web` do grader significa "o lote recuperado foi ruim": e a
-            # mesma condicao que sinaliza baixa confianca na resposta.
             aprovados = list(filtered_docs)
-            baixa_confianca = bool(needs_web)
 
             workflow[-1] = {
                 "step": "grade",
@@ -339,58 +336,64 @@ async def chat(request: Request, body: ChatBody):
             }
             yield _sse("workflow", workflow)
 
-            # Step 3: Transform + Web Search (if needed)
-            #
-            # O rewrite so serve de entrada para a busca web. Sem TAVILY_API_KEY
-            # o resultado dele era calculado, mostrado no painel e jogado fora:
-            # uma chamada paga de LLM por pergunta, sem efeito nenhum na
-            # resposta. Nao vale pagar por um rewrite que nao tem para onde ir.
-            settings = get_settings()
-            if needs_web and settings.tavily_api_key:
+            # Step 3: passo corretivo. Com baixa confianca, a pergunta e
+            # reescrita e o ACERVO e reconsultado com ela, antes de qualquer
+            # coisa sair do app. Antes a reescrita so alimentava o Tavily e o
+            # acervo nunca era consultado de novo.
+            if baixa_confianca:
                 workflow.append({"step": "transform", "status": "in_progress", "details": "Rewriting query..."})
                 yield _sse("workflow", workflow)
 
-                transformed_query = await loop.run_in_executor(
-                    None, transform_query, body.message
-                )
+                reescrita = await loop.run_in_executor(None, transform_query, consultas[0])
 
-                workflow[-1] = {
-                    "step": "transform",
-                    "status": "completed",
-                    "details": f"Rewrote: {transformed_query[:80]}...",
-                }
-                yield _sse("workflow", workflow)
-
-                # Web search fallback
-                workflow.append({"step": "web_search", "status": "in_progress", "details": "Searching the web..."})
-                yield _sse("workflow", workflow)
-
-                try:
-                    from tavily import TavilyClient
-                    tavily_client = TavilyClient(api_key=settings.tavily_api_key)
-                    web_results = await loop.run_in_executor(
-                        None,
-                        lambda: tavily_client.search(transformed_query, max_results=3),
-                    )
-
-                    for r in web_results.get("results", []):
-                        filtered_docs.append({
-                            "document_id": "web",
-                            "document_title": r.get("title", "Web Result"),
-                            "page": 0,
-                            "snippet": r.get("content", "")[:500],
-                            "relevance_score": r.get("score", 0.5),
-                            # Score do Tavily, nem RRF nem Cohere. Marcado para
-                            # nao ser confundido com nenhuma das duas escalas.
-                            "score_scale": "tavily",
-                        })
-
-                    usou_web = True
-                    workflow[-1] = {"step": "web_search", "status": "completed", "details": f"Found {len(web_results.get('results', []))} web results"}
+                if reescrita.strip().casefold() == consultas[0].strip().casefold():
+                    # Rewrite que devolve a mesma pergunta nao acha nada novo.
+                    workflow[-1] = {
+                        "step": "transform",
+                        "status": "completed",
+                        "details": "Rewrite gave the same question; kept the first search",
+                    }
                     yield _sse("workflow", workflow)
-                except Exception as e:
-                    logger.warning(f"Web search failed: {e}")
-                    workflow[-1] = {"step": "web_search", "status": "completed", "details": "Web search unavailable"}
+                else:
+                    workflow[-1] = {
+                        "step": "transform",
+                        "status": "completed",
+                        "details": f"Rewrote: {reescrita[:80]}",
+                    }
+                    workflow.append({"step": "requery", "status": "in_progress", "details": "Searching documents again..."})
+                    yield _sse("workflow", workflow)
+
+                    documents = await loop.run_in_executor(
+                        None,
+                        lambda: reconsultar(
+                            consulta=reescrita,
+                            pergunta=consultas[0],
+                            anteriores=recuperados,
+                            user_id=user_id,
+                            document_ids=body.document_ids,
+                            as_of=body.as_of,
+                            top_k=5,
+                        ),
+                    )
+                    consultas.append(reescrita)
+                    recuperados = list(documents)
+                    workflow[-1] = {
+                        "step": "requery",
+                        "status": "completed",
+                        "details": f"{len(documents)} chunks after merging both searches",
+                    }
+                    workflow.append({"step": "regrade", "status": "in_progress", "details": "Analyzing relevance again..."})
+                    yield _sse("workflow", workflow)
+
+                    filtered_docs, baixa_confianca = await loop.run_in_executor(
+                        None, grade_documents, documents
+                    )
+                    aprovados = list(filtered_docs)
+                    workflow[-1] = {
+                        "step": "regrade",
+                        "status": "completed",
+                        "details": f"Kept {len(filtered_docs)}/{len(documents)} documents",
+                    }
                     yield _sse("workflow", workflow)
 
             # Passo: as fontes divergem entre si?
@@ -439,6 +442,7 @@ async def chat(request: Request, body: ChatBody):
                     question=body.message,
                     documents=filtered_docs,
                     history=history,
+                    low_confidence=baixa_confianca,
                 )
             ):
                 full_answer += token
@@ -448,7 +452,7 @@ async def chat(request: Request, body: ChatBody):
             yield _sse("workflow", workflow)
 
             # Done
-            yield _sse("done", {"thread_id": thread_id})
+            yield _sse("done", {"thread_id": thread_id, "low_confidence": baixa_confianca})
 
         except Exception as e:
             # O erro cru do provider NAO vai para a tela. Foi assim que uma

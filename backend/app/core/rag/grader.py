@@ -30,8 +30,8 @@ from app.config.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
-# Abaixo disto o lote e pobre o suficiente para valer procurar fora dos
-# documentos. Contagem, nao score: e a unica medida que independe de escala.
+# Abaixo disto o lote e pobre o suficiente para valer reconsultar o acervo.
+# Contagem, nao score: e a unica medida que independe de escala.
 _MIN_DOCS_SAUDAVEL = 2
 
 
@@ -42,11 +42,13 @@ def grade_documents(
     Filtra os documentos recuperados pela relevancia.
 
     Returns:
-        (filtered_docs, needs_web_search)
+        (filtered_docs, low_confidence)
 
-    `needs_web_search` e um sinal sobre a QUALIDADE do lote. Quem decide se vale
-    pagar por um rewrite de query e uma busca externa e o chamador, que sabe se
-    a busca web esta sequer configurada.
+    `low_confidence` e verdadeiro so quando NADA passou o limiar calibrado
+    (escala cohere) ou quando o lote e menor que o minimo saudavel (escala rrf).
+    O gatilho antigo, "menos da metade passou", disparava no caso normal (dois
+    bons em cinco) e pagava um rewrite a toa. Com baixa confianca o chamador
+    reconsulta o acervo e avisa o gerador; nao e ele quem decide isso aqui.
     """
     if not documents:
         return [], True
@@ -65,14 +67,15 @@ def grade_documents(
         ]
         if not filtrados:
             # Nada passou: devolve os melhores em vez de deixar o gerador sem
-            # material nenhum, e sinaliza que o lote foi ruim.
+            # material nenhum, e sinaliza a baixa confianca, que chega ao
+            # prompt como aviso de que estes trechos podem nao responder.
             filtrados = sorted(
                 documents,
                 key=lambda d: d.get("relevance_score", 0),
                 reverse=True,
             )[:_MIN_DOCS_SAUDAVEL]
             return filtrados, True
-        return filtrados, len(filtrados) < len(documents) / 2
+        return filtrados, False
 
     # Escala nao calibrada (RRF). Estes documentos ja sao o top-k do retriever;
     # aplicar um corte por score aqui seria inventar precisao que o numero nao

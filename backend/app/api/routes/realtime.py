@@ -309,8 +309,7 @@ async def executar_busca(request: Request, body: BuscaPedido) -> BuscaResposta:
         ),
     )
     recuperados = recuperacao.documents
-    aprovados, precisa_web = await loop.run_in_executor(None, grade_documents, recuperados)
-    baixa_confianca = bool(precisa_web)
+    aprovados, baixa_confianca = await loop.run_in_executor(None, grade_documents, recuperados)
 
     divergencia = None
     if aprovados:

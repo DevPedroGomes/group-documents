@@ -11,7 +11,10 @@ logger = logging.getLogger(__name__)
 def transform_query(question: str) -> str:
     """
     Rewrite a query for better retrieval.
-    Used when initial retrieval doesn't find relevant documents.
+
+    Passo corretivo: com baixa confianca, a reescrita reconsulta o ACERVO (ver
+    `retriever.reconsultar`); a web so vem depois, se ligada. Mantem o idioma
+    da pergunta, senao a perna de palavra-chave deixa de casar o documento.
     """
     settings = get_settings()
     try:
@@ -29,13 +32,14 @@ def transform_query(question: str) -> str:
                         "- Focus on the key concepts and entities\n"
                         "- Expand abbreviations if any\n"
                         "- Make it more specific for document retrieval\n"
-                        "- Keep it as a question\n\n"
+                        "- Keep it as a question, in the same language as the original\n\n"
                         "Return only the improved question with no additional text."
                     ),
                 }
             ],
         )
-        return text.strip()
+        # Resposta vazia reconsultaria o acervo com nada.
+        return text.strip() or question
     except Exception as e:
         logger.error(f"Query transformation failed: {e}")
         return question

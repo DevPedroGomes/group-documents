@@ -11,7 +11,7 @@ from app.config.settings import get_settings
 from app.core.llm_client import chat_complete
 from app.services.embedding_cache import get_query_embeddings
 from app.services.vector_store import hybrid_search
-from app.core.rag.reranker import rerank_documents
+from app.core.rag.reranker import rerank_documents, reranker_ativo
 
 logger = logging.getLogger(__name__)
 
@@ -193,3 +193,54 @@ def retrieve_documents(
     )
 
     return Recuperacao(reranked, consultas)
+
+
+def _fundir_por_id(*lotes: list[dict]) -> list[dict]:
+    """Uniao dos lotes por chunk, com o MAIOR score, do melhor para o pior.
+
+    So faz sentido com os lotes na mesma escala; quem chama garante isso.
+    """
+    por_id: dict[str, dict] = {}
+    for lote in lotes:
+        for d in lote:
+            atual = por_id.get(d["id"])
+            if atual is None or d["relevance_score"] > atual["relevance_score"]:
+                por_id[d["id"]] = d
+    return sorted(por_id.values(), key=lambda d: d["relevance_score"], reverse=True)
+
+
+def reconsultar(
+    consulta: str,
+    pergunta: str,
+    anteriores: list[dict],
+    user_id: str,
+    document_ids: Optional[list[str]] = None,
+    as_of: Optional[str] = None,
+    top_k: int = 5,
+) -> list[dict]:
+    """Passo corretivo: UMA busca com a consulta reescrita, fundida ao lote anterior.
+
+    Antes a reescrita so alimentava a busca web e o acervo nunca era
+    reconsultado. Sem multi-query aqui: o rewrite ja e a variante.
+
+    Escala: o lote anterior pode vir em "cohere" e a busca nova sempre vem em
+    "rrf". Com o reranker ligado, a uniao inteira e reordenada contra
+    `pergunta` (a mesma consulta que o grader julga, e nao o rewrite, para o
+    score continuar medindo se o trecho responde a pessoa). Se esse rerank
+    falhar, o resultado misturaria escalas, entao fica o lote anterior. Sem
+    reranker os dois lotes estao em RRF e a fusao por maior score e honesta.
+    """
+    novos = _candidatos([consulta], user_id, top_k, document_ids, as_of)
+    if not novos:
+        return list(anteriores)
+
+    if reranker_ativo():
+        uniao = list({d["id"]: d for d in [*novos, *anteriores]}.values())
+        reordenados = rerank_documents(query=pergunta, documents=uniao, top_n=top_k)
+        if all(d.get("score_scale") == "cohere" for d in reordenados):
+            return reordenados
+        if any(d.get("score_scale") == "cohere" for d in anteriores):
+            logger.warning("rerank da reconsulta falhou; mantendo o lote anterior")
+            return list(anteriores)
+
+    return _fundir_por_id(anteriores, novos)[:top_k]

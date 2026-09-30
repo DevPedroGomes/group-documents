@@ -51,12 +51,25 @@ def test_score_de_rrf_nao_e_medido_contra_limiar_absoluto():
     )
 
 
-def test_rrf_saudavel_nao_dispara_busca_web():
-    """needs_web_search ficava permanentemente ligado, pagando um rewrite por
-    pergunta que nunca era usado."""
+def test_rrf_saudavel_nao_e_baixa_confianca():
+    """O sinal ficava permanentemente ligado, pagando um rewrite por pergunta."""
     docs = [_doc(0.03, "rrf", "a"), _doc(0.02, "rrf", "b")]
-    _, precisa_web = grade_documents(docs)
-    assert precisa_web is False
+    _, baixa_confianca = grade_documents(docs)
+    assert baixa_confianca is False
+
+
+def test_rrf_com_um_trecho_so_e_baixa_confianca():
+    _, baixa_confianca = grade_documents([_doc(0.03, "rrf", "a")])
+    assert baixa_confianca is True
+
+
+def test_cohere_com_algum_acima_do_limiar_nao_e_baixa_confianca():
+    """O gatilho antigo ("menos da metade passou") disparava aqui, no caso normal:
+    um trecho bom e quatro de enchimento."""
+    docs = [_doc(0.9, "cohere", "a")] + [_doc(0.1, "cohere", f"x{i}") for i in range(4)]
+    mantidos, baixa_confianca = grade_documents(docs)
+    assert [d["id"] for d in mantidos] == ["a"]
+    assert baixa_confianca is False
 
 
 def test_escala_ausente_e_tratada_como_nao_calibrada():
@@ -75,15 +88,15 @@ def test_limiar_absoluto_vale_quando_o_score_e_calibrado():
 
 def test_cohere_com_tudo_abaixo_do_limiar_nao_deixa_o_gerador_sem_nada():
     docs = [_doc(0.10, "cohere", "a"), _doc(0.05, "cohere", "b")]
-    mantidos, precisa_web = grade_documents(docs)
+    mantidos, baixa_confianca = grade_documents(docs)
     assert mantidos, "gerador ficaria sem contexto nenhum"
-    assert precisa_web is True
+    assert baixa_confianca is True
 
 
-def test_lote_vazio_pede_busca_web():
-    mantidos, precisa_web = grade_documents([])
+def test_lote_vazio_e_baixa_confianca():
+    mantidos, baixa_confianca = grade_documents([])
     assert mantidos == []
-    assert precisa_web is True
+    assert baixa_confianca is True
 
 
 # ---------------------------------------------------------------------------
@@ -215,11 +228,8 @@ def test_enriquecimento_preserva_a_ordem_dos_chunks(monkeypatch):
         assert texto.endswith(f"chunk {i}"), f"posicao {i} recebeu o texto errado"
 
 
-def test_rewrite_de_query_so_roda_se_houver_busca_web():
-    """Sem TAVILY_API_KEY o rewrite era calculado, exibido e jogado fora: uma
-    chamada paga de LLM por pergunta, sem efeito na resposta."""
-    fonte = (BACKEND / "app/api/routes/chat.py").read_text()
-    assert "if needs_web and settings.tavily_api_key:" in fonte
+# O rewrite so roda com baixa confianca e reconsulta o acervo: prendido pela
+# rota em tests/test_chat_pipeline.py (secao "CRAG").
 
 
 # ---------------------------------------------------------------------------
@@ -675,3 +685,76 @@ def test_sem_historico_a_pergunta_original_abre_a_lista(monkeypatch):
 
     assert retriever.generate_multi_queries("qual o prazo?") == ["qual o prazo?", "v1", "v2"]
     assert "standalone" not in prompts[0]
+
+
+# ---------------------------------------------------------------------------
+# Passo corretivo: reconsulta do acervo com a pergunta reescrita
+# ---------------------------------------------------------------------------
+
+def _reconsulta_falsa(monkeypatch, novos):
+    from app.core.rag import retriever
+
+    buscas: list[str] = []
+    embeds: list[list[str]] = []
+
+    def busca(**kw):
+        buscas.append(kw["query_text"])
+        return [dict(t) for t in novos]
+
+    monkeypatch.setattr(retriever, "hybrid_search", busca)
+    monkeypatch.setattr(retriever, "get_query_embeddings",
+                        lambda qs: embeds.append(list(qs)) or [[0.0] * 4 for _ in qs])
+    return retriever, buscas, embeds
+
+
+def _t(ident, score, escala="rrf"):
+    return {"id": ident, "document_id": f"d-{ident}", "document_title": ident, "page": 1,
+            "snippet": f"texto {ident}", "document_date": "2025-01-01",
+            "relevance_score": score, "score_scale": escala}
+
+
+def test_reconsulta_sem_reranker_faz_uma_busca_e_funde_pelo_maior_score(monkeypatch):
+    _com_cohere(monkeypatch, chave=None)
+    retriever, buscas, embeds = _reconsulta_falsa(monkeypatch, [_t("b", 0.03), _t("c", 0.015)])
+
+    saida = retriever.reconsultar(
+        "pergunta reescrita", "pergunta", [_t("a", 0.02), _t("b", 0.01)], user_id="u", top_k=5,
+    )
+
+    assert buscas == ["pergunta reescrita"], "reconsulta virou multi-query"
+    assert embeds == [["pergunta reescrita"]]
+    assert [(t["id"], t["relevance_score"]) for t in saida] == [("b", 0.03), ("a", 0.02), ("c", 0.015)]
+
+
+def test_reconsulta_com_reranker_reordena_a_uniao_contra_a_pergunta(monkeypatch):
+    _com_cohere(monkeypatch)
+    chamadas, _ = _cohere_falso(monkeypatch, resultados=[(0, 0.93), (2, 0.4)])
+    retriever, _, _ = _reconsulta_falsa(monkeypatch, [_t("b", 0.03), _t("c", 0.015)])
+
+    saida = retriever.reconsultar(
+        "pergunta reescrita", "pergunta autocontida", [_t("a", 0.2, "cohere")], user_id="u", top_k=2,
+    )
+
+    (chamada,) = chamadas
+    assert chamada["query"] == "pergunta autocontida", "o score deixaria de medir a pergunta da pessoa"
+    assert sorted(chamada["documents"]) == ["texto a", "texto b", "texto c"]
+    assert {t["score_scale"] for t in saida} == {"cohere"}
+    assert [t["relevance_score"] for t in saida] == [0.93, 0.4]
+
+
+def test_reconsulta_com_rerank_quebrado_nao_mistura_escalas(monkeypatch):
+    _com_cohere(monkeypatch)
+    _cohere_falso(monkeypatch, erro=RuntimeError("503 da Cohere"))
+    retriever, _, _ = _reconsulta_falsa(monkeypatch, [_t("b", 0.03)])
+    anteriores = [_t("a", 0.2, "cohere")]
+
+    saida = retriever.reconsultar("reescrita", "pergunta", anteriores, user_id="u", top_k=5)
+
+    assert saida == anteriores
+
+
+def test_reconsulta_sem_resultado_novo_mantem_o_lote(monkeypatch):
+    _com_cohere(monkeypatch, chave=None)
+    retriever, _, _ = _reconsulta_falsa(monkeypatch, [])
+
+    assert retriever.reconsultar("reescrita", "pergunta", [_t("a", 0.02)], user_id="u")[0]["id"] == "a"

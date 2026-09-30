@@ -25,6 +25,11 @@ def _get_client() -> "cohere.ClientV2":
     return _client
 
 
+def reranker_ativo() -> bool:
+    settings = get_settings()
+    return bool(settings.enable_reranking and settings.cohere_api_key)
+
+
 def rerank_documents(
     query: str,
     documents: list[dict],
@@ -39,7 +44,7 @@ def rerank_documents(
     """
     settings = get_settings()
 
-    if not settings.enable_reranking or not settings.cohere_api_key:
+    if not reranker_ativo():
         return documents[:top_n]
 
     if len(documents) <= 1:
