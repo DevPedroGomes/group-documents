@@ -183,3 +183,27 @@ def test_save_message_sobe_a_thread_na_ordenacao(cliente):
 
     save_message(str(ids[1]), "user", "oi")
     assert [t["title"] for t in cliente.get("/threads", headers=cab).json()["threads"]] == ["velha", "nova"]
+
+
+def test_aviso_do_banco_numa_migration_chega_ao_log_de_boot(banco_limpo, tmp_path, monkeypatch, caplog):
+    """RAISE WARNING de migration (a 008 sem `unaccent`, por exemplo) chegava
+    so ao logger INFO do dialeto, que o app nao exibe."""
+    import logging
+    import shutil
+
+    from app.db import migrate
+
+    for arquivo in migrate.MIGRATIONS_DIR.glob("*.sql"):
+        shutil.copy(arquivo, tmp_path / arquivo.name)
+    (tmp_path / "999_aviso.sql").write_text(
+        "DO $$ BEGIN RAISE WARNING 'teste: recuperar com X'; END $$;", encoding="utf-8")
+    monkeypatch.setattr(migrate, "MIGRATIONS_DIR", tmp_path)
+    dialeto = logging.getLogger("sqlalchemy.dialects.postgresql")
+    antes = (dialeto.level, dialeto.propagate, list(dialeto.handlers))
+
+    with caplog.at_level(logging.WARNING, logger="app.db.migrate"):
+        migrate.run_migrations()
+
+    avisos = [r for r in caplog.records if r.name == "app.db.migrate" and r.levelno == logging.WARNING]
+    assert any("999_aviso.sql" in r.getMessage() and "teste: recuperar com X" in r.getMessage() for r in avisos)
+    assert (dialeto.level, dialeto.propagate, list(dialeto.handlers)) == antes

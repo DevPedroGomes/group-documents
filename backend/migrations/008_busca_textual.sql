@@ -15,7 +15,12 @@ DO $$
 BEGIN
     CREATE EXTENSION IF NOT EXISTS unaccent;
 EXCEPTION WHEN insufficient_privilege OR undefined_file OR feature_not_supported THEN
-    RAISE WARNING '008: unaccent indisponivel (%); a busca textual segue sem tirar acento', SQLERRM;
+    RAISE WARNING '008: unaccent indisponivel (%); a busca textual segue sem tirar acento. Para ativar: %',
+        SQLERRM,
+        'instalar a extensao unaccent; ALTER TEXT SEARCH CONFIGURATION busca_portugues '
+        || 'ALTER MAPPING FOR word, hword, hword_part WITH portugues_stopwords, '
+        || 'ingles_stopwords, <schema da extensao>.unaccent, portuguese_stem; '
+        || 'reindexar com UPDATE chunks SET content = content.';
 END $$;
 
 -- Cada metade descarta as stopwords das DUAS linguas antes do stemmer. Com OR,

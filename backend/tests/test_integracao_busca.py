@@ -164,6 +164,12 @@ def test_sem_unaccent_a_008_degrada_e_a_busca_segue(banco_limpo, caplog):
 
     from app.db.engine import engine
 
+    with engine.begin() as conn:
+        pode = conn.execute(sqltext(
+            "SELECT rolsuper OR rolcreaterole FROM pg_roles WHERE rolname = current_user")).scalar()
+    if not pode:
+        pytest.skip("simular a falta de permissao exige CREATEROLE no usuario de TEST_DATABASE_URL")
+
     papel = f"gd_test_{uuid.uuid4().hex[:12]}"
     sql_008 = (BACKEND / "migrations" / "008_busca_textual.sql").read_text()
     with engine.begin() as conn:

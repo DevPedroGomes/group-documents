@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import re
+from contextlib import contextmanager
 from pathlib import Path
 
 from sqlalchemy import text as sqltext
@@ -46,6 +47,38 @@ def _discover() -> list[tuple[str, Path]]:
             continue
         found.append((path.name, path))
     return sorted(found, key=lambda t: (int(re.match(r"^(\d+)_", t[0]).group(1)), t[0]))
+
+
+@contextmanager
+def _avisos_do_banco():
+    """Coleta os WARNING que o banco emite durante as migrations.
+
+    O dialeto psycopg2 do SQLAlchemy entrega todo aviso do servidor ao logger
+    `sqlalchemy.dialects.postgresql` em nivel INFO, que o app nao exibe; um
+    RAISE WARNING de migration (ex.: a 008 sem `unaccent`) sumiria do log de
+    boot. Durante as migrations aquele logger passa a INFO sem propagar, e so
+    os WARNING sao guardados, para sair pelo logger daqui.
+    """
+    avisos: list[str] = []
+
+    class _Coletor(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            mensagem = record.getMessage()
+            if mensagem.startswith("WARNING"):
+                avisos.append(mensagem)
+
+    pg = logging.getLogger("sqlalchemy.dialects.postgresql")
+    coletor = _Coletor(logging.INFO)
+    nivel, propaga = pg.level, pg.propagate
+    pg.addHandler(coletor)
+    pg.setLevel(logging.INFO)
+    pg.propagate = False
+    try:
+        yield avisos
+    finally:
+        pg.removeHandler(coletor)
+        pg.setLevel(nivel)
+        pg.propagate = propaga
 
 
 def run_migrations() -> None:
@@ -113,12 +146,14 @@ def run_migrations() -> None:
                 sql = path.read_text(encoding="utf-8")
                 # Transacao por migration: uma falha nao deixa schema meio-aplicado.
                 try:
-                    with conn.begin():
+                    with _avisos_do_banco() as avisos, conn.begin():
                         conn.execute(sqltext(sql))
                         conn.execute(
                             sqltext("INSERT INTO schema_migrations (version) VALUES (:v)"),
                             {"v": version},
                         )
+                    for aviso in avisos:
+                        logger.warning("migrate: %s avisou: %s", version, aviso)
                     logger.info("migrate: aplicada %s", version)
                 except Exception:
                     logger.exception("migrate: FALHOU em %s — schema inalterado", version)
