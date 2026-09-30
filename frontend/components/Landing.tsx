@@ -27,7 +27,7 @@ const PIPELINE = [
     icon: FileText,
     title: 'Multi-modal ingest',
     desc: 'PDF text is read with pypdf; pages with no text layer are rendered as images and embedded as such. Images and video are embedded directly by Voyage, audio is transcribed by Deepgram. libmagic sniffs MIME from the bytes, not the extension.',
-    trace: 'mime: application/pdf · 4.2MB · 287 chunks',
+    trace: 'libmagic · pypdf + PyMuPDF · max 20MB',
   },
   {
     icon: Cpu,
@@ -44,13 +44,13 @@ const PIPELINE = [
   {
     icon: ShieldCheck,
     title: 'Relevance gate',
-    desc: 'The reranker scores each passage from 0 to 1 and only passages at 0.7 or above go to the answer. If none clears the bar, the question is rewritten once and the library searched again; both result sets are merged and graded again.',
+    desc: 'The Cohere reranker scores each passage from 0 to 1; passages at 0.7 or above go to the answer. If none clears the bar, the question is rewritten and the library searched once more. If it still fails, the two best passages go through anyway and the answer is marked low confidence. Without the reranker, the fused top results pass as they are, and fewer than two counts as low confidence.',
     trace: 'cohere ≥ 0.7 · rewrite + search again',
   },
   {
     icon: MessageSquare,
     title: 'Grounded synthesis',
-    desc: 'Claude Sonnet answers from the retrieved passages only, cites document and page, and says it did not find the answer instead of filling the gap from general knowledge. Tokens stream as they are generated.',
+    desc: 'Claude Sonnet is instructed to answer only from the retrieved passages, cite document and page, and say when they do not contain the answer instead of filling the gap from general knowledge. Tokens stream as they are generated.',
     trace: 'claude-sonnet-5 · stream=true',
   },
 ]
@@ -76,7 +76,7 @@ const DIFFERENTIATORS = [
     icon: AlertTriangle,
     label: 'A / Disagreement',
     title: 'Sources that disagree, and which one is current',
-    desc: 'When the passages behind an answer come from two or more documents, a second model call checks whether they conflict. If they do, the answer carries the warning and names the documents; the one with the most recent document date is marked current. That date comparison is plain code, not the model.',
+    desc: 'When the passages behind an answer come from two or more documents, a second model call checks whether they conflict. If they do, the answer carries the warning and names the documents; when their dates differ, the one with the most recent document date is marked current. That date comparison is plain code, not the model.',
   },
   {
     icon: CalendarClock,
@@ -115,7 +115,7 @@ const FEATURES = [
     icon: CheckCircle2,
     label: '04 / Citations',
     title: 'Answers show their passages',
-    desc: 'Each answer lists the passages it was generated from, with document, page, date and a snippet; a click opens the file at that page. The prompt answers only from those passages and says so when they do not contain the answer.',
+    desc: 'Each answer lists the passages it was generated from, with document, page, date and a snippet; a click opens the file at that page. The prompt instructs the model to answer only from those passages and to say so when they do not contain the answer.',
   },
   {
     icon: Users,
@@ -168,7 +168,7 @@ export default function Landing() {
                 <FileStack className="h-4 w-4 text-white" />
               </div>
               <span className="font-semibold tracking-tight text-white">BrainHub</span>
-              <span className="hidden sm:inline-block text-[11px] font-mono text-neutral-500 ml-1">/ rag</span>
+              <span className="hidden sm:inline-block text-[11px] font-mono text-neutral-400 ml-1">/ rag</span>
             </div>
             <div className="flex items-center gap-2">
               <LocaleToggle />
@@ -191,7 +191,7 @@ export default function Landing() {
             <a
               key={id}
               href={`#${id}`}
-              className="group flex items-center gap-3 text-[10px] font-mono uppercase tracking-widest text-neutral-500 hover:text-white transition-colors"
+              className="group flex items-center gap-3 text-[10px] font-mono uppercase tracking-widest text-neutral-400 hover:text-white transition-colors"
             >
               <span className="w-6 text-right">{`0${i + 1}`}</span>
               <span className="h-px w-6 bg-white/10 group-hover:w-10 group-hover:bg-blue-300 transition-all" />
@@ -215,7 +215,7 @@ export default function Landing() {
                   <T k="hero.tag" />
                 </span>
                 <span className="h-px flex-1 max-w-[80px] bg-white/10" />
-                <span className="text-[10px] font-mono uppercase tracking-widest text-neutral-500">
+                <span className="text-[10px] font-mono uppercase tracking-widest text-neutral-400">
                   <T k="hero.version" />
                 </span>
               </div>
@@ -263,7 +263,7 @@ export default function Landing() {
                 className="relative rounded-3xl bg-white/[0.04] ring-1 ring-white/10 border-gradient backdrop-blur p-5 sm:p-6 fade-slide-in"
                 style={{ borderRadius: 24 }}
               >
-                <div className="flex items-center justify-between text-[10px] font-mono text-neutral-500 mb-5">
+                <div className="flex items-center justify-between text-[10px] font-mono text-neutral-400 mb-5">
                   <div className="flex items-center gap-1.5">
                     <span className="h-2 w-2 rounded-full bg-blue-400/70" />
                     <span className="uppercase tracking-widest">example answer</span>
@@ -317,7 +317,7 @@ export default function Landing() {
                   </div>
                 </div>
 
-                <div className="mt-5 pt-3 border-t border-white/5 flex items-center justify-between gap-3 text-[10px] font-mono text-neutral-500">
+                <div className="mt-5 pt-3 border-t border-white/5 flex items-center justify-between gap-3 text-[10px] font-mono text-neutral-400">
                   <span>5 retrieved → 2 kept</span>
                   <span className="inline-flex items-center gap-1 text-blue-300">
                     <Route className="h-3 w-3" aria-hidden /> trail saved
@@ -337,7 +337,7 @@ export default function Landing() {
                   <p className="text-4xl sm:text-5xl font-semibold tracking-tighter text-white">
                     {s.value}
                   </p>
-                  <p className="mt-2 text-[10px] font-mono uppercase tracking-widest text-neutral-500">
+                  <p className="mt-2 text-[10px] font-mono uppercase tracking-widest text-neutral-400">
                     {s.label}
                   </p>
                 </div>
@@ -379,15 +379,15 @@ export default function Landing() {
                   <span className="inline-flex items-center justify-center h-8 w-8 rounded-lg bg-white/5 ring-1 ring-white/10 text-blue-300">
                     <d.icon className="h-4 w-4" strokeWidth={1.8} />
                   </span>
-                  <span className="text-[10px] font-mono uppercase tracking-widest text-neutral-500">
+                  <span className="text-[10px] font-mono uppercase tracking-widest text-neutral-400">
                     {d.label}
                   </span>
                 </div>
                 <h3 className="text-lg font-semibold text-white tracking-tight">{d.title}</h3>
                 <p className="mt-2 mb-5 text-sm text-neutral-400 leading-relaxed">{d.desc}</p>
                 <div className="mt-auto pt-4 border-t border-white/5">
-                  <p className="mb-2 text-[9px] font-mono uppercase tracking-widest text-neutral-600">
-                    in the chat
+                  <p className="mb-2 text-[9px] font-mono uppercase tracking-widest text-neutral-400">
+                    example, as the chat shows it
                   </p>
                   {i === 0 && <AmostraDivergencia />}
                   {i === 1 && <AmostraRecorte />}
@@ -476,7 +476,7 @@ export default function Landing() {
                   Built where the demos stop.
                 </h2>
               </div>
-              <p className="hidden md:block text-xs text-neutral-500 font-mono uppercase tracking-widest">
+              <p className="hidden md:block text-xs text-neutral-400 font-mono uppercase tracking-widest">
                 six choices that matter
               </p>
             </div>
@@ -497,7 +497,7 @@ export default function Landing() {
                       <span className="inline-flex items-center justify-center h-8 w-8 rounded-lg bg-white/5 ring-1 ring-white/10 text-blue-300">
                         <f.icon className="h-4 w-4" strokeWidth={1.8} />
                       </span>
-                      <span className="text-[10px] font-mono uppercase tracking-widest text-neutral-500">
+                      <span className="text-[10px] font-mono uppercase tracking-widest text-neutral-400">
                         {f.label}
                       </span>
                     </div>
@@ -521,7 +521,7 @@ export default function Landing() {
                 05 / Stack
               </span>
               <span className="h-px flex-1 bg-white/10" />
-              <span className="text-[10px] font-mono uppercase tracking-widest text-neutral-500">
+              <span className="text-[10px] font-mono uppercase tracking-widest text-neutral-400">
                 no fluff
               </span>
             </div>
@@ -563,7 +563,7 @@ export default function Landing() {
                 </p>
 
                 {/* terminal flourish */}
-                <div className="mt-12 flex items-center gap-3 text-[11px] font-mono text-neutral-500">
+                <div className="mt-12 flex items-center gap-3 text-[11px] font-mono text-neutral-400">
                   <span className="text-blue-300">$</span>
                   <span>brainhub</span>
                   <span className="text-neutral-700">init</span>
@@ -623,7 +623,7 @@ function AmostraRecorte() {
           <span className="truncate">Pricing-2025.pdf</span>
           <span className="text-emerald-300">dated 2025-01-15 · in</span>
         </li>
-        <li className="flex items-center justify-between gap-2 text-neutral-500">
+        <li className="flex items-center justify-between gap-2 text-neutral-400">
           <span className="truncate line-through decoration-neutral-600">Pricing-2026.pdf</span>
           <span>dated 2026-02-01 · out</span>
         </li>
@@ -650,7 +650,7 @@ function AmostraTrilha() {
           <span className="truncate">Pricing-2025.pdf p.2</span>
           <span>0.84 · <span className="text-emerald-300">kept</span></span>
         </li>
-        <li className="flex items-center justify-between gap-2 px-2 py-1 text-neutral-500">
+        <li className="flex items-center justify-between gap-2 px-2 py-1 text-neutral-400">
           <span className="truncate">Handbook.pdf p.7</span>
           <span>0.31 · dropped</span>
         </li>

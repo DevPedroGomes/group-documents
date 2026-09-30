@@ -57,7 +57,7 @@ export function ChatMessage({ message, onCitationClick }: ChatMessageProps) {
 
         {!isUser && citacoes.length > 0 && (
           <div className="w-full">
-            <p className="mb-1.5 px-1 text-[10px] font-mono uppercase tracking-widest text-neutral-500">
+            <p className="mb-1.5 px-1 text-[10px] font-mono uppercase tracking-widest text-neutral-400">
               Sources · {citacoes.length}
             </p>
             <ul className="grid gap-1.5 sm:grid-cols-2">
@@ -71,7 +71,7 @@ export function ChatMessage({ message, onCitationClick }: ChatMessageProps) {
         )}
 
         <div className="flex flex-wrap items-center gap-2 px-1">
-          <span className="text-[10px] text-neutral-500 font-medium">
+          <span className="text-[10px] text-neutral-400 font-medium">
             {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
           </span>
           {!isUser && message.lowConfidence && (
@@ -80,7 +80,7 @@ export function ChatMessage({ message, onCitationClick }: ChatMessageProps) {
                 <CircleDashed className="h-3 w-3" aria-hidden />
                 Low confidence
               </span>
-              nothing retrieved clearly matched the question
+              few or weak matches in your documents
             </span>
           )}
         </div>
@@ -174,7 +174,7 @@ function CartaoDeCitacao({
           </span>
           {href && <ArrowUpRight className="ml-auto h-3.5 w-3.5 shrink-0 text-neutral-500 group-hover:text-white" aria-hidden />}
         </span>
-        {href && <span className="truncate text-[10px] font-mono text-neutral-500">{dominio(href)}</span>}
+        {href && <span className="truncate text-[10px] font-mono text-neutral-400">{dominio(href)}</span>}
         {citation.snippet && (
           <span className="line-clamp-2 text-[11px] leading-snug text-neutral-400">{citation.snippet}</span>
         )}
@@ -208,7 +208,7 @@ function CartaoDeCitacao({
         )}
       </span>
       {citation.document_date && (
-        <span className="text-[10px] font-mono text-neutral-500">dated {citation.document_date}</span>
+        <span className="text-[10px] font-mono text-neutral-400">dated {citation.document_date}</span>
       )}
       {citation.snippet && (
         <span className="line-clamp-2 text-[11px] leading-snug text-neutral-400">{citation.snippet}</span>

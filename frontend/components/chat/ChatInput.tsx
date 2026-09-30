@@ -159,7 +159,7 @@ export function ChatInput({
             </button>
           )}
 
-          <p className="hidden sm:block text-[10px] text-neutral-500 uppercase tracking-widest font-medium">
+          <p className="hidden sm:block text-[10px] text-neutral-400 uppercase tracking-widest font-medium">
             Enter to send · Shift+Enter for new line
           </p>
         </div>

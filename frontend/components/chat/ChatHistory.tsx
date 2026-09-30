@@ -117,9 +117,9 @@ export function ChatHistory({
             <ScrollArea className="flex-1">
               <div className="p-2">
                 {isLoading && threads.length === 0 ? (
-                  <p className="text-xs font-mono text-neutral-500 text-center py-4">loading…</p>
+                  <p className="text-xs font-mono text-neutral-400 text-center py-4">loading…</p>
                 ) : threads.length === 0 ? (
-                  <p className="text-xs font-mono text-neutral-500 text-center py-4">no threads yet</p>
+                  <p className="text-xs font-mono text-neutral-400 text-center py-4">no threads yet</p>
                 ) : (
                   Object.entries(grouped).map(([label, items], gIdx) => (
                     <div key={label} className="mb-4">
@@ -127,7 +127,7 @@ export function ChatHistory({
                         <span className="text-[9px] font-mono uppercase tracking-widest text-blue-400">
                           {`0${gIdx + 1}`}
                         </span>
-                        <span className="text-[10px] font-semibold text-neutral-500 uppercase tracking-widest">
+                        <span className="text-[10px] font-semibold text-neutral-400 uppercase tracking-widest">
                           {label}
                         </span>
                         <span className="h-px flex-1 bg-white/5" />

@@ -40,7 +40,7 @@ export default function LibraryPage() {
             </div>
             <span className="font-semibold tracking-tight text-white text-lg">BrainHub</span>
           </div>
-          <div className="flex items-center gap-3 text-[11px] font-mono text-neutral-500" role="status">
+          <div className="flex items-center gap-3 text-[11px] font-mono text-neutral-400" role="status">
             <span className="text-blue-300">$</span>
             <span>checking session</span>
             <span className="ml-1 inline-block w-1.5 h-3 bg-blue-300/80 animate-pulse" aria-hidden />

@@ -100,7 +100,7 @@ export function DecisionTrail({
         <Route className="h-4 w-4 shrink-0 text-blue-300" />
         Why these answers?
         {decisoes.length > 0 && (
-          <span className="ml-auto text-xs font-normal text-neutral-500">
+          <span className="ml-auto text-xs font-normal text-neutral-400">
             {decisoes.length} {decisoes.length === 1 ? 'answer' : 'answers'}
           </span>
         )}
@@ -181,7 +181,7 @@ function UmaDecisao({ d }: { d: Decision }) {
 
       {consultas.length > 0 && (
         <div className="mt-3">
-          <p className="mb-1 text-[10px] font-mono uppercase tracking-widest text-neutral-500">
+          <p className="mb-1 text-[10px] font-mono uppercase tracking-widest text-neutral-400">
             Searched for
           </p>
           <ol className="space-y-0.5">
@@ -197,7 +197,7 @@ function UmaDecisao({ d }: { d: Decision }) {
 
       {trechos.length > 0 && (
         <div className="mt-3">
-          <p className="mb-1 text-[10px] font-mono uppercase tracking-widest text-neutral-500">
+          <p className="mb-1 text-[10px] font-mono uppercase tracking-widest text-neutral-400">
             Passages
           </p>
           <ul className="divide-y divide-white/5 rounded-md ring-1 ring-white/5">
@@ -207,7 +207,7 @@ function UmaDecisao({ d }: { d: Decision }) {
           </ul>
           {/* A escala vem do backend porque o numero sozinho engana. Foi o bug
               que fez toda resposta sair com aviso de baixa confianca. */}
-          <p className="mt-1.5 text-[11px] text-neutral-500">
+          <p className="mt-1.5 text-[11px] text-neutral-400">
             <span className="font-mono uppercase">{d.score_scale}</span> · {d.score_scale_hint}
           </p>
         </div>
@@ -249,7 +249,7 @@ function Trecho({ p, mantido }: { p: DecisionPassage; mantido: boolean }) {
   const web = !p.document_id && Boolean(p.url)
   const titulo = p.document_title || (web ? 'Web result' : 'Untitled')
   return (
-    <li className={cn('flex items-start gap-2 px-2.5 py-1.5 text-xs', !mantido && 'opacity-55')}>
+    <li className={cn('flex items-start gap-2 px-2.5 py-1.5 text-xs', !mantido && 'opacity-75')}>
       {web ? (
         <Globe className="mt-0.5 h-3.5 w-3.5 shrink-0 text-violet-300" aria-hidden />
       ) : (
@@ -258,10 +258,10 @@ function Trecho({ p, mantido }: { p: DecisionPassage; mantido: boolean }) {
       <div className="min-w-0 flex-1">
         <p className="truncate text-neutral-200">
           {titulo}
-          {p.page != null && <span className="ml-1.5 text-neutral-500">p.{p.page}</span>}
+          {p.page != null && <span className="ml-1.5 text-neutral-400">p.{p.page}</span>}
         </p>
-        <p className="mt-0.5 flex flex-wrap gap-x-2 text-[10px] font-mono text-neutral-500">
-          <span className={mantido ? 'text-emerald-300' : 'text-neutral-500'}>
+        <p className="mt-0.5 flex flex-wrap gap-x-2 text-[10px] font-mono text-neutral-400">
+          <span className={mantido ? 'text-emerald-300' : 'text-neutral-400'}>
             {mantido ? 'kept' : 'dropped'}
           </span>
           {web && <span className="text-violet-300">web</span>}
@@ -281,7 +281,7 @@ function Trecho({ p, mantido }: { p: DecisionPassage; mantido: boolean }) {
       <span className="shrink-0 font-mono text-[11px] text-neutral-300" title={`${p.score_scale ?? ''} score`}>
         {formatarScore(p.score, p.score_scale)}
         {p.score_scale && p.score_scale !== 'cohere' && (
-          <span className="ml-1 text-[9px] uppercase text-neutral-500">{p.score_scale}</span>
+          <span className="ml-1 text-[9px] uppercase text-neutral-400">{p.score_scale}</span>
         )}
       </span>
     </li>

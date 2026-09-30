@@ -46,7 +46,7 @@ export default function AuthForm() {
           className={`px-3 py-1.5 rounded-full text-[10px] font-mono uppercase tracking-widest transition-colors ${
             mode === 'login'
               ? 'bg-blue-400/15 text-blue-200 ring-1 ring-blue-400/30'
-              : 'text-neutral-500 hover:text-white'
+              : 'text-neutral-400 hover:text-white'
           }`}
         >
           Sign in
@@ -57,7 +57,7 @@ export default function AuthForm() {
           className={`px-3 py-1.5 rounded-full text-[10px] font-mono uppercase tracking-widest transition-colors ${
             mode === 'signup'
               ? 'bg-blue-400/15 text-blue-200 ring-1 ring-blue-400/30'
-              : 'text-neutral-500 hover:text-white'
+              : 'text-neutral-400 hover:text-white'
           }`}
         >
           Create account
@@ -67,7 +67,7 @@ export default function AuthForm() {
       <form onSubmit={onSubmit} className="space-y-3">
         {mode === 'signup' && (
           <div>
-            <label htmlFor="auth-name" className="block text-[10px] font-mono uppercase tracking-widest text-neutral-500 mb-1.5">
+            <label htmlFor="auth-name" className="block text-[10px] font-mono uppercase tracking-widest text-neutral-400 mb-1.5">
               Full name
             </label>
             <Input
@@ -83,7 +83,7 @@ export default function AuthForm() {
         )}
 
         <div>
-          <label htmlFor="auth-email" className="block text-[10px] font-mono uppercase tracking-widest text-neutral-500 mb-1.5">
+          <label htmlFor="auth-email" className="block text-[10px] font-mono uppercase tracking-widest text-neutral-400 mb-1.5">
             Email
           </label>
           <Input
@@ -98,7 +98,7 @@ export default function AuthForm() {
         </div>
 
         <div>
-          <label htmlFor="auth-password" className="block text-[10px] font-mono uppercase tracking-widest text-neutral-500 mb-1.5">
+          <label htmlFor="auth-password" className="block text-[10px] font-mono uppercase tracking-widest text-neutral-400 mb-1.5">
             Password
           </label>
           <Input
@@ -137,7 +137,7 @@ export default function AuthForm() {
         </div>
       )}
 
-      <p className="mt-5 text-center text-xs text-neutral-500">
+      <p className="mt-5 text-center text-xs text-neutral-400">
         {mode === 'login' ? (
           <>
             Don&apos;t have an account?{' '}

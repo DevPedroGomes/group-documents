@@ -317,12 +317,12 @@ function EmptyState({
           ? `Answers come from the ${selecionados} selected ${selecionados === 1 ? 'document' : 'documents'}`
           : 'Answers come from your whole library'}
         , with the passages they were built from. When nothing clears the relevance bar, the
-        question is rewritten and searched once more; if that fails too, the answer says it did
-        not find it instead of guessing.
+        question is rewritten and searched once more; if that fails too, the best passages still go
+        through and the answer is marked low confidence.
       </p>
 
       <div className="flex flex-col gap-2.5">
-        <span className="text-[10px] font-mono uppercase tracking-widest text-neutral-500 mb-1">
+        <span className="text-[10px] font-mono uppercase tracking-widest text-neutral-400 mb-1">
           try
         </span>
         {suggestions.map((s, idx) => (
@@ -344,7 +344,7 @@ function EmptyState({
         ))}
       </div>
 
-      <div className="mt-10 flex items-center gap-3 text-[11px] font-mono text-neutral-500">
+      <div className="mt-10 flex items-center gap-3 text-[11px] font-mono text-neutral-400">
         <span className="text-blue-300">{'>'}</span>
         <span>waiting for input</span>
         <span className="ml-1 inline-block w-1.5 h-3 bg-blue-300/80 animate-pulse" />

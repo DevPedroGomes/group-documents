@@ -359,7 +359,7 @@ export default function KnowledgeHub({ getToken }: KnowledgeHubProps) {
                 {pendentes.map((f, i) => (
                   <li key={`${f.name}-${i}`} className="flex items-center justify-between gap-3 px-3 py-2 text-xs">
                     <span className="truncate text-neutral-200">{f.name}</span>
-                    <span className="shrink-0 font-mono text-neutral-500">
+                    <span className="shrink-0 font-mono text-neutral-400">
                       {(f.size / (1024 * 1024)).toFixed(1)} MB
                     </span>
                   </li>
@@ -464,7 +464,7 @@ export default function KnowledgeHub({ getToken }: KnowledgeHubProps) {
               Workspace / Library
             </span>
             <span className="h-px flex-1 max-w-[80px] bg-white/10" />
-            <span className="text-[10px] font-mono uppercase tracking-widest text-neutral-500">
+            <span className="text-[10px] font-mono uppercase tracking-widest text-neutral-400">
               {docs.length} indexed
             </span>
           </div>
@@ -584,7 +584,7 @@ export default function KnowledgeHub({ getToken }: KnowledgeHubProps) {
 
           {/* ─── Mono stats strip ─────────────────────────────────── */}
           {hasDocuments && (
-            <div className="mt-5 flex items-center gap-4 text-[10px] font-mono uppercase tracking-widest text-neutral-500">
+            <div className="mt-5 flex items-center gap-4 text-[10px] font-mono uppercase tracking-widest text-neutral-400">
               <span>
                 <span className="text-white/80 font-semibold">{docs.length}</span>
                 <span className="ml-1.5">documents</span>
@@ -815,7 +815,7 @@ function DocumentCard({
           ) : (
             <p className="text-sm font-medium text-white truncate">{doc.title}</p>
           )}
-          <p className="text-[10px] font-mono text-neutral-500 mt-0.5 truncate">
+          <p className="text-[10px] font-mono text-neutral-400 mt-0.5 truncate">
             {doc.chunk_count != null && doc.chunk_count > 0
               ? `${doc.chunk_count} chunks`
               : doc.status === 'failed' ? 'not indexed' : 'indexing'}
@@ -894,7 +894,7 @@ function EmptyState({
               <Upload className="h-4 w-4" />
               Upload
             </Button>
-            <span className="text-[11px] font-mono text-neutral-500">
+            <span className="text-[11px] font-mono text-neutral-400">
               <span className="text-blue-300">$</span> upload --query <span className="text-neutral-300">&quot;{query}&quot;</span>
             </span>
           </div>
@@ -959,7 +959,7 @@ function CampoDeData({
     <div className="mt-4">
       <label htmlFor={id} className="flex items-center gap-1.5 text-xs font-medium text-neutral-300">
         <CalendarClock className="h-3.5 w-3.5 text-blue-300" aria-hidden />
-        Document date <span className="font-normal text-neutral-500">(optional)</span>
+        Document date <span className="font-normal text-neutral-400">(optional)</span>
       </label>
       <div className="mt-1.5 flex items-center gap-2">
         <Input
@@ -984,7 +984,7 @@ function CampoDeData({
           </button>
         )}
       </div>
-      <p id={`${id}-help`} className="mt-1.5 text-[11px] text-neutral-500">
+      <p id={`${id}-help`} className="mt-1.5 text-[11px] text-neutral-400">
         Used by &ldquo;Answer as of&rdquo; in the chat{multiplos ? '; applies to every file above' : ''}.
         Without it, the upload date counts.
       </p>
