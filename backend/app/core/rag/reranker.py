@@ -10,16 +10,18 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_client: Optional["cohere.Client"] = None
+_client: Optional["cohere.ClientV2"] = None
 
 
-def _get_client() -> "cohere.Client":
+def _get_client() -> "cohere.ClientV2":
+    # ClientV2 e o cliente da API v2; o `cohere.Client` v1 e o legado. A
+    # assinatura de `rerank` foi conferida contra o SDK instalado (7.0.9).
     import cohere as _cohere
 
     global _client
     if _client is None:
         settings = get_settings()
-        _client = _cohere.Client(api_key=settings.cohere_api_key)
+        _client = _cohere.ClientV2(api_key=settings.cohere_api_key)
     return _client
 
 
@@ -31,6 +33,9 @@ def rerank_documents(
     """
     Rerank documents using Cohere cross-encoder.
     Falls back to original order if Cohere is unavailable.
+
+    Cada documento volta como veio (copia do dict, com `document_date` e o
+    resto), so com `relevance_score` e `score_scale` trocados.
     """
     settings = get_settings()
 
@@ -49,7 +54,6 @@ def rerank_documents(
             query=query,
             documents=texts,
             top_n=min(top_n, len(documents)),
-            return_documents=False,
         )
 
         reranked = []

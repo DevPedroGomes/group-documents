@@ -279,15 +279,29 @@ def test_uvicorn_confia_no_proxy_para_enxergar_o_ip_real():
 # pelo Google e id de modelo (`gemini-2.5-flash-preview-04-17`) ja retirado.
 # ---------------------------------------------------------------------------
 
-def test_texto_e_imagem_compartilham_o_mesmo_espaco_vetorial():
-    """Modelos diferentes para texto e imagem produzem vetores incomparaveis:
-    a busca por texto nunca encontraria uma figura."""
-    from app.config.settings import Settings
+def test_texto_e_imagem_compartilham_o_mesmo_espaco_vetorial(monkeypatch):
+    """Modelos diferentes para documento, imagem e pergunta produzem vetores
+    incomparaveis: a busca por texto nunca encontraria uma figura. Os tres
+    caminhos chamam o provider com o MESMO modelo, e ele e multimodal."""
+    from PIL import Image
 
-    doc = Settings.model_fields["voyage_doc_model"].default
-    query = Settings.model_fields["voyage_query_model"].default
-    assert doc == query, "doc e query em modelos distintos = espacos incomparaveis"
-    assert "multimodal" in doc, "modelo so-de-texto nao consegue embedar imagem"
+    from app.services import embedding
+
+    modelos = []
+
+    class ClienteFalso:
+        def multimodal_embed(self, inputs, model, input_type):
+            modelos.append((input_type, model))
+            return type("R", (), {"embeddings": [[0.0] * 1024 for _ in inputs]})()
+
+    monkeypatch.setattr(embedding, "_get_client", lambda: ClienteFalso())
+    embedding.embed_documents(["trecho"])
+    embedding.embed_images([Image.new("RGB", (2, 2))])
+    embedding.embed_queries(["pergunta"])
+
+    assert [t for t, _ in modelos] == ["document", "document", "query"]
+    assert len({m for _, m in modelos}) == 1, f"modelos distintos: {modelos}"
+    assert "multimodal" in modelos[0][1], "modelo so-de-texto nao consegue embedar imagem"
 
 
 def test_gemini_saiu_por_completo():
@@ -506,3 +520,95 @@ def test_cache_de_embedding_separa_modelo_e_lado(monkeypatch):
     assert embedding_cache.get_cached_embedding("frete gratis?", input_type="document") is None
     monkeypatch.setattr(settings, "voyage_doc_model", "modelo-b")
     assert embedding_cache.get_cached_embedding("frete gratis?") is None
+
+
+# ---------------------------------------------------------------------------
+# Reranker na API v2 da Cohere
+# ---------------------------------------------------------------------------
+
+def _cohere_falso(monkeypatch, *, resultados=None, erro=None):
+    """Troca o modulo `cohere` por um que so tem `ClientV2`, cujo `rerank`
+    confere os argumentos contra a assinatura do `V2Client.rerank` INSTALADO:
+    argumento que a v2 nao aceita (como o `return_documents` da v1) quebra aqui.
+    Modulo falso, e nao setattr no real, porque o import preguicoso do SDK
+    depende de `_lzma`, que nem todo Python local tem."""
+    import inspect
+    import sys
+    from types import SimpleNamespace
+
+    from cohere.v2.client import V2Client
+
+    from app.core.rag import reranker
+
+    assinatura = inspect.signature(V2Client.rerank)
+    chamadas: list[dict] = []
+    criados: list[str] = []
+
+    class ClienteV2Falso:
+        def __init__(self, api_key=None):
+            criados.append(api_key)
+
+        def rerank(self, **kwargs):
+            assinatura.bind(self, **kwargs)
+            chamadas.append(kwargs)
+            if erro:
+                raise erro
+            return SimpleNamespace(results=[
+                SimpleNamespace(index=i, relevance_score=s) for i, s in resultados
+            ])
+
+    monkeypatch.setitem(sys.modules, "cohere", SimpleNamespace(ClientV2=ClienteV2Falso))
+    monkeypatch.setattr(reranker, "_client", None)
+    return chamadas, criados
+
+
+def _com_cohere(monkeypatch, chave="chave-cohere"):
+    from app.config.settings import get_settings
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "cohere_api_key", chave)
+    monkeypatch.setattr(settings, "enable_reranking", True)
+
+
+def test_rerank_pela_v2_reordena_e_preserva_a_data_do_documento(monkeypatch):
+    from app.core.rag import retriever
+
+    _com_cohere(monkeypatch)
+    chamadas, criados = _cohere_falso(monkeypatch, resultados=[(2, 0.91), (0, 0.42)])
+    monkeypatch.setattr(retriever, "generate_multi_queries", lambda q: [])
+    monkeypatch.setattr(retriever, "get_query_embeddings", lambda qs: [[0.0] * 1024 for _ in qs])
+    monkeypatch.setattr(retriever, "hybrid_search", lambda **kw: _trechos_com_data(3))
+
+    saida = retriever.retrieve_documents("pergunta", user_id="u", top_k=2)
+
+    assert criados == ["chave-cohere"]
+    assert chamadas[0]["documents"] == ["trecho 0", "trecho 1", "trecho 2"]
+    assert chamadas[0]["top_n"] == 2
+    assert [(t["id"], t["relevance_score"], t["score_scale"]) for t in saida] == [
+        ("c2", 0.91, "cohere"), ("c0", 0.42, "cohere"),
+    ]
+    assert [t["document_date"] for t in saida] == ["2025-03-01", "2025-01-01"]
+
+
+def test_rerank_sem_chave_fica_na_ordem_do_rrf_sem_criar_cliente(monkeypatch):
+    from app.core.rag.reranker import rerank_documents
+
+    _com_cohere(monkeypatch, chave=None)
+    chamadas, criados = _cohere_falso(monkeypatch, resultados=[])
+
+    saida = rerank_documents("pergunta", _trechos_com_data(3), top_n=2)
+
+    assert [t["id"] for t in saida] == ["c0", "c1"]
+    assert saida[0]["score_scale"] == "rrf"
+    assert criados == [] and chamadas == []
+
+
+def test_rerank_que_falha_cai_na_ordem_do_rrf(monkeypatch):
+    from app.core.rag.reranker import rerank_documents
+
+    _com_cohere(monkeypatch)
+    _cohere_falso(monkeypatch, erro=RuntimeError("503 da Cohere"))
+
+    saida = rerank_documents("pergunta", _trechos_com_data(3), top_n=2)
+
+    assert [(t["id"], t["score_scale"]) for t in saida] == [("c0", "rrf"), ("c1", "rrf")]

@@ -13,7 +13,7 @@ This README reflects the current implementation (commit `ccddc06` and forward): 
 - Storage: local PostgreSQL 16 with the `pgvector` extension; uploaded files live on a Docker volume mounted at `/app/uploads`.
 - Cache + rate limiter store: Redis 7.
 - LLM: Anthropic Claude (Sonnet 4 for generation, Haiku 4.5 for cheap calls) or any OpenRouter model, selectable via `LLM_PROVIDER`.
-- Embeddings: Voyage AI (`voyage-3-large` for documents, `voyage-3-lite` for queries, 1536 dimensions).
+- Embeddings: Voyage AI (`voyage-multimodal-3.5` for documents and queries alike, 1024 dimensions).
 - Reranking: Cohere `rerank-v4.0-fast` cross-encoder (optional; pipeline degrades to RRF order if absent).
 - Multi-modal ingest: images are embedded directly by the vision tower (no captioning step); audio and video are transcribed by Deepgram; PDFs use `pypdf`, and pages with no text layer are rendered by PyMuPDF and take the visual path.
 - Auth: local JWT (HS256) issued by `/auth/login` and `/auth/register`, validated per-request by a FastAPI dependency.
@@ -59,7 +59,7 @@ flowchart LR
     subgraph Chat path
         API -->|"retrieve_documents(user_id=...)"| Retriever[Multi-query<br/>3 variants via fast LLM]
         Retriever -->|cache-through| Redis
-        Retriever -->|"embed_query (voyage-3-lite)"| Voyage
+        Retriever -->|"embed_queries (voyage-multimodal-3.5)"| Voyage
         Retriever -->|"hybrid_search(user_id=...)"| PG
         PG -->|"semantic + tsvector results"| RRF[Reciprocal Rank Fusion<br/>k=60]
         RRF --> Cohere
@@ -175,7 +175,7 @@ Inside `process_ingestion`:
    - All queries are embedded in one call: `get_query_embeddings` (cache-through against Redis with key `emb:{model}:{input_type}:{sha256(query)}`, TTL 3600 s) -> `voyage-multimodal-3.5` for the misses.
    - `hybrid_search(query_embedding, query_text, user_id=..., top_k=15, document_ids=...)` runs two SQL queries against `chunks` joined to `documents`:
      - Semantic: `1 - (embedding <=> :qvec) >= 0.1`, ordered by cosine distance, LIMIT 15.
-     - Keyword: `search_vector @@ plainto_tsquery('english', :query_text)`, ordered by `ts_rank` DESC, LIMIT 15.
+     - Keyword: `search_vector @@` the question's terms OR-ed (configs `portugues_sem_acento` + `english`, migration 008), ordered by `ts_rank` DESC, LIMIT 15.
    - Both branches carry `AND c.user_id = CAST(:user_id AS uuid)` and an optional `AND c.document_id = ANY(...)` filter, **before** RRF.
    - RRF merge with `k=60`. `enriched_content` (when present) is the snippet shown.
    - The deduplicated candidate pool (best score per chunk id) is reranked by Cohere `rerank-v4.0-fast` if `COHERE_API_KEY` is set; otherwise the top RRF candidates are returned in place.
@@ -276,7 +276,6 @@ Operational checklist (see also `/root/.claude/CLAUDE.md`):
 | `FAST_MODEL` | no | `claude-haiku-4-5-20251001` | Used by multi-query, contextual enrichment, query transform, summary. |
 | `VOYAGE_API_KEY` | yes | — | Voyage AI. |
 | `VOYAGE_DOC_MODEL` | no | `voyage-3-large` | |
-| `VOYAGE_QUERY_MODEL` | no | `voyage-3-lite` | |
 | `EMBEDDING_DIMENSIONS` | no | `1536` | Must match the `vector(N)` schema. |
 | `COHERE_API_KEY` | no | — | If unset, reranking is skipped. |
 | `COHERE_RERANK_MODEL` | no | `rerank-v4.0-fast` | |

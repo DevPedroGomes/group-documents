@@ -53,7 +53,6 @@ class Settings(BaseSettings):
     # pouco melhor. O ganho de recuperar figura, tabela e pagina escaneada
     # compensa num app que se chama "multi-modal".
     voyage_doc_model: str = "voyage-multimodal-3.5"
-    voyage_query_model: str = "voyage-multimodal-3.5"
     # Precisa bater com o vector(N) das migrations. Ver migrations/002.
     embedding_dimensions: int = 1024
     # Abaixo disto uma pagina de PDF e tratada como escaneada e vai para o
