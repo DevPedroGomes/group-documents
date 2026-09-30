@@ -172,7 +172,7 @@ Inside `process_ingestion`:
 4. **Save user message.** Before retrieval starts, the user's message is persisted with `role='user'`.
 5. **Retrieve.** `retrieve_documents(question, user_id=..., document_ids=..., top_k=5)`:
    - `generate_multi_queries` asks the fast LLM (via `llm_client.chat_complete`) for `multi_query_count=3` variants; `[question] + variants` are all searched.
-   - For each query: `get_query_embedding` (cache-through against Redis with key `emb:{sha256(query)}`, TTL 3600 s) -> `voyage-3-lite` if miss.
+   - All queries are embedded in one call: `get_query_embeddings` (cache-through against Redis with key `emb:{model}:{input_type}:{sha256(query)}`, TTL 3600 s) -> `voyage-multimodal-3.5` for the misses.
    - `hybrid_search(query_embedding, query_text, user_id=..., top_k=15, document_ids=...)` runs two SQL queries against `chunks` joined to `documents`:
      - Semantic: `1 - (embedding <=> :qvec) >= 0.1`, ordered by cosine distance, LIMIT 15.
      - Keyword: `search_vector @@ plainto_tsquery('english', :query_text)`, ordered by `ts_rank` DESC, LIMIT 15.

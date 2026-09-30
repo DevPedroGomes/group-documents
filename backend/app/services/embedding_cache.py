@@ -20,16 +20,20 @@ def _get_redis() -> redis.Redis:
     return _redis_client
 
 
-def _cache_key(query: str) -> str:
+def _cache_key(query: str, input_type: str = "query") -> str:
+    """O vetor depende do modelo e do lado (query/document), nao so do texto.
+    Sem os dois na chave, trocar o modelo servia por ate um TTL vetores do
+    modelo antigo, de outro espaco vetorial, sem erro nenhum."""
     query_hash = hashlib.sha256(query.strip().lower().encode()).hexdigest()
-    return f"emb:{query_hash}"
+    modelo = get_settings().voyage_doc_model
+    return f"emb:{modelo}:{input_type}:{query_hash}"
 
 
-def get_cached_embedding(query: str) -> Optional[list[float]]:
+def get_cached_embedding(query: str, input_type: str = "query") -> Optional[list[float]]:
     """Return cached embedding or None."""
     try:
         r = _get_redis()
-        data = r.get(_cache_key(query))
+        data = r.get(_cache_key(query, input_type))
         if data:
             return json.loads(data)
         return None
@@ -38,13 +42,13 @@ def get_cached_embedding(query: str) -> Optional[list[float]]:
         return None
 
 
-def cache_embedding(query: str, embedding: list[float]) -> None:
+def cache_embedding(query: str, embedding: list[float], input_type: str = "query") -> None:
     """Cache an embedding with TTL."""
     try:
         settings = get_settings()
         r = _get_redis()
         r.setex(
-            _cache_key(query),
+            _cache_key(query, input_type),
             settings.embedding_cache_ttl,
             json.dumps(embedding),
         )

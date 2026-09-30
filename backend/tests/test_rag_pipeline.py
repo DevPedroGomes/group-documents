@@ -483,3 +483,26 @@ def test_ef_search_e_o_dobro_do_limit_entre_piso_e_teto(limite, esperado):
     from app.services.vector_store import _ef_search
 
     assert _ef_search(limite) == esperado
+
+
+def test_cache_de_embedding_separa_modelo_e_lado(monkeypatch):
+    """Trocar o modelo nao pode servir vetor do modelo antigo (outro espaco
+    vetorial), nem o vetor de documento pode responder por uma query."""
+    from app.config.settings import get_settings
+    from app.services import embedding_cache
+
+    class RedisFalso(dict):
+        def setex(self, chave, _ttl, valor):
+            self[chave] = valor
+
+    redis = RedisFalso()
+    monkeypatch.setattr(embedding_cache, "_get_redis", lambda: redis)
+    settings = get_settings()
+    monkeypatch.setattr(settings, "voyage_doc_model", "modelo-a")
+
+    embedding_cache.cache_embedding("Frete gratis?", [1.0, 2.0])
+
+    assert embedding_cache.get_cached_embedding("frete gratis?") == [1.0, 2.0]
+    assert embedding_cache.get_cached_embedding("frete gratis?", input_type="document") is None
+    monkeypatch.setattr(settings, "voyage_doc_model", "modelo-b")
+    assert embedding_cache.get_cached_embedding("frete gratis?") is None
