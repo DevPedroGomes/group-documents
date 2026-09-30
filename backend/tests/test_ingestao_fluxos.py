@@ -258,14 +258,11 @@ def test_classificacao_da_falha(erro, permanente, mensagem):
     assert falhas.classificar(erro) == falhas.Falha(permanente, mensagem)
 
 
-def test_pdf_corrompido_e_arquivo_ilegivel():
-    from pypdf.errors import PdfReadError
-
+def test_pdf_corrompido_e_arquivo_ilegivel_e_nao_retenta():
     from app.core.ingestion.pdf_processor import extrair_paginas
     from tests.fixtures import pdf_corrompido
 
     with pytest.raises(Exception) as erro:
         extrair_paginas(pdf_corrompido())
 
-    assert isinstance(erro.value, PdfReadError) or falhas.classificar(erro.value).permanente
     assert falhas.classificar(erro.value) == falhas.Falha(True, falhas.ARQUIVO_ILEGIVEL)

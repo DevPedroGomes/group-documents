@@ -42,8 +42,7 @@ def test_pdf_escaneado_vai_para_o_caminho_visual():
 
     Nao existe OCR no projeto — nenhum tesseract, easyocr ou paddleocr. O
     caminho visual e o unico, e ele CUSTA: uma chamada paga por pagina, em
-    serie e sem teto. Um PDF escaneado grande estoura o job_timeout, vira
-    `failed`, retenta do zero e queima o custo de novo.
+    serie. O teto de paginas e o render uma por vez estao nos testes abaixo.
     """
     dados = pdf_escaneado(2)
     paginas = extrair_paginas(dados)
@@ -177,7 +176,7 @@ def test_pagina_curta_com_texto_e_tratada_como_escaneada():
     `pdf_min_chars_por_pagina` (120) caracteres — nao e a ausencia de texto.
     Entao uma pagina de rosto, uma pagina so com titulo ou uma pagina final com
     "Obrigado" e renderizada e mandada para o modelo de VISAO, que e uma
-    chamada paga, em serie e sem teto.
+    chamada paga, em serie.
 
     Num PDF com muitas paginas curtas isso multiplica o custo da ingestao sem
     que ninguem perceba: o texto estava la o tempo todo.

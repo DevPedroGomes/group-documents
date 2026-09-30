@@ -26,8 +26,8 @@ def pdf_com_texto(paginas: list[str]) -> bytes:
 def pdf_escaneado(n_paginas: int = 1) -> bytes:
     """Paginas SEM camada de texto — o caso do documento digitalizado.
 
-    E o caminho que manda a pagina para o modelo de visao, e o que nao tem teto
-    de paginas: cada uma vira uma chamada paga, em serie.
+    E o caminho que manda a pagina para o modelo de visao: cada uma vira uma
+    chamada paga, em serie, ate o teto de `max_pdf_pages`.
     """
     doc = pymupdf.open()
     for _ in range(n_paginas):
