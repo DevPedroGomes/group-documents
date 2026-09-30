@@ -321,3 +321,84 @@ def test_divergencia_nao_filtra_nem_reordena_as_fontes(chat):
     assert [f["snippet"] for f in fontes] == ["prazo de 30 dias", "prazo de 15 dias uteis", "entrega em Salvador"]
     contexto = cenario.geracoes[0]["messages"][-1]["content"]
     assert contexto.index("prazo de 30 dias") < contexto.index("15 dias uteis") < contexto.index("Salvador")
+
+
+def _tipos(evs: list[dict]) -> list[str]:
+    return [e["type"] for e in evs]
+
+
+def test_divergencia_roda_em_paralelo_e_o_aviso_sai_entre_tokens(chat):
+    """A checagem so termina DEPOIS que o primeiro token saiu. Em serie, isso
+    travaria: o gerador nunca comecaria. Em paralelo, o aviso chega entre os
+    tokens, com o `vigente` pela data do documento."""
+    import threading
+    import time
+
+    cliente, cenario = chat
+    _duas_versoes(cenario)
+    cenario.resposta_conflito = DIVERGE
+    primeiro_token = threading.Event()
+    checagem_pronta = threading.Event()
+    cenario.antes_de_responder_conflito = lambda: primeiro_token.wait(5)
+    cenario.depois_de_responder_conflito = checagem_pronta.set
+
+    def libera_e_espera():
+        primeiro_token.set()
+        checagem_pronta.wait(5)
+        time.sleep(0.05)  # o loop registra o fim da checagem antes do proximo token
+
+    cenario.tokens = ["O prazo", libera_e_espera, " e de", " 15 dias."]
+
+    evs = perguntar(cliente, "qual o prazo?")
+
+    tipos = _tipos(evs)
+    assert tipos.index("conflict") < len(tipos) - 1 - tipos[::-1].index("chunk"), (
+        "o aviso so saiu depois do ultimo token"
+    )
+    assert tipos.index("chunk") < tipos.index("conflict")
+    (aviso,) = do_tipo(evs, "conflict")
+    assert aviso == {"summary": "O prazo difere.", "sources": ["Contrato", "Aditivo"], "vigente": "Aditivo"}
+    assert cenario.decisoes[0]["conflict"] == aviso
+    passos = {p["step"]: p for p in do_tipo(evs, "workflow")[-1]}
+    assert passos["conflict"] == {"step": "conflict", "status": "completed", "details": "Sources disagree"}
+
+
+def test_divergencia_mais_lenta_que_a_resposta_sai_antes_do_done(chat):
+    import threading
+
+    cliente, cenario = chat
+    _duas_versoes(cenario)
+    cenario.resposta_conflito = DIVERGE
+    fim_da_resposta = threading.Event()
+    cenario.antes_de_responder_conflito = lambda: fim_da_resposta.wait(5)
+    cenario.tokens = ["O prazo", " e de 15 dias.", fim_da_resposta.set]
+
+    evs = perguntar(cliente, "qual o prazo?")
+
+    tipos = _tipos(evs)
+    ultimo_chunk = len(tipos) - 1 - tipos[::-1].index("chunk")
+    assert ultimo_chunk < tipos.index("conflict") < tipos.index("done")
+    assert cenario.decisoes[0]["conflict"]["vigente"] == "Aditivo"
+
+
+def test_sem_divergencia_o_passo_termina_sem_aviso(chat):
+    cliente, cenario = chat
+    _duas_versoes(cenario)
+
+    evs = perguntar(cliente, "qual o prazo?")
+
+    assert do_tipo(evs, "conflict") == []
+    passos = {p["step"]: p for p in do_tipo(evs, "workflow")[-1]}
+    assert passos["conflict"]["status"] == "completed"
+    assert passos["conflict"]["details"] == "No disagreement found"
+    assert cenario.decisoes[0]["conflict"] is None
+
+
+def test_um_documento_so_nao_paga_checagem(chat):
+    cliente, cenario = chat
+    cenario.acervo["qual o prazo?"] = [trecho("c1", "d1", "Contrato"), trecho("c2", "d1", "Contrato")]
+
+    evs = perguntar(cliente, "qual o prazo?")
+
+    assert cenario.prompts_conflito == []
+    assert "conflict" not in [p["step"] for p in do_tipo(evs, "workflow")[-1]]

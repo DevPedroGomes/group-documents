@@ -102,6 +102,30 @@ def test_a_busca_usa_o_user_id_do_jwt_e_grava_a_trilha_com_as_consultas(voz):
     assert "conflict" in decisao
 
 
+def test_a_busca_devolve_a_divergencia_com_a_fonte_vigente(voz):
+    """O prompt manda dizer o valor da fonte em vigor; sem `vigente` o agente
+    teria de adivinhar qual das duas vale."""
+    from tests.dubles_chat import trecho
+
+    cliente, cenario = voz
+    cenario.acervo["qual o prazo?"] = [
+        trecho("c1", "d1", "Contrato", data="2023-05-10", texto="prazo de 30 dias"),
+        trecho("c2", "d2", "Aditivo", data="2025-02-01", texto="prazo de 15 dias uteis"),
+    ]
+    cenario.resposta_conflito = (
+        '{"conflict": true, "summary": "O prazo difere.", "sources": ["Contrato", "Aditivo"]}'
+    )
+
+    r = cliente.post("/realtime/tool/buscar", json={"pergunta": "qual o prazo?"},
+                     headers={"Authorization": "Bearer x"})
+
+    assert r.status_code == 200, r.text
+    esperado = {"summary": "O prazo difere.", "sources": ["Contrato", "Aditivo"], "vigente": "Aditivo"}
+    assert r.json()["divergencia"] == esperado
+    assert cenario.decisoes[0]["conflict"] == esperado
+    assert "vigente" in rt.INSTRUCOES
+
+
 def test_as_duas_rotas_exigem_autenticacao():
     for nome in ("criar_sessao", "executar_busca"):
         fonte = ast.get_source_segment(FONTE, _funcao(nome)) or ""

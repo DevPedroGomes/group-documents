@@ -23,7 +23,7 @@ from app.core.rag.generator import stream_answer
 from app.core.rag.transformer import transform_query
 from app.core.rag.retriever import reconsultar, retrieve_documents
 from app.core.rag.grader import grade_documents
-from app.core.rag.conflict import detectar_conflito
+from app.core.rag.conflict import detectar_conflito, vale_checar
 from app.core.rag.web import buscar_na_web
 
 logger = logging.getLogger(__name__)
@@ -162,6 +162,15 @@ def _resumo_trechos(docs: list[dict]) -> list[dict]:
         }
         for d in docs
     ]
+
+
+def _resultado_da_checagem(checagem) -> dict | None:
+    """O aviso de uma checagem de divergencia ja terminada; falha vira "sem aviso"."""
+    try:
+        return checagem.result()
+    except Exception:
+        logger.warning("checagem de divergencia falhou", exc_info=True)
+        return None
 
 
 def _citacao(d: dict) -> dict:
@@ -304,6 +313,24 @@ async def chat(request: Request, body: ChatBody):
         consultas: list[str] = []
         resultados_web: list[dict] = []
         reescrita: str | None = None
+        workflow: list[dict] = []
+        checagem: asyncio.Future | None = None  # divergencia, em paralelo
+        passo_conflito = -1
+
+        def fechar_conflito() -> list[str]:
+            """Registra o resultado da checagem e devolve os eventos a emitir."""
+            nonlocal conflito, checagem
+            conflito = _resultado_da_checagem(checagem)
+            checagem = None
+            workflow[passo_conflito] = {
+                "step": "conflict",
+                "status": "completed",
+                "details": "Sources disagree" if conflito else "No disagreement found",
+            }
+            eventos = [_sse("workflow", workflow)]
+            if conflito:
+                eventos.append(_sse("conflict", conflito))
+            return eventos
 
         # Todo passo caro daqui para baixo e sincrono (LLM, embedding, SQL) e
         # roda em thread, nunca no event loop. Com 1 worker do uvicorn, uma
@@ -314,7 +341,8 @@ async def chat(request: Request, body: ChatBody):
 
         try:
             # Step 1: Retrieve
-            yield _sse("workflow", [{"step": "retrieve", "status": "in_progress", "details": "Searching documents..."}])
+            workflow.append({"step": "retrieve", "status": "in_progress", "details": "Searching documents..."})
+            yield _sse("workflow", workflow)
 
             # O historico vai junto para condensar pergunta de seguimento ("e em
             # marco de 2025?"): a busca usa a pergunta autocontida, o gerador
@@ -334,7 +362,7 @@ async def chat(request: Request, body: ChatBody):
             consultas = list(recuperacao.queries)
 
             recuperados = list(documents)
-            workflow = [{"step": "retrieve", "status": "completed", "details": f"Found {len(documents)} chunks"}]
+            workflow[-1] = {"step": "retrieve", "status": "completed", "details": f"Found {len(documents)} chunks"}
             yield _sse("workflow", workflow)
 
             # Step 2: Grade
@@ -440,25 +468,17 @@ async def chat(request: Request, body: ChatBody):
 
             # Passo: as fontes divergem entre si?
             #
-            # Roda depois do grade porque so interessa o que de fato sobrou, e
-            # antes do generate porque o aviso acompanha a resposta na tela. O
-            # portao e deterministico (dois ou mais documentos distintos), a
-            # checagem e do modelo, e o resultado e AVISO: nada e filtrado.
-            if len({d.get("document_id") for d in filtered_docs if d.get("document_id") != "web"}) >= 2:
+            # Dispara depois do grade (so interessa o que sobrou) e roda EM
+            # PARALELO com a geracao: antes rodava em serie e atrasava o primeiro
+            # token. O evento `conflict` sai assim que a checagem termina, entre
+            # tokens ou depois do ultimo. O portao e deterministico (dois ou mais
+            # documentos do acervo), a checagem e do modelo, e o resultado e
+            # AVISO: nada e filtrado nem reordenado.
+            if vale_checar(filtered_docs):
                 workflow.append({"step": "conflict", "status": "in_progress", "details": "Comparing sources..."})
+                passo_conflito = len(workflow) - 1
+                checagem = loop.run_in_executor(None, detectar_conflito, list(filtered_docs))
                 yield _sse("workflow", workflow)
-
-                conflito = await loop.run_in_executor(None, detectar_conflito, filtered_docs)
-
-                workflow[-1] = {
-                    "step": "conflict",
-                    "status": "completed",
-                    "details": "Sources disagree" if conflito else "No disagreement found",
-                }
-                yield _sse("workflow", workflow)
-
-                if conflito:
-                    yield _sse("conflict", conflito)
 
             # Fontes: do acervo e da web, cada uma com o seu `kind`. Antes a web
             # ia para o gerador e ficava fora das citacoes.
@@ -468,6 +488,7 @@ async def chat(request: Request, body: ChatBody):
 
             # Step 3: Generate (streaming)
             workflow.append({"step": "generate", "status": "in_progress", "details": "Generating answer..."})
+            passo_gerar = len(workflow) - 1
             yield _sse("workflow", workflow)
 
             async for token in iterate_in_threadpool(
@@ -481,14 +502,37 @@ async def chat(request: Request, body: ChatBody):
             ):
                 full_answer += token
                 yield _sse("chunk", token)
+                if checagem is not None and checagem.done():
+                    for evento in fechar_conflito():
+                        yield evento
 
-            workflow[-1] = {"step": "generate", "status": "completed", "details": "Done"}
+            workflow[passo_gerar] = {"step": "generate", "status": "completed", "details": "Done"}
             yield _sse("workflow", workflow)
+
+            if checagem is not None:
+                # Terminou de gerar antes da checagem: espera por ela, que o
+                # aviso tem que chegar antes do `done`.
+                await asyncio.wait([checagem])
+                for evento in fechar_conflito():
+                    yield evento
 
             # Done
             yield _sse("done", {"thread_id": thread_id, "low_confidence": baixa_confianca})
 
         except Exception as e:
+            # A checagem que ja terminou entra na trilha; a que ainda roda e
+            # abandonada, mas o passo nao fica "em andamento" para sempre.
+            if checagem is not None:
+                if checagem.done():
+                    conflito = _resultado_da_checagem(checagem)
+                workflow[passo_conflito] = {
+                    "step": "conflict",
+                    "status": "completed",
+                    "details": "Sources disagree" if conflito else "Check interrupted",
+                }
+                checagem = None
+                yield _sse("workflow", workflow)
+
             # O erro cru do provider NAO vai para a tela. Foi assim que uma
             # mensagem de rate limit da Voyage, com link do dashboard de
             # billing e nome do plano, apareceu para o visitante no meio do
