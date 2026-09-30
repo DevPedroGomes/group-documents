@@ -49,7 +49,7 @@ flowchart LR
     W --> X
 ```
 
-- Frontend routes: `/` (landing, server-rendered), `/library` (upload, crawl, document list), `/chat`. The `/api/*` route handlers proxy to FastAPI over the Docker network (`API_INTERNAL_URL`) and forward Traefik's `X-Real-Ip` as `X-Forwarded-For`, so per-IP rate limits count each visitor separately.
+- Frontend routes: `/` (landing, server-rendered), `/library` (upload, crawl, document list), `/chat`, and `/login`, which redirects to `/`. The `/api/*` route handlers proxy to FastAPI over the Docker network (`API_INTERNAL_URL`) and forward Traefik's `X-Real-Ip` as `X-Forwarded-For`, so per-IP rate limits count each visitor separately.
 - Ingestion is queued in Redis and run by a separate container from the same image (`arq app.jobs.worker.WorkerSettings`).
 - The API runs a single uvicorn process. Blocking work (SQL, bcrypt, provider calls, disk) runs in threads so it does not hold the event loop.
 
@@ -59,7 +59,7 @@ flowchart LR
 2. **Queries.** The fast model writes 3 variants of the question. When the thread has history, it first rewrites a follow-up as a standalone question from the last 6 messages; that becomes the main query, and the original question is kept as an extra variant.
 3. **Embedding.** All queries go to Voyage `voyage-multimodal-3.5` (1024 dimensions) in one call, through a Redis cache keyed by model, input type and text hash.
 4. **Hybrid search per query.** Each leg has `LIMIT 45` and filters by `user_id`, the optional document selection and the optional `as_of`:
-   - semantic: cosine similarity on an HNSW index, with `hnsw.ef_search` raised inside the transaction so post-scan filters do not drop neighbours;
+   - semantic: cosine similarity on an HNSW index, with `hnsw.ef_search` raised to 100 inside the transaction, so the owner, selection and date filters (applied after the index scan) drop fewer neighbours;
    - keyword: a `tsvector` built with two configurations from migration 008 (`busca_portugues`, with accent folding when `unaccent` exists, and `busca_ingles`), each dropping both languages' stopwords. Query terms are OR-ed, and function words the stoplists miss (unaccented or informal Portuguese such as "nao" or "pra") are removed from the question first;
    - the two legs are fused with reciprocal rank fusion (k = 60).
 5. Results are merged across queries, then Cohere `rerank-v4.0-fast` reranks them against the main query down to 5 passages. Without a Cohere key the fused order is kept.
@@ -92,16 +92,17 @@ What this does not show:
 - It does not measure hybrid search, the reranker, chunks with their LLM context, or answer quality.
 - The chat-style row needs the function-word removal: without it the same configuration scores 0.82. Without `unaccent`, the rows about missing accents do not apply.
 
-Reproduce (a Postgres with pgvector and `unaccent` where the role can `CREATE DATABASE`; the script creates and drops its own database and needs no API key):
+Reproduce with the Postgres and the `.venv` from [Running locally](#running-locally). The role must be able to `CREATE DATABASE` and to create `vector` in the new database (and `unaccent`, which the accent rows depend on); the script creates and drops its own database and needs no API key:
 
 ```bash
 cd backend
-.venv/bin/python -m scripts.avaliar_busca_textual --database-url postgresql://localhost/postgres [--json out.json]
+.venv/bin/python -m scripts.avaliar_busca_textual \
+  --database-url postgresql://postgres:postgres@localhost:5432/postgres [--json out.json]
 ```
 
 ## Ingestion
 
-- `POST /upload` takes multipart `file`, `title` and an optional `effective_date`. The body is counted while it is read and rejected with 413 above 20 MB. The type is sniffed with libmagic against an allowlist (PDF; PNG, JPEG, GIF, WebP; MP3, WAV, WebM audio; MP4, WebM video), and a declared type must agree with it. `POST /crawl` fetches a web page as text.
+- `POST /upload` takes multipart `file`, `title` and an optional `effective_date`. The body is counted while it is read and rejected with 413 above 20 MB. The type is sniffed with libmagic against an allowlist (PDF; PNG, JPEG, GIF, WebP; MP3, WAV, WebM audio; MP4, WebM video), and a declared type from the allowlist must agree with it. `POST /crawl` fetches a web page as text.
 - The daily ingest quota is consumed before anything is written and returned if saving, the database insert or queueing fails. Files are stored as `{user_id}/docs/{uuid4}{ext}`; the client file name is discarded.
 - In the worker, PDFs are read page by page with pypdf. Pages with under 120 characters of text are rendered with PyMuPDF at 150 DPI, described by the fast model and embedded as images. PDFs over 300 pages fail before any paid call. Text becomes 500-token chunks with 100 tokens of overlap, and the fast model writes a short context for each chunk, with the document prompt-cached per 50,000-character window. Images and video are embedded directly by the multimodal model; audio is transcribed by Deepgram.
 - Failures are classified. Our own limits, provider 4xx responses and unreadable files are permanent and not retried. Network errors, 408, 429, 5xx and unclassified errors are retried, up to 5 attempts. The document list shows a short error category, never the raw provider error.
@@ -112,7 +113,7 @@ cd backend
 - Local JWT (HS256, 60 minutes), bcrypt, 12-character minimum password, and an `is_active` lookup on every authenticated request.
 - Crawler SSRF guard: http(s) only, deny-listed hosts, private, reserved and cloud-metadata IP ranges and sensitive ports blocked, the connection pinned to the validated IP, every redirect revalidated (at most 5), a 5 MB body cap.
 - Document passages and web results are delimited as data in the prompts, and tag names inside their content are stripped. The regex input filter only adds friction.
-- Containers run as non-root with `cap_drop: ALL` and `no-new-privileges`. Traefik adds HSTS, frame-deny, nosniff and referrer-policy headers to both hosts, plus a CSP on the frontend. `/docs` and `/openapi.json` exist only with `DEBUG=true`.
+- The API and worker run as a non-root user with `cap_drop: ALL` and `no-new-privileges`; the frontend image runs as a non-root user. Traefik adds HSTS, frame-deny, nosniff and referrer-policy headers to both hosts, plus a CSP on the frontend. `/docs` and `/openapi.json` exist only with `DEBUG=true`.
 
 ## Limits and cost
 
@@ -126,12 +127,12 @@ Daily caps are global (all users together), counted in Redis per UTC day, and an
 | `DAILY_REALTIME_TOOL_LIMIT` | 400 | voice searches, across all sessions |
 
 - Per-IP rate limits (slowapi on Redis): chat and upload 30/min, crawl 10/min, library semantic search 20/min, voice session 10/min, voice search 60/min, register and login 5/min.
-- New ingestions get 429 while the queue holds more than `AGENT_OPS_PROFUNDIDADE_MAXIMA` jobs (50 in the compose file). A quota unit is given back when a request fails before its main paid work: a chat answer before the first generated token, a voice search when no provider was called, an upload when storing or queueing fails. `AGENT_OPS_KILL_SWITCH=true` refuses every quota-consuming call.
+- New ingestions get 429 while the queue holds `AGENT_OPS_PROFUNDIDADE_MAXIMA` jobs or more (50 in the compose file). A quota unit is given back when a request fails before its main paid work: a chat answer before the first generated token, a voice search when no provider was called, an upload when storing or queueing fails. `AGENT_OPS_KILL_SWITCH=true` refuses every quota-consuming call.
 - Paid calls per chat answer: one fast-model call for the query variants, one Voyage call (none if every query is cached), one Cohere rerank if configured, the disagreement check (fast model, at most 220 output tokens) when two or more documents remain, and the generation. Low confidence adds a rewrite, one embedding call and one rerank.
 
 ## Running locally
 
-Needs Python 3.12, Node 22, git (pip installs one dependency from GitHub), a Postgres with pgvector, and Redis. The database role must be able to `CREATE EXTENSION vector` (pgvector is not a trusted extension). The `unaccent` contrib extension is optional.
+Needs Python 3.12, Node 22, git (pip installs one dependency from GitHub), the libmagic system library (`brew install libmagic` / `apt install libmagic1`; without it every upload is rejected as an unsupported type), a Postgres with pgvector, and Redis. The database role must be able to `CREATE EXTENSION vector` (pgvector is not a trusted extension). The `unaccent` contrib extension is optional.
 
 ```bash
 docker run -d --name bh-pg -e POSTGRES_PASSWORD=postgres -p 5432:5432 pgvector/pgvector:pg16
@@ -141,7 +142,8 @@ cd backend
 python3.12 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 cp .env.example .env
 # edit .env: DATABASE_URL=postgresql://postgres:postgres@localhost:5432/postgres,
-# REDIS_URL=redis://localhost:6379, JWT_SECRET, VOYAGE_API_KEY, ANTHROPIC_API_KEY
+# REDIS_URL=redis://localhost:6379, UPLOADS_PATH=./uploads (API and worker both run
+# from backend/), JWT_SECRET, VOYAGE_API_KEY, ANTHROPIC_API_KEY
 .venv/bin/uvicorn app.main:app --port 8000      # applies pending migrations, then serves
 .venv/bin/arq app.jobs.worker.WorkerSettings    # second terminal: the ingestion worker
 
@@ -191,8 +193,8 @@ Backend variables come from `backend/.env` (see `backend/.env.example`, which a 
 
 ## Deployment
 
-- CI (`.github/workflows/deploy.yml`, on push to `main`) runs the unit tests, then the integration tests against `pgvector/pgvector:pg16` and `redis:7-alpine` service containers. Only after both pass does it run `docker compose build` and `docker compose push` to GHCR (`ghcr.io/devpedrogomes/group-documents/backend` and `/frontend`; the worker reuses the backend image). The server pulls images and never builds them; the pull runs on the host, outside this repository.
-- Compose services: `redis`, `backend`, `worker`, `frontend`. `DB_PASSWORD` and `JWT_SECRET` are interpolated from the host environment; everything else comes from `backend/.env`. Hosts: `group-documents.pgdev.com.br` (frontend) and `group-documents-api.pgdev.com.br` (API), with Let's Encrypt certificates through Traefik.
+- CI (`.github/workflows/deploy.yml`, on push to `main`) runs the unit tests, then the integration tests against `pgvector/pgvector:pg16` and `redis:7-alpine` service containers. Only after both pass does it run `docker compose build` and `docker compose push` to GHCR (`ghcr.io/devpedrogomes/group-documents/backend` and `/frontend`; the worker reuses the backend image). The workflow only builds and pushes; pulling and restarting on the server happens outside this repository.
+- Compose services: `redis`, `backend`, `worker`, `frontend`. `DB_PASSWORD` and `JWT_SECRET` are interpolated from the host environment. The services read `backend/.env`, but the compose `environment:` blocks pin `DATABASE_URL`, `JWT_SECRET`, `CORS_ORIGINS` (API only), `UPLOADS_PATH`, `REDIS_URL`, `AGENT_OPS_REDIS_URL`, `AGENT_OPS_PROJETO` and `AGENT_OPS_PROFUNDIDADE_MAXIMA`, which override it. Hosts: `group-documents.pgdev.com.br` (frontend) and `group-documents-api.pgdev.com.br` (API), with Let's Encrypt certificates through Traefik.
 - Migration 008 rewrites every `chunks` row once (`UPDATE chunks SET content = content`) to rebuild the search vectors, holding row locks while it runs; its cost grows with the table, since every row's GIN and HNSW entries are written again. If the database role cannot create `unaccent`, 008 logs a WARNING at boot with the manual recovery steps and builds the Portuguese configuration without accent folding instead of failing.
 
 ## Known limitations
@@ -205,6 +207,7 @@ Backend variables come from `backend/.env` (see `backend/.env.example`, which a 
 - The list of function words removed from keyword queries is kept by hand. It covers the unaccented forms of Postgres's Portuguese stopwords and a few informal words, not every colloquialism.
 - Without `unaccent`, keyword search does not fold accents, and installing the extension later needs a manual `ALTER TEXT SEARCH CONFIGURATION` and a reindex.
 - The API is one uvicorn process; blocking work moves to threads, not to more processes.
-- Video is indexed by its embedding and file name only, with no transcript. Voice searches skip the corrective step and the web.
+- No iterative index scan: in a large shared table, a small tenant can still get fewer semantic candidates than the `LIMIT`.
+- Video is indexed by its embedding only; its text is the stored file name (a UUID), so the keyword leg and the generator get nothing from it, and there is no transcript. Voice searches skip the corrective step and the web.
 - `GET /graph` (documents, questions, and edges between documents that disagreed) has no UI yet.
 - A thread's document selection is remembered per browser (localStorage), not on the server.
