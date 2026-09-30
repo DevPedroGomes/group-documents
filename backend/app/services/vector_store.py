@@ -85,6 +85,18 @@ TSQUERY_SQL = f"CAST(replace(CAST(({_TSQUERY_POR_CONFIG}) AS text), ' & ', ' | '
 DATA_EFETIVA_SQL = "COALESCE(d.effective_date, CAST(d.uploaded_at AT TIME ZONE 'UTC' AS date))"
 
 
+# O HNSW so devolve `ef_search` candidatos (default 40 no pgvector), e os
+# filtros por dono, documento e data rodam DEPOIS do scan do indice. Com 40,
+# abaixo do proprio LIMIT, tenant pequeno e consulta filtrada perdiam vizinho
+# semantico. Usa o dobro do LIMIT, com piso, sem passar do teto do pgvector.
+_EF_SEARCH_PISO = 100
+_EF_SEARCH_TETO = 1000
+
+
+def _ef_search(limite: int) -> int:
+    return min(_EF_SEARCH_TETO, max(_EF_SEARCH_PISO, 2 * limite))
+
+
 def _data_de_corte(as_of: str) -> date:
     """`as_of` chega como data ISO ou data e hora ISO; o recorte usa so a DATA,
     e inclusivo no dia. Formato invalido levanta ValueError."""
@@ -193,6 +205,12 @@ def hybrid_search(
     """)
 
     with engine.begin() as conn:
+        # Equivale a SET LOCAL (que nao aceita parametro): vale so nesta
+        # transacao, que e a mesma da consulta semantica.
+        conn.execute(
+            sqltext("SELECT set_config('hnsw.ef_search', :ef, true)"),
+            {"ef": str(_ef_search(prefetch))},
+        )
         semantic_rows = conn.execute(semantic_sql, params).mappings().all()
         keyword_rows = conn.execute(keyword_sql, params).mappings().all()
 

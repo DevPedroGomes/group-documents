@@ -475,3 +475,11 @@ def test_document_date_sobrevive_ao_retriever_sem_reranker(monkeypatch):
     saida = retriever.retrieve_documents("pergunta", user_id="u", top_k=2)
 
     assert [t["document_date"] for t in saida] == ["2025-01-01", "2025-02-01"]
+
+
+@pytest.mark.parametrize("limite,esperado", [(15, 100), (60, 120), (450, 900), (600, 1000)])
+def test_ef_search_e_o_dobro_do_limit_entre_piso_e_teto(limite, esperado):
+    """O teto e o maximo que o pgvector aceita; passar dele e erro na consulta."""
+    from app.services.vector_store import _ef_search
+
+    assert _ef_search(limite) == esperado

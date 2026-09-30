@@ -307,3 +307,39 @@ def test_crawl_recusa_data_invalida(cliente_docs, invalida):
     r = cliente_docs.post("/crawl", json={"url": "https://exemplo.com.br/p", "effective_date": invalida})
     assert r.status_code == 422, r.text
     assert _datas_gravadas() == []
+
+
+# ---------------------------------------------------------------------------
+# HNSW: candidatos suficientes para o LIMIT e os filtros
+# ---------------------------------------------------------------------------
+
+def test_consulta_semantica_roda_com_ef_search_derivado_do_limit(banco_limpo):
+    """Le o valor EM VIGOR no momento em que a consulta semantica executa, na
+    mesma conexao, e confere que ele nao vaza para a proxima transacao."""
+    from sqlalchemy import event
+
+    from app.db.engine import engine
+
+    vistos: list[str] = []
+
+    def espiar(_conn, cursor, statement, *_a):
+        if "ORDER BY c.embedding <=>" in statement:
+            with cursor.connection.cursor() as cur:
+                cur.execute("SELECT current_setting('hnsw.ef_search', true)")
+                vistos.append(cur.fetchone()[0])
+
+    u = _usuario()
+    _trecho(u, _documento(u, "Doc"), "O frete é grátis acima de 150 reais.", eixo=1)
+    event.listen(engine, "before_cursor_execute", espiar)
+    try:
+        _buscar(u, "frete", eixo=1)  # top_k 5 -> LIMIT 15 -> piso de 100
+        from app.services.vector_store import hybrid_search
+
+        hybrid_search(_eixo(1), "frete", user_id=u, top_k=100)  # LIMIT 300 -> 600
+    finally:
+        event.remove(engine, "before_cursor_execute", espiar)
+
+    assert vistos == ["100", "600"]
+    with engine.connect() as conn:
+        depois = conn.execute(sqltext("SELECT current_setting('hnsw.ef_search', true)")).scalar()
+    assert depois not in ("100", "600"), "o ajuste vazou da transacao da busca"
