@@ -67,6 +67,10 @@ def add_chunks(
 # so troca de lugar quem fica errado.
 TEXT_SEARCH_CONFIG = "english"
 
+# Como a pergunta vira tsquery. Constante para o script de avaliacao
+# (scripts/avaliar_busca_textual.py) medir exatamente o que a busca executa.
+TSQUERY_SQL = f"plainto_tsquery('{TEXT_SEARCH_CONFIG}', :query_text)"
+
 
 def hybrid_search(
     query_embedding: list[float],
@@ -117,7 +121,6 @@ def hybrid_search(
         "query_text": query_text,
         "user_id": user_id,
         "limit": prefetch,
-        "ts_config": TEXT_SEARCH_CONFIG,
     }
 
     data_filter = ""
@@ -156,10 +159,10 @@ def hybrid_search(
     keyword_sql = sqltext(f"""
         SELECT c.id, c.document_id, d.title as document_title, c.page,
                left(c.content, 4000) as snippet,
-               ts_rank(c.search_vector, plainto_tsquery(:ts_config, :query_text)) as score
+               ts_rank(c.search_vector, {TSQUERY_SQL}) as score
         FROM chunks c
         JOIN documents d ON c.document_id = d.id
-        WHERE c.search_vector @@ plainto_tsquery(:ts_config, :query_text)
+        WHERE c.search_vector @@ {TSQUERY_SQL}
         AND c.user_id = CAST(:user_id AS uuid)
         {doc_filter}
         {data_filter}
