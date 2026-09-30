@@ -139,15 +139,25 @@ def save_message(
     return str(row[0]) if row else None
 
 
+def _e_web(d: dict) -> bool:
+    return d.get("kind") == "web" or d.get("document_id") == "web"
+
+
 def _resumo_trechos(docs: list[dict]) -> list[dict]:
-    """Metadado dos trechos para a trilha: sem o texto, que ja vive em `chunks`."""
+    """Metadado dos trechos para a trilha: sem o texto, que ja vive em `chunks`.
+
+    Resultado web entra com `document_id` nulo e a `url`: nao e documento do
+    acervo, mas foi para o gerador e precisa aparecer no caminho da resposta.
+    """
     return [
         {
-            "document_id": str(d.get("document_id", "")),
+            "document_id": None if _e_web(d) or not d.get("document_id") else str(d["document_id"]),
             "document_title": d.get("document_title"),
             "page": d.get("page"),
             "score": round(float(d.get("relevance_score", 0) or 0), 6),
             "score_scale": d.get("score_scale", "rrf"),
+            "document_date": d.get("document_date"),
+            "url": d.get("url"),
         }
         for d in docs
     ]
@@ -167,13 +177,19 @@ def save_decision(
     latency_ms: int,
     conflict: dict | None = None,
     as_of: str | None = None,
+    queries: list[str] | None = None,
 ) -> None:
     """Persiste o caminho que produziu uma resposta.
 
     Nunca derruba a resposta: se a gravacao da trilha falhar, o visitante ja
     recebeu o texto e perder a trilha e menos grave que devolver erro.
     """
-    escala = (graded or retrieved or [{}])[0].get("score_scale", "rrf")
+    # A escala da decisao e a dos trechos do ACERVO: o score do Tavily entra em
+    # `graded` com a propria etiqueta, mas nao diz se o rerank rodou.
+    escala = next(
+        (d.get("score_scale", "rrf") for d in [*graded, *retrieved] if not _e_web(d)),
+        "rrf",
+    )
     try:
         with engine.begin() as conn:
             conn.execute(
@@ -182,13 +198,13 @@ def save_decision(
                         user_id, thread_id, message_id, question,
                         retrieved, graded, considered, kept,
                         score_scale, reranked, low_confidence, web_used,
-                        answered, latency_ms, conflict, as_of
+                        answered, latency_ms, conflict, as_of, queries
                     ) VALUES (
                         :user_id, :thread_id, :message_id, :question,
                         CAST(:retrieved AS jsonb), CAST(:graded AS jsonb), :considered, :kept,
                         :score_scale, :reranked, :low_confidence, :web_used,
                         :answered, :latency_ms, CAST(:conflict AS jsonb),
-                        CAST(:as_of AS timestamptz)
+                        CAST(:as_of AS timestamptz), CAST(:queries AS jsonb)
                     )
                 """),
                 {
@@ -199,7 +215,8 @@ def save_decision(
                     "retrieved": json.dumps(_resumo_trechos(retrieved)),
                     "graded": json.dumps(_resumo_trechos(graded)),
                     "considered": len(retrieved),
-                    "kept": len(graded),
+                    # Quantos trechos do acervo o grader manteve; web nao passa por ele.
+                    "kept": sum(1 for d in graded if not _e_web(d)),
                     "score_scale": escala,
                     "reranked": escala == "cohere",
                     "low_confidence": low_confidence,
@@ -208,6 +225,7 @@ def save_decision(
                     "latency_ms": latency_ms,
                     "conflict": json.dumps(conflict) if conflict else None,
                     "as_of": as_of,
+                    "queries": json.dumps(list(queries or [])),
                 },
             )
     except Exception:
@@ -268,6 +286,7 @@ async def chat(request: Request, body: ChatBody):
         baixa_confianca = False
         usou_web = False
         conflito: dict | None = None
+        consultas: list[str] = []
 
         # Todo passo caro daqui para baixo e sincrono (LLM, embedding, SQL) e
         # roda em thread, nunca no event loop. Com 1 worker do uvicorn, uma
@@ -280,7 +299,10 @@ async def chat(request: Request, body: ChatBody):
             # Step 1: Retrieve
             yield _sse("workflow", [{"step": "retrieve", "status": "in_progress", "details": "Searching documents..."}])
 
-            documents = await loop.run_in_executor(
+            # O historico vai junto para condensar pergunta de seguimento ("e em
+            # marco de 2025?"): a busca usa a pergunta autocontida, o gerador
+            # continua recebendo a original.
+            recuperacao = await loop.run_in_executor(
                 None,
                 lambda: retrieve_documents(
                     question=body.message,
@@ -288,8 +310,11 @@ async def chat(request: Request, body: ChatBody):
                     document_ids=body.document_ids,
                     as_of=body.as_of,
                     top_k=5,
+                    history=history,
                 ),
             )
+            documents = recuperacao.documents
+            consultas = list(recuperacao.queries)
 
             recuperados = list(documents)
             workflow = [{"step": "retrieve", "status": "completed", "details": f"Found {len(documents)} chunks"}]
@@ -460,6 +485,7 @@ async def chat(request: Request, body: ChatBody):
                 answered=bool(full_answer),
                 conflict=conflito,
                 as_of=body.as_of,
+                queries=consultas,
                 latency_ms=int((time.monotonic() - iniciado_em) * 1000),
             )
 
@@ -494,7 +520,7 @@ async def get_decision(request: Request, message_id: str):
             sqltext("""
                 SELECT id, thread_id, message_id, question, retrieved, graded,
                        considered, kept, score_scale, reranked, low_confidence,
-                       web_used, answered, latency_ms, conflict, as_of, created_at
+                       web_used, answered, latency_ms, conflict, as_of, queries, created_at
                 FROM decisions
                 WHERE message_id = CAST(:message_id AS uuid) AND user_id = CAST(:user_id AS uuid)
             """),
@@ -517,7 +543,7 @@ async def list_decisions(request: Request, thread_id: str | None = None, limit: 
     sql = """
         SELECT id, thread_id, message_id, question, retrieved, graded,
                considered, kept, score_scale, reranked, low_confidence,
-               web_used, answered, latency_ms, conflict, as_of, created_at
+               web_used, answered, latency_ms, conflict, as_of, queries, created_at
         FROM decisions
         WHERE user_id = CAST(:user_id AS uuid)
     """
@@ -541,11 +567,15 @@ def _decision_payload(row) -> dict:
     com aviso de baixa confianca.
     """
     escala = row["score_scale"] or "rrf"
+    # Em ingles porque e texto de tela, e o painel e em ingles.
     explicacao = {
-        "cohere": "Score calibrado do reranker, de 0 a 1.",
-        "rrf": "Score de fusao das buscas (RRF). Fica na casa de 0,01 a 0,03 mesmo quando o trecho e bom.",
-        "tavily": "Score do buscador web, criterio proprio.",
-    }.get(escala, "Escala nao identificada.")
+        "cohere": "Calibrated reranker relevance, from 0 to 1.",
+        "rrf": (
+            "Rank fusion score (RRF) of the semantic and keyword searches. "
+            "It stays around 0.01 to 0.03 even when the excerpt is a good match."
+        ),
+        "tavily": "Web search engine score, on its own scale.",
+    }.get(escala, "Unknown score scale.")
 
     return {
         "id": str(row["id"]),
@@ -563,6 +593,7 @@ def _decision_payload(row) -> dict:
         "web_used": row["web_used"],
         "answered": row["answered"],
         "conflict": row["conflict"],
+        "queries": row["queries"] or [],
         "as_of": row["as_of"].isoformat() if row["as_of"] else None,
         "latency_ms": row["latency_ms"],
         "created_at": row["created_at"].isoformat() if row["created_at"] else None,

@@ -108,11 +108,8 @@ def test_lote_vazio_pede_busca_web():
 # funcionava, porque vinha do cache — o que fazia parecer intermitente.
 # ---------------------------------------------------------------------------
 
-def test_retriever_pede_embeddings_em_lote():
-    from app.core.rag import retriever
-
-    fonte = inspect.getsource(retriever.retrieve_documents)
-    assert "get_query_embeddings(" in fonte, "voltou a embedar uma query por vez"
+# Uma chamada de embedding com todas as consultas: prendido pela rota em
+# tests/test_chat_pipeline.py (test_seguimento_busca_com_a_pergunta_autocontida).
 
 
 def test_embed_queries_faz_uma_unica_chamada_para_n_textos(monkeypatch):
@@ -482,11 +479,11 @@ def test_document_date_sobrevive_ao_retriever_sem_reranker(monkeypatch):
     from app.core.rag import retriever
 
     monkeypatch.setattr(get_settings(), "cohere_api_key", None)
-    monkeypatch.setattr(retriever, "generate_multi_queries", lambda q: [])
+    monkeypatch.setattr(retriever, "generate_multi_queries", lambda q, h=None: [q])
     monkeypatch.setattr(retriever, "get_query_embeddings", lambda qs: [[0.0] * 1024 for _ in qs])
     monkeypatch.setattr(retriever, "hybrid_search", lambda **kw: _trechos_com_data(3))
 
-    saida = retriever.retrieve_documents("pergunta", user_id="u", top_k=2)
+    saida = retriever.retrieve_documents("pergunta", user_id="u", top_k=2).documents
 
     assert [t["document_date"] for t in saida] == ["2025-01-01", "2025-02-01"]
 
@@ -575,11 +572,11 @@ def test_rerank_pela_v2_reordena_e_preserva_a_data_do_documento(monkeypatch):
 
     _com_cohere(monkeypatch)
     chamadas, criados = _cohere_falso(monkeypatch, resultados=[(2, 0.91), (0, 0.42)])
-    monkeypatch.setattr(retriever, "generate_multi_queries", lambda q: [])
+    monkeypatch.setattr(retriever, "generate_multi_queries", lambda q, h=None: [q])
     monkeypatch.setattr(retriever, "get_query_embeddings", lambda qs: [[0.0] * 1024 for _ in qs])
     monkeypatch.setattr(retriever, "hybrid_search", lambda **kw: _trechos_com_data(3))
 
-    saida = retriever.retrieve_documents("pergunta", user_id="u", top_k=2)
+    saida = retriever.retrieve_documents("pergunta", user_id="u", top_k=2).documents
 
     assert criados == ["chave-cohere"]
     assert chamadas[0]["documents"] == ["trecho 0", "trecho 1", "trecho 2"]
@@ -622,3 +619,59 @@ def test_limpeza_da_pergunta_tira_funcionais_sem_acento_e_informais():
     saida = limpar_consulta_textual("Ate quando NAO posso devolver pra voce? Entao, tá, é isso")
     assert saida.split() == ["quando", "posso", "devolver", "?", ",", ",", "isso"]
     assert limpar_consulta_textual("frete gratis acima de 150") == "frete gratis acima de 150"
+
+
+# ---------------------------------------------------------------------------
+# Condensacao da pergunta de seguimento
+# ---------------------------------------------------------------------------
+
+def _multi_query_falso(monkeypatch, resposta):
+    from app.config.settings import get_settings
+    from app.core.rag import retriever
+
+    prompts: list[str] = []
+
+    def falso(**kw):
+        prompts.append(kw["messages"][-1]["content"])
+        return resposta
+
+    monkeypatch.setattr(get_settings(), "multi_query_count", 2)
+    monkeypatch.setattr(retriever, "chat_complete", falso)
+    return retriever, prompts
+
+
+def test_condensacao_so_ve_as_6_ultimas_mensagens_e_corta_as_longas(monkeypatch):
+    retriever, prompts = _multi_query_falso(monkeypatch, "autocontida\nv1\nv2")
+    historico = [{"role": "user" if i % 2 == 0 else "assistant", "content": f"mensagem-{i} " + "x" * 2000}
+                 for i in range(10)]
+
+    consultas = retriever.generate_multi_queries("e o outro?", historico)
+
+    assert consultas == ["autocontida", "v1", "v2"]
+    assert "mensagem-3 " not in prompts[0]
+    assert all(f"mensagem-{i} " in prompts[0] for i in range(4, 10))
+    assert "x" * 700 not in prompts[0], "mensagem longa entrou inteira no prompt"
+
+
+def test_condensacao_limpa_rotulo_numeracao_e_repeticao(monkeypatch):
+    retriever, _ = _multi_query_falso(
+        monkeypatch,
+        "Standalone question: \"qual o prazo em 2025?\"\n1. prazo 2025\n- QUAL O PRAZO EM 2025?\n3.5% de multa\n",
+    )
+
+    consultas = retriever.generate_multi_queries("e em 2025?", [{"role": "user", "content": "qual o prazo?"}])
+
+    assert consultas == ["qual o prazo em 2025?", "prazo 2025", "3.5% de multa"]
+
+
+def test_condensacao_vazia_usa_a_pergunta_original(monkeypatch):
+    retriever, _ = _multi_query_falso(monkeypatch, "  \n\n")
+
+    assert retriever.generate_multi_queries("e em 2025?", [{"role": "user", "content": "oi"}]) == ["e em 2025?"]
+
+
+def test_sem_historico_a_pergunta_original_abre_a_lista(monkeypatch):
+    retriever, prompts = _multi_query_falso(monkeypatch, "v1\nv2\nv3")
+
+    assert retriever.generate_multi_queries("qual o prazo?") == ["qual o prazo?", "v1", "v2"]
+    assert "standalone" not in prompts[0]

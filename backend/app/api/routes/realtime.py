@@ -299,7 +299,7 @@ async def executar_busca(request: Request, body: BuscaPedido) -> BuscaResposta:
     # Todo passo caro daqui é síncrono (LLM, embedding, SQL) e vai para thread,
     # nunca para o event loop. Com voz isso é mais grave que no chat: segurar o
     # loop atrasa o `function_call_output`, e o agente fica mudo no meio da frase.
-    recuperados = await loop.run_in_executor(
+    recuperacao = await loop.run_in_executor(
         None,
         lambda: retrieve_documents(
             question=body.pergunta,
@@ -308,6 +308,7 @@ async def executar_busca(request: Request, body: BuscaPedido) -> BuscaResposta:
             top_k=5,
         ),
     )
+    recuperados = recuperacao.documents
     aprovados, precisa_web = await loop.run_in_executor(None, grade_documents, recuperados)
     baixa_confianca = bool(precisa_web)
 
@@ -328,6 +329,7 @@ async def executar_busca(request: Request, body: BuscaPedido) -> BuscaResposta:
         latency_ms=int((time.monotonic() - iniciado_em) * 1000),
         conflict=divergencia,
         as_of=body.data_de_referencia,
+        queries=recuperacao.queries,
     )
 
     return BuscaResposta(

@@ -51,6 +51,22 @@ def test_resumo_assume_rrf_quando_a_escala_nao_veio():
     assert resumo["score_scale"] == "rrf"
 
 
+def test_resumo_leva_a_data_do_documento_e_marca_a_web_pela_url():
+    doc = {"document_id": "d1", "document_title": "Politica", "page": 2, "relevance_score": 0.9,
+           "score_scale": "cohere", "document_date": "2025-03-01", "snippet": "x"}
+    web = {"kind": "web", "document_id": None, "document_title": "Site", "page": None,
+           "relevance_score": 0.8, "score_scale": "tavily", "url": "https://exemplo.com/a",
+           "snippet": "y"}
+
+    resumo_doc, resumo_web = chat_route._resumo_trechos([doc, web])
+
+    assert resumo_doc["document_date"] == "2025-03-01" and resumo_doc["url"] is None
+    assert resumo_web == {
+        "document_id": None, "document_title": "Site", "page": None, "score": 0.8,
+        "score_scale": "tavily", "document_date": None, "url": "https://exemplo.com/a",
+    }
+
+
 # ---------------------------------------------------------------------------
 # 2. A trilha nunca derruba a resposta
 # ---------------------------------------------------------------------------
@@ -133,21 +149,28 @@ def _linha(escala: str) -> dict:
         "answered": True,
         "conflict": None,
         "as_of": None,
+        "queries": ["qual o prazo?", "prazo de entrega"],
         "latency_ms": 1200,
         "created_at": None,
     }
 
 
-def test_payload_explica_a_escala_do_score():
+def test_payload_explica_a_escala_do_score_em_ingles():
     rrf = chat_route._decision_payload(_linha("rrf"))
     cohere = chat_route._decision_payload(_linha("cohere"))
 
     assert "RRF" in rrf["score_scale_hint"]
     assert rrf["reranked"] is False
-    assert "0 a 1" in cohere["score_scale_hint"]
+    # O painel e em ingles; a dica em portugues aparecia no meio dele.
+    assert "from 0 to 1" in cohere["score_scale_hint"]
     assert cohere["reranked"] is True
     # A dica precisa existir sempre: numero sem escala e o que enganava.
-    assert chat_route._decision_payload(_linha("qualquer"))["score_scale_hint"]
+    assert chat_route._decision_payload(_linha("qualquer"))["score_scale_hint"] == "Unknown score scale."
+
+
+def test_payload_devolve_as_consultas_usadas():
+    assert chat_route._decision_payload(_linha("rrf"))["queries"] == ["qual o prazo?", "prazo de entrega"]
+    assert chat_route._decision_payload({**_linha("rrf"), "queries": None})["queries"] == []
 
 
 # ---------------------------------------------------------------------------
@@ -172,11 +195,8 @@ def test_migration_003_isola_por_usuario_e_indexa_a_leitura():
     assert "idx_decisions_message" in sql
 
 
-def test_leitura_da_trilha_filtra_por_usuario():
-    # Filtrar so por message_id deixaria qualquer um ler a trilha de outro.
-    for fn in (chat_route.get_decision, chat_route.list_decisions):
-        fonte = inspect.getsource(fn)
-        assert "user_id = CAST(:user_id AS uuid)" in fonte
+# Leitura da trilha filtrada por usuario, com SQL real:
+# tests/test_integracao_chat.py (test_trilha_so_e_lida_pelo_dono_e_traz_as_consultas).
 
 
 # ---------------------------------------------------------------------------

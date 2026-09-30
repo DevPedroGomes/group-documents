@@ -50,67 +50,62 @@ def test_o_corpo_da_busca_nao_aceita_identificador_de_usuario():
     assert not (campos & proibidos), f"campo perigoso em BuscaPedido: {campos & proibidos}"
 
 
-def test_a_busca_usa_o_user_id_do_jwt_e_nao_o_do_corpo():
-    fn = _funcao("executar_busca")
+@pytest.fixture
+def voz(monkeypatch):
+    """A rota da tool com os dubles do pipeline (tests/dubles_chat.py)."""
+    from app.api.rate_limit import limiter
+    from app.main import create_app
+    from fastapi.testclient import TestClient
 
-    # `user_id` nasce de `require_user`, e de nada mais.
-    origens = [
-        no for no in ast.walk(fn)
-        if isinstance(no, ast.Assign)
-        and any(getattr(a, "id", None) == "user_id" for a in no.targets)
-    ]
-    assert len(origens) == 1, "user_id deveria ter uma única origem"
-    chamada = origens[0].value
-    if isinstance(chamada, ast.Await):
-        chamada = chamada.value
-    assert isinstance(chamada, ast.Call)
-    assert getattr(chamada.func, "id", None) == "require_user"
+    from tests.dubles_chat import USUARIO, Cenario, instalar
 
-    # e chega ao retriever como a variável, nunca como algo tirado de `body`.
-    for no in ast.walk(fn):
-        if isinstance(no, ast.Call) and getattr(no.func, "id", None) == "retrieve_documents":
-            kw = {k.arg: k.value for k in no.keywords}
-            assert "user_id" in kw, "retrieve_documents sem user_id"
-            assert getattr(kw["user_id"], "id", None) == "user_id"
-            break
-    else:
-        raise AssertionError("executar_busca não chama retrieve_documents")
+    cenario = Cenario()
+    instalar(monkeypatch, cenario)
+
+    async def usuario(_request):
+        return USUARIO
+
+    monkeypatch.setattr(rt, "require_user", usuario)
+    monkeypatch.setattr(rt, "save_decision", lambda **kw: cenario.decisoes.append(kw))
+    limiter.enabled = False
+    try:
+        yield TestClient(create_app()), cenario
+    finally:
+        limiter.enabled = True
+
+
+def test_a_busca_usa_o_user_id_do_jwt_e_grava_a_trilha_com_as_consultas(voz):
+    """O cliente nao escolhe de quem e o acervo, e a tool grava a trilha: e o
+    motivo inteiro de a voz ter saido do voice_rag."""
+    from tests.dubles_chat import USUARIO, trecho
+
+    cliente, cenario = voz
+    cenario.acervo["qual o prazo?"] = [trecho("c1", "d1", "Politica"), trecho("c2", "d1", "Politica")]
+
+    r = cliente.post(
+        "/realtime/tool/buscar",
+        json={"pergunta": "qual o prazo?", "data_de_referencia": "2025-03-01",
+              "user_id": "00000000-0000-0000-0000-0000000000ff"},
+        headers={"Authorization": "Bearer x"},
+    )
+
+    assert r.status_code == 200, r.text
+    assert [t["arquivo"] for t in r.json()["trechos"]] == ["Politica", "Politica"]
+    assert {b["user_id"] for b in cenario.buscas} == {USUARIO}
+    assert {b["as_of"] for b in cenario.buscas} == {"2025-03-01"}
+    (decisao,) = cenario.decisoes
+    assert decisao["user_id"] == USUARIO
+    assert decisao["question"] == "qual o prazo?"
+    assert decisao["queries"] == ["qual o prazo?", "variante um", "variante dois"]
+    assert decisao["as_of"] == "2025-03-01"
+    assert isinstance(decisao["latency_ms"], int)
+    assert "conflict" in decisao
 
 
 def test_as_duas_rotas_exigem_autenticacao():
     for nome in ("criar_sessao", "executar_busca"):
         fonte = ast.get_source_segment(FONTE, _funcao(nome)) or ""
         assert "require_user" in fonte, f"{nome} não exige autenticação"
-
-
-# ---------------------------------------------------------------------------
-# 2. A trilha, que é o motivo da migração
-# ---------------------------------------------------------------------------
-
-def test_a_busca_grava_a_trilha_de_decisao():
-    fonte = ast.get_source_segment(FONTE, _funcao("executar_busca")) or ""
-    assert "save_decision" in fonte, (
-        "a tool voltou a só devolver trechos. Gravar a trilha é o motivo de a voz "
-        "ter saído do voice_rag: sem isso este projeto vira o que ele substituiu."
-    )
-
-
-def test_a_trilha_recebe_latencia_conflito_e_recorte():
-    """Os três campos que a voz acrescenta e que o painel mostra."""
-    fn = _funcao("executar_busca")
-    for no in ast.walk(fn):
-        if isinstance(no, ast.Call) and getattr(no.func, "id", None) == "save_decision":
-            passados = {k.arg for k in no.keywords}
-            for campo in ("latency_ms", "conflict", "as_of", "user_id", "question"):
-                assert campo in passados, f"save_decision sem {campo}"
-            break
-    else:
-        raise AssertionError("save_decision não é chamada")
-
-
-def test_o_detector_de_divergencia_roda_na_busca():
-    fonte = ast.get_source_segment(FONTE, _funcao("executar_busca")) or ""
-    assert "detectar_conflito" in fonte
 
 
 # ---------------------------------------------------------------------------
