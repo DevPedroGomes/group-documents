@@ -40,12 +40,14 @@ def _marcar_documento(doc_id: str, status: str) -> None:
     ruim, derrubar o envelope (e com ele a dead-letter) por causa de um UPDATE
     e pior.
     """
+    sql = "UPDATE documents SET status = :status"
+    if status == "processing":
+        # Retentativa agendada: a causa da tentativa que falhou nao vale mais, e
+        # a API a mostraria como `erro` de um documento em processamento.
+        sql += ", meta = COALESCE(meta, '{}'::jsonb) - 'error'"
     try:
         with engine.begin() as conn:
-            conn.execute(
-                sqltext("UPDATE documents SET status = :status WHERE id = :id"),
-                {"status": status, "id": doc_id},
-            )
+            conn.execute(sqltext(sql + " WHERE id = :id"), {"status": status, "id": doc_id})
     except Exception as exc:
         logger.exception(
             "worker.status_documento_falhou doc_id=%s status=%s erro=%s: %s",

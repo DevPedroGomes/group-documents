@@ -61,8 +61,14 @@ def _marcar_processando(doc_id: str) -> tuple[str | None, str]:
         titulo = conn.execute(
             sqltext("SELECT title FROM documents WHERE id = :id"), {"id": doc_id}
         ).scalar()
+        # A causa de uma tentativa anterior sai: a API a mostraria como `erro`
+        # de um documento que esta sendo processado de novo.
         conn.execute(
-            sqltext("UPDATE documents SET status = 'processing' WHERE id = :id"), {"id": doc_id}
+            sqltext(
+                "UPDATE documents SET status = 'processing', "
+                "meta = COALESCE(meta, '{}'::jsonb) - 'error' WHERE id = :id"
+            ),
+            {"id": doc_id},
         )
         # A fila e at-least-once e este job pode reexecutar (retentativa,
         # SIGTERM no meio do deploy). `add_chunks` e INSERT puro e nao ha

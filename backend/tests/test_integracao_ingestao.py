@@ -69,3 +69,47 @@ def test_falha_preserva_a_origem_e_o_sucesso_apaga_so_o_erro(banco_limpo, monkey
     asyncio.run(ingestao.process_ingestion(doc, uid, "u/docs/p.txt"))
 
     assert _linha(doc) == ("completed", {"source_url": ORIGEM}, 1)
+
+
+def test_retentativa_agendada_nao_deixa_o_erro_da_tentativa_que_falhou(banco_limpo, monkeypatch):
+    """Depois de uma falha transitoria o documento volta a `processing` com uma
+    retentativa marcada; o `erro` daquela tentativa nao pode seguir na API."""
+    import httpx
+    from arq.worker import Retry
+
+    from app.jobs import ingestao, worker
+
+    uid, doc = _documento_da_web()
+
+    def fora_do_ar(_caminho):
+        raise httpx.ConnectError("sem rede")
+
+    monkeypatch.setattr(ingestao, "get_file", fora_do_ar)
+    with pytest.raises(Retry):
+        asyncio.run(worker.ingerir({"job_id": "j", "job_try": 1}, doc, uid, "u/docs/p.txt"))
+
+    assert _linha(doc) == ("processing", {"source_url": ORIGEM}, 0)
+
+
+def test_nova_tentativa_comeca_sem_o_erro_da_anterior(banco_limpo, monkeypatch):
+    from app.db.engine import engine
+    from app.jobs import ingestao
+
+    uid, doc = _documento_da_web()
+    with engine.begin() as conn:
+        conn.execute(
+            sqltext("UPDATE documents SET status = 'failed', "
+                    "meta = meta || jsonb_build_object('error', 'The file could not be read.') WHERE id = :id"),
+            {"id": doc},
+        )
+    visto: list = []
+
+    def ler(_caminho):
+        visto.append(_linha(doc)[:2])  # como a API ve o documento durante a tentativa
+        raise FileNotFoundError("u/docs/p.txt")
+
+    monkeypatch.setattr(ingestao, "get_file", ler)
+    with pytest.raises(FileNotFoundError):
+        asyncio.run(ingestao.process_ingestion(doc, uid, "u/docs/p.txt"))
+
+    assert visto == [("processing", {"source_url": ORIGEM})]

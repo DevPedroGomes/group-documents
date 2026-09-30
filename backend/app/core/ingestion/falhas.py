@@ -51,71 +51,64 @@ def _status_http(exc: BaseException) -> int | None:
     return None
 
 
+def _tipos(modulo: str, *nomes: str) -> tuple[type[BaseException], ...]:
+    """As excecoes `nomes` de `modulo` que existem na versao instalada.
+
+    Nome ausente (SDK mais velho ou mais novo) ou modulo que nao importa e so
+    pulado: esta classificacao roda dentro do `except` do worker, e levantar
+    ali deixaria o documento em `processing` sem dead-letter.
+    """
+    try:
+        import importlib
+
+        alvo = importlib.import_module(modulo)
+    except Exception:
+        return ()
+    tipos = (getattr(alvo, nome, None) for nome in nomes)
+    return tuple(t for t in tipos if isinstance(t, type) and issubclass(t, BaseException))
+
+
 @lru_cache(maxsize=1)
 def _transitorias() -> tuple[type[BaseException], ...]:
-    import httpx
-    from sqlalchemy.exc import InterfaceError, OperationalError
-
-    tipos: list[type[BaseException]] = [
+    return (
         TimeoutError, ConnectionError,
-        httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError,
+        *_tipos("httpx", "TimeoutException", "NetworkError", "RemoteProtocolError"),
         # Banco fora do ar no meio do job: volta sozinho.
-        OperationalError, InterfaceError,
-    ]
-    try:
-        import anthropic
-
-        tipos.append(anthropic.APIConnectionError)
-    except ImportError:
-        pass
-    try:
-        import openai
-
-        tipos.append(openai.APIConnectionError)
-    except ImportError:
-        pass
-    try:
-        from voyageai import error as voyage
-
-        tipos += [voyage.Timeout, voyage.APIConnectionError, voyage.TryAgain,
-                  voyage.RateLimitError, voyage.ServiceUnavailableError,
-                  voyage.ServerError, voyage.APIError]
-    except ImportError:
-        pass
-    return tuple(tipos)
+        *_tipos("sqlalchemy.exc", "OperationalError", "InterfaceError"),
+        *_tipos("anthropic", "APIConnectionError"),
+        *_tipos("openai", "APIConnectionError"),
+        *_tipos("voyageai.error", "Timeout", "APIConnectionError", "TryAgain", "RateLimitError",
+                "ServiceUnavailableError", "ServerError", "APIError"),
+    )
 
 
 @lru_cache(maxsize=1)
 def _recusadas() -> tuple[type[BaseException], ...]:
     """Recusa do provider que as vezes vem sem status: chave, pedido malformado."""
-    try:
-        from voyageai import error as voyage
-
-        return (voyage.InvalidRequestError, voyage.AuthenticationError, voyage.MalformedRequestError)
-    except ImportError:
-        return ()
+    return _tipos("voyageai.error", "InvalidRequestError", "AuthenticationError", "MalformedRequestError")
 
 
 @lru_cache(maxsize=1)
 def _ilegiveis() -> tuple[type[BaseException], ...]:
-    from PIL import Image, UnidentifiedImageError
-    from pypdf.errors import PyPdfError
-
-    tipos: list[type[BaseException]] = [
-        FileNotFoundError, UnicodeDecodeError, PyPdfError,
-        UnidentifiedImageError, Image.DecompressionBombError,
-    ]
-    try:
-        from voyageai import error as voyage
-
-        tipos.append(voyage.VideoProcessingError)
-    except ImportError:
-        pass
-    return tuple(tipos)
+    return (
+        FileNotFoundError, UnicodeDecodeError,
+        *_tipos("pypdf.errors", "PyPdfError"),
+        *_tipos("PIL", "UnidentifiedImageError"),
+        *_tipos("PIL.Image", "DecompressionBombError"),
+        *_tipos("voyageai.error", "VideoProcessingError"),
+    )
 
 
 def classificar(exc: BaseException) -> Falha:
-    """Permanente ou transitoria, com a mensagem que a pessoa ve."""
+    """Permanente ou transitoria, com a mensagem que a pessoa ve. Nunca levanta:
+    roda no `except` do worker, e um erro aqui pularia a dead-letter."""
+    try:
+        return _classificar(exc)
+    except Exception:
+        return Falha(False, DESCONHECIDA)
+
+
+def _classificar(exc: BaseException) -> Falha:
     if isinstance(exc, FalhaPermanente):
         return Falha(True, exc.mensagem)
 

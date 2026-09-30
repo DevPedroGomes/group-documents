@@ -266,3 +266,50 @@ def test_pdf_corrompido_e_arquivo_ilegivel_e_nao_retenta():
         extrair_paginas(pdf_corrompido())
 
     assert falhas.classificar(erro.value) == falhas.Falha(True, falhas.ARQUIVO_ILEGIVEL)
+
+
+@pytest.fixture
+def sem_cache_de_tipos():
+    caches = (falhas._transitorias, falhas._recusadas, falhas._ilegiveis)
+    for f in caches:
+        f.cache_clear()
+    yield
+    for f in caches:
+        f.cache_clear()
+
+
+def test_sdk_sem_alguma_excecao_nao_quebra_a_classificacao(monkeypatch, sem_cache_de_tipos):
+    """SDK do Voyage mais velho, sem `VideoProcessingError` nem
+    `MalformedRequestError`: o getattr cru levantava AttributeError dentro do
+    `except` do worker, e o documento ficava em `processing` sem dead-letter."""
+    from voyageai import error as voyage
+
+    monkeypatch.delattr(voyage, "VideoProcessingError")
+    monkeypatch.delattr(voyage, "MalformedRequestError")
+
+    assert falhas.classificar(FileNotFoundError("x")) == falhas.Falha(True, falhas.ARQUIVO_ILEGIVEL)
+    assert falhas.classificar(voyage.AuthenticationError("chave")) == falhas.Falha(True, falhas.PROVIDER_RECUSOU)
+
+
+def test_classificar_nunca_levanta(monkeypatch):
+    def quebrado():
+        raise AttributeError("module has no attribute")
+
+    monkeypatch.setattr(falhas, "_transitorias", quebrado)
+
+    assert falhas.classificar(RuntimeError("x")) == falhas.Falha(False, falhas.DESCONHECIDA)
+
+
+def test_classificacao_quebrada_ainda_leva_a_ultima_tentativa_para_a_dead_letter(ingestao_falsa, monkeypatch):
+    r = ingestao_falsa
+
+    def quebrado():
+        raise AttributeError("module has no attribute")
+
+    monkeypatch.setattr(falhas, "_transitorias", quebrado)
+    r.erro_embedding = RuntimeError("inesperado")
+
+    _job(r, "text/plain", LONGO.encode(), tentativa=5)
+
+    assert r.descartes, "o documento ficou em processing sem dead-letter"
+    assert status_do_documento(r.motor)[-1] == "failed"
