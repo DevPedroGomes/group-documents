@@ -1,9 +1,24 @@
 """FastAPI dependencies: authentication, database access."""
 
-from jose import jwt, JWTError
+import uuid
+
+import jwt
 from fastapi import Request, HTTPException
+from sqlalchemy import text as sqltext
+from starlette.concurrency import run_in_threadpool
 
 from app.config.settings import get_settings
+from app.db.engine import engine
+
+
+def _usuario_ativo(user_id: str) -> bool:
+    """True so se o usuario existe e esta ativo. Uma consulta pequena por request."""
+    with engine.connect() as conn:
+        row = conn.execute(
+            sqltext("SELECT is_active FROM users WHERE id = :id"),
+            {"id": user_id},
+        ).first()
+    return bool(row and row[0])
 
 
 async def require_user(request: Request) -> str:
@@ -21,12 +36,21 @@ async def require_user(request: Request) -> str:
             settings.jwt_secret,
             algorithms=[settings.jwt_algorithm],
         )
-    except JWTError:
+    except jwt.PyJWTError:
         raise HTTPException(401, "Invalid or expired token")
 
     user_id = payload.get("sub")
     if not user_id:
         raise HTTPException(401, "No user in token")
+
+    # O JWT sozinho vale ate expirar: sem esta consulta, conta desativada ou
+    # apagada continuaria acessando tudo com um token ainda valido.
+    try:
+        uuid.UUID(str(user_id))
+    except ValueError:
+        raise HTTPException(401, "Invalid or expired token")
+    if not await run_in_threadpool(_usuario_ativo, str(user_id)):
+        raise HTTPException(401, "User not found or inactive")
 
     request.state.user_id = user_id
     request.state.user_token = token

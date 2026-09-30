@@ -4,7 +4,7 @@ import uuid
 import logging
 from datetime import datetime, timedelta, timezone
 
-from jose import jwt
+import jwt
 from fastapi import APIRouter, Request, HTTPException
 from pydantic import BaseModel, ConfigDict, EmailStr
 import bcrypt as _bcrypt
