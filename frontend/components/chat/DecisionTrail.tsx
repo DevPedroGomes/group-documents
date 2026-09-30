@@ -215,8 +215,8 @@ function UmaDecisao({ d }: { d: Decision }) {
 
       {d.low_confidence && !d.conflict && (
         <p className="mt-2 text-xs text-neutral-400">
-          Low confidence: nothing retrieved cleared the bar, so the agent should say so instead
-          of guessing.
+          Low confidence: the search found little or nothing clearly relevant, so the answer may
+          be incomplete.
         </p>
       )}
 
