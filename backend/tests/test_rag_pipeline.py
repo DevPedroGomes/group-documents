@@ -189,22 +189,76 @@ def test_retrieve_documents_exige_user_id():
 # 5. Custo
 # ---------------------------------------------------------------------------
 
-def test_enriquecimento_marca_o_documento_como_cacheavel():
+def _enriquecimento_espionado(monkeypatch):
+    """`_contexto_de_um_chunk` troca por um que anota bloco, chunk e momento."""
+    import threading
+    import time
+
+    from app.core.ingestion import chunker
+
+    chamadas: list[dict] = []
+    trava = threading.Lock()
+
+    def contexto(bloco, texto, meta):
+        inicio = time.monotonic()
+        time.sleep(0.01)
+        with trava:
+            chamadas.append({"bloco": bloco, "texto": texto, "inicio": inicio, "fim": time.monotonic()})
+        return f"ctx\n\n{texto}"
+
+    monkeypatch.setattr(chunker, "_contexto_de_um_chunk", contexto)
+    return chunker, chamadas
+
+
+def test_enriquecimento_marca_o_documento_como_cacheavel(monkeypatch):
     """Sem cache_control, o documento inteiro (~12,5k tokens) e cobrado como
     input novo em cada chunk: ~US$ 0,69 por PDF de 30 paginas em vez de ~0,10."""
-    from app.core.ingestion import chunker
+    chunker, chamadas = _enriquecimento_espionado(monkeypatch)
+    entrada = [(f"chunk {i}", {"chunk_index": i, "page": 1}) for i in range(3)]
 
-    fonte = inspect.getsource(chunker.enrich_chunks_with_context)
-    assert "cache_control" in fonte
+    chunker.enrich_chunks_with_context(entrada, "documento inteiro chunk 0 chunk 1 chunk 2", "titulo")
+
+    assert {c["bloco"]["cache_control"]["type"] for c in chamadas} == {"ephemeral"}
+    assert len({id(c["bloco"]) for c in chamadas}) == 1, "documento curto: um bloco so, um cache so"
 
 
-def test_primeiro_chunk_roda_sozinho_para_aquecer_o_cache():
+def test_primeiro_chunk_roda_sozinho_para_aquecer_o_cache(monkeypatch):
     """Disparar todos de uma vez faz todos errarem o cache ao mesmo tempo e
     cada um paga a gravacao — o contrario do que se quer."""
-    from app.core.ingestion import chunker
+    chunker, chamadas = _enriquecimento_espionado(monkeypatch)
+    entrada = [(f"chunk {i}", {"chunk_index": i, "page": 1}) for i in range(8)]
 
-    fonte = inspect.getsource(chunker.enrich_chunks_with_context)
-    assert "chunks[0]" in fonte and "ThreadPoolExecutor" in fonte
+    chunker.enrich_chunks_with_context(entrada, "documento", "titulo")
+
+    primeiro = next(c for c in chamadas if c["texto"] == "chunk 0")
+    outros = [c for c in chamadas if c["texto"] != "chunk 0"]
+    assert len(outros) == 7
+    assert all(c["inicio"] >= primeiro["fim"] for c in outros), "outro chunk comecou antes do cache gravado"
+
+
+def test_documento_longo_da_a_cada_chunk_um_contexto_que_o_contem(monkeypatch):
+    """O contexto era o documento cortado nos primeiros 50k caracteres: o chunk
+    do fim recebia um contexto que nao o continha. Agora cada chunk vai com a
+    janela ao redor dele, e os chunks da mesma janela dividem o bloco (e o
+    cache); o primeiro de cada janela roda antes dos outros dela."""
+    chunker, chamadas = _enriquecimento_espionado(monkeypatch)
+    secoes = [f"Secao {i} marcador{i:03d}. " + "texto corrido de enchimento " * 60 for i in range(120)]
+    documento = "\n\n".join(secoes)
+    assert len(documento) > 3 * chunker._JANELA
+    entrada = [(s, {"chunk_index": i, "page": 1}) for i, s in enumerate(secoes)]
+
+    saida = chunker.enrich_chunks_with_context(entrada, documento, "titulo")
+
+    assert [t for t, _ in saida] == [f"ctx\n\n{s}" for s in secoes]
+    blocos: dict[int, list[dict]] = {}
+    for c in chamadas:
+        assert c["texto"] in c["bloco"]["text"], "o contexto nao contem o chunk"
+        assert len(c["bloco"]["text"]) <= chunker._JANELA + 200
+        blocos.setdefault(id(c["bloco"]), []).append(c)
+    assert len(blocos) > 1, "documento longo continuou com um contexto so"
+    for grupo in blocos.values():
+        primeiro = min(grupo, key=lambda c: c["inicio"])
+        assert all(c["inicio"] >= primeiro["fim"] for c in grupo if c is not primeiro)
 
 
 def test_enriquecimento_preserva_a_ordem_dos_chunks(monkeypatch):
@@ -355,15 +409,9 @@ def test_embed_images_manda_a_imagem_e_nao_so_a_legenda(monkeypatch):
     assert "um grafico" in sequencia, "a legenda deveria acompanhar a imagem"
 
 
-def test_pagina_escaneada_nao_some_do_indice():
-    """pypdf devolve string vazia em pagina que e so imagem. Antes essas
-    paginas sumiam sem erro; 'o documento nao diz' respondia algo que estava
-    escrito na pagina."""
-    from app.core.ingestion.pdf_processor import Pagina, extrair_paginas
-
-    assert callable(extrair_paginas)
-    assert Pagina(numero=1, texto="", imagem=object()).escaneada is True
-    assert Pagina(numero=1, texto="tem texto").escaneada is False
+# Pagina escaneada vai para o caminho visual e entra no indice uma vez so:
+# executado com PDF de verdade em tests/test_extracao_pdf.py e
+# tests/test_ingestao_fluxos.py.
 
 
 def test_audio_usa_deepgram_porque_voyage_nao_cobre_audio():

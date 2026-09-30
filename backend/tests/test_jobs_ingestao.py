@@ -34,18 +34,7 @@ def test_a_assinatura_nao_mudou():
 
 # `erro`, `preso` e `effective_date` na resposta de GET /documents: pela rota,
 # com SQL de verdade, em tests/test_integracao_busca.py.
-
-
-def test_o_sucesso_apaga_o_erro_da_tentativa_anterior():
-    """Sem isto o erro fica grudado num documento que depois deu certo.
-
-    Medido em producao: 6 documentos `completed` carregando um "You have not
-    yet added your payment method" de uma recusa antiga da Voyage. Enquanto a
-    causa nunca era projetada pela API isso era invisivel; passando a ser, o
-    residuo viraria erro exibido em documento que funciona.
-    """
-    fonte = inspect.getsource(ingestao)
-    assert "'completed'" in fonte
-    assert "- 'error'" in fonte, (
-        "o UPDATE de sucesso voltou a nao limpar meta->>'error'"
-    )
+#
+# O sucesso apaga so o erro da tentativa anterior, e a falha preserva o resto de
+# `meta` (a origem de um documento vindo de URL): com SQL de verdade, em
+# tests/test_integracao_ingestao.py.

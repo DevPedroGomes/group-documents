@@ -20,6 +20,7 @@ from agent_ops.config import get_config
 from arq.connections import RedisSettings
 from sqlalchemy import text as sqltext
 
+from app.core.ingestion.falhas import classificar
 from app.db.engine import engine
 from app.db.migrate import _LOCK_KEY
 from app.jobs.ingestao import process_ingestion
@@ -80,7 +81,16 @@ async def ingerir(ctx, doc_id: str, user_id: str, storage_path: str) -> None:
         # o arq quem reenfileira o job, e engolir aqui o daria por terminado.
         raise
     except Exception as exc:
-        if queue.esgotou(ctx):
+        # Erro permanente (arquivo corrompido, formato, limite, 4xx do
+        # provider) nao se conserta retentando, e cada tentativa pagaria o
+        # enriquecimento de novo: vai direto para a dead-letter.
+        permanente = classificar(exc).permanente
+        if permanente or queue.esgotou(ctx):
+            if permanente:
+                logger.warning(
+                    "ingestao.falha_permanente doc_id=%s tentativa=%d erro=%s",
+                    doc_id, ctx["job_try"], exc,
+                )
             queue.descartar(engine, job_id, motivo=f"{type(exc).__name__}: {exc}")
             # `descartar` so mexe em `job_progress`. Sem esta linha o documento
             # fica em `processing` para sempre depois da ultima tentativa.
@@ -176,5 +186,7 @@ class WorkerSettings:
     # De quanto em quanto tempo o worker renova a chave de saude no Redis — a
     # mesma que `arq ... --check` (o healthcheck do compose) le. O default do
     # arq e 3600s: com ele, um worker morto continuaria "saudavel" por ate uma
-    # hora, e o `restart` do Docker so agiria depois disso.
+    # hora. O healthcheck e so SINAL (`docker ps` mostra unhealthy): nem
+    # `restart: unless-stopped` nem nada no compose reinicia container
+    # unhealthy sozinho; o restart so age quando o processo sai.
     health_check_interval = 30

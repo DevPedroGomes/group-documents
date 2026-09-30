@@ -10,7 +10,8 @@ binario no repo nao diz o que testa e ninguem revisa o diff dele.
 import pytest
 
 from app.core.ingestion.chunker import _token_count, chunk_text
-from app.core.ingestion.pdf_processor import extrair_paginas
+from app.core.ingestion.falhas import FalhaPermanente
+from app.core.ingestion.pdf_processor import extrair_paginas, renderizar_paginas
 from tests.fixtures import (
     pdf_com_texto,
     pdf_corrompido,
@@ -44,13 +45,52 @@ def test_pdf_escaneado_vai_para_o_caminho_visual():
     serie e sem teto. Um PDF escaneado grande estoura o job_timeout, vira
     `failed`, retenta do zero e queima o custo de novo.
     """
-    paginas = extrair_paginas(pdf_escaneado(2))
+    dados = pdf_escaneado(2)
+    paginas = extrair_paginas(dados)
 
     assert len(paginas) == 2
     for p in paginas:
         assert p.texto == "", "pagina escaneada nao deveria ter texto extraido"
         assert p.escaneada, "pagina sem texto deveria ir para o caminho visual"
-        assert p.imagem is not None, "a pagina precisa ser renderizada"
+    renderizadas = list(renderizar_paginas(dados, [p.numero for p in paginas], dpi=50))
+    assert [n for n, _ in renderizadas] == [1, 2]
+    assert all(imagem is not None for _, imagem in renderizadas), "a pagina precisa ser renderizada"
+
+
+def test_render_das_escaneadas_e_uma_pagina_por_vez(monkeypatch):
+    """Antes todas as escaneadas viravam imagem juntas, antes de qualquer uma
+    ser processada: 300 paginas a 150 DPI sao ~1,9 GB de RAM no worker."""
+    import pymupdf
+
+    renderizadas: list[int] = []
+    original = pymupdf.Page.get_pixmap
+
+    def espiao(self, *a, **k):
+        renderizadas.append(self.number + 1)
+        return original(self, *a, **k)
+
+    monkeypatch.setattr(pymupdf.Page, "get_pixmap", espiao)
+    gerador = renderizar_paginas(pdf_escaneado(3), [1, 2, 3], dpi=50)
+
+    numero, imagem = next(gerador)
+    assert numero == 1 and imagem is not None
+    assert renderizadas == [1], "renderizou pagina que ninguem pediu ainda"
+    assert [n for n, _ in gerador] == [2, 3]
+    assert renderizadas == [1, 2, 3]
+
+
+def test_pdf_acima_do_teto_de_paginas_falha_como_permanente(monkeypatch):
+    """Sem teto, um PDF de milhares de paginas estourava o job de 30 minutos,
+    virava `failed`, retentava do zero e queimava o custo de novo."""
+    from app.config.settings import get_settings
+
+    monkeypatch.setattr(get_settings(), "max_pdf_pages", 2)
+
+    with pytest.raises(FalhaPermanente) as falha:
+        extrair_paginas(pdf_com_texto([_LONGO_1, _LONGO_2, _LONGO_1]))
+
+    assert falha.value.mensagem == "The PDF has more pages than the limit (2)."
+    assert len(extrair_paginas(pdf_com_texto([_LONGO_1, _LONGO_2]))) == 2
 
 
 def test_pdf_sem_texto_nao_inventa_conteudo():
@@ -89,13 +129,34 @@ def test_pagina_sem_pontuacao_nao_vira_chunk_ilimitado():
 
 
 def test_o_texto_extraido_perde_o_whitespace_redundante():
-    """A extracao normaliza espaco antes do chunking.
-
-    Isso importa para o chunker: com o whitespace colapsado, uma pagina sem
-    pontuacao vira mesmo UMA sentenca — que e a razao de o teto existir.
-    """
     paginas = extrair_paginas(pdf_com_texto(["Texto    com     espacos."]))
     assert "  " not in paginas[0].texto
+
+
+def test_a_extracao_preserva_a_quebra_de_linha_de_uma_tabela():
+    """Colapsar todo whitespace juntava as linhas da tabela numa so, e cada
+    valor perdia o rotulo da propria linha."""
+    tabela = "Plano Basico    10 GB    R$ 50\nPlano Pro    50 GB    R$ 120\nPlano Max    200 GB    R$ 300"
+
+    (pagina,) = extrair_paginas(pdf_com_texto([tabela]))
+
+    assert pagina.texto.splitlines() == [
+        "Plano Basico 10 GB R$ 50", "Plano Pro 50 GB R$ 120", "Plano Max 200 GB R$ 300",
+    ]
+
+
+def test_tabela_grande_demais_e_partida_por_linha_e_mantem_as_linhas():
+    """Tabela sem pontuacao e UMA sentenca; partida por palavra, as linhas se
+    misturavam. Partida por linha, cada pedaco fica abaixo do teto e cada linha
+    inteira."""
+    linhas = [f"Item {i} codigo {i * 7} quantidade {i % 13} valor {i * 3} reais" for i in range(300)]
+
+    chunks = chunk_text("\n".join(linhas), max_tokens=200)
+
+    assert len(chunks) > 1
+    assert max(_token_count(c) for c in chunks) <= 200
+    for c in chunks:
+        assert all(linha in linhas for linha in c.splitlines()), "uma linha da tabela foi partida"
 
 
 @pytest.mark.parametrize("n", [1, 3])

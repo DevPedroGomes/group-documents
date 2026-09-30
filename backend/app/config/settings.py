@@ -63,6 +63,10 @@ class Settings(BaseSettings):
     # DPI do render da pagina escaneada. 150 e legivel para OCR visual sem
     # estourar o limite de 16 milhoes de pixels do Voyage.
     pdf_render_dpi: int = 150
+    # Acima disto o PDF falha como permanente, antes de qualquer chamada paga:
+    # cada pagina custa extracao, enriquecimento e, se escaneada, visao e
+    # embedding de imagem, e o job tem 30 minutos.
+    max_pdf_pages: int = 300
 
     # Reranking (Cohere)
     cohere_api_key: Optional[str] = None
