@@ -126,10 +126,39 @@ def test_a_busca_devolve_a_divergencia_com_a_fonte_vigente(voz):
     assert "vigente" in rt.INSTRUCOES
 
 
-def test_as_duas_rotas_exigem_autenticacao():
-    for nome in ("criar_sessao", "executar_busca"):
-        fonte = ast.get_source_segment(FONTE, _funcao(nome)) or ""
-        assert "require_user" in fonte, f"{nome} não exige autenticação"
+@pytest.mark.parametrize("rota,corpo", [
+    ("/realtime/session", None),
+    ("/realtime/tool/buscar", {"pergunta": "qual o prazo?"}),
+])
+@pytest.mark.parametrize("cabecalho", [
+    {},
+    {"Authorization": "Bearer abc.def.ghi"},
+    {"Authorization": "Token sem-bearer"},
+    "assinado-com-outro-segredo",
+])
+def test_as_duas_rotas_recusam_quem_nao_esta_autenticado(monkeypatch, rota, corpo, cabecalho):
+    """Pela rota, com o `require_user` de verdade: sem token, token malformado
+    ou assinado com outro segredo e 401, antes de qualquer busca ou credencial."""
+    import jwt
+    from fastapi.testclient import TestClient
+
+    from app.api.rate_limit import limiter
+    from app.main import create_app
+
+    chamadas: list[str] = []
+    monkeypatch.setattr(rt, "retrieve_documents", lambda **kw: chamadas.append("busca"))
+    if cabecalho == "assinado-com-outro-segredo":
+        token = jwt.encode({"sub": "00000000-0000-0000-0000-00000000000a"},
+                           "outro-segredo-com-32-bytes-ou-mais!!", algorithm="HS256")
+        cabecalho = {"Authorization": f"Bearer {token}"}
+    limiter.enabled = False
+    try:
+        r = TestClient(create_app()).post(rota, json=corpo, headers=cabecalho)
+    finally:
+        limiter.enabled = True
+
+    assert r.status_code == 401, r.text
+    assert chamadas == []
 
 
 # ---------------------------------------------------------------------------
