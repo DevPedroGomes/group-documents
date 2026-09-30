@@ -82,7 +82,6 @@ class Settings(BaseSettings):
     # RAG Pipeline
     chunk_size: int = 500
     chunk_overlap: int = 100
-    similarity_top_k: int = 5
     search_candidates_multiplier: int = 3
     relevance_threshold: float = 0.7
     rrf_k: int = 60
@@ -120,9 +119,7 @@ class Settings(BaseSettings):
     deepgram_api_key: Optional[str] = None
     deepgram_model: str = "nova-3"
 
-    # Rate Limiting
-    rate_limit_requests: int = 30
-    rate_limit_window_seconds: int = 60
+    # Rate Limiting (os limites por rota ficam nos decoradores de cada uma)
     # Cadastro e aberto e gratuito, entao o rate limit por IP e a unica coisa
     # entre um script e uma fila infinita de contas novas.
     auth_rate_limit: str = "5/minute"
