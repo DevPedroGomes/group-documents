@@ -118,7 +118,8 @@ export async function proxyToBackend(
     if (valor) saida.set(nome, valor)
   }
   if (saida.get('content-type')?.includes('text/event-stream')) {
-    saida.set('cache-control', 'no-cache')
+    // no-transform: proxy ou CDN no caminho nao pode comprimir nem reescrever o stream.
+    saida.set('cache-control', 'no-cache, no-transform')
     // Qualquer proxy com buffer no caminho seguraria os tokens ate o fim.
     saida.set('x-accel-buffering', 'no')
   }

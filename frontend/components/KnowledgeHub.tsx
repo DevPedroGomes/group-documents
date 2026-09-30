@@ -39,6 +39,25 @@ import {
 
 type Document = LibraryDocument
 
+/** Corpo de /upload e /crawl, sucesso ou erro. O `detail` do 422 e lista, nao string. */
+type RespostaDeIngestao = { document_id?: unknown; title?: unknown; detail?: unknown }
+
+async function lerResposta(res: Response): Promise<RespostaDeIngestao> {
+  const corpo: unknown = await res.json().catch(() => null)
+  return typeof corpo === 'object' && corpo !== null ? (corpo as RespostaDeIngestao) : {}
+}
+
+function mensagemDoErro(corpo: RespostaDeIngestao, padrao: string): string {
+  return typeof corpo.detail === 'string' && corpo.detail ? corpo.detail : padrao
+}
+
+function idDoDocumento(corpo: RespostaDeIngestao): string {
+  if (typeof corpo.document_id !== 'string' || !corpo.document_id) {
+    throw new Error('Unexpected response from the server')
+  }
+  return corpo.document_id
+}
+
 interface KnowledgeHubProps {
   getToken: () => Promise<string | undefined>
 }
@@ -85,7 +104,7 @@ export default function KnowledgeHub({ getToken }: KnowledgeHubProps) {
         throw new Error('Failed to fetch documents')
       }
 
-      const data = await res.json()
+      const data = (await res.json()) as { items?: Document[] }
       setDocs(data.items || [])
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load documents')
@@ -150,13 +169,12 @@ export default function KnowledgeHub({ getToken }: KnowledgeHubProps) {
       })
 
       if (!uploadRes.ok) {
-        const data = await uploadRes.json().catch(() => ({}))
-        throw new Error(data.detail || `Failed to upload ${file.name}`)
+        throw new Error(mensagemDoErro(await lerResposta(uploadRes), `Failed to upload ${file.name}`))
       }
 
-      const data = await uploadRes.json()
+      const data = await lerResposta(uploadRes)
       return {
-        id: data.document_id,
+        id: idDoDocumento(data),
         title: file.name,
         mime: file.type,
         status: 'pending',
@@ -264,15 +282,14 @@ export default function KnowledgeHub({ getToken }: KnowledgeHubProps) {
       })
 
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}))
-        throw new Error(data.detail || 'Failed to crawl URL')
+        throw new Error(mensagemDoErro(await lerResposta(res), 'Failed to crawl URL'))
       }
 
-      const data = await res.json()
+      const data = await lerResposta(res)
       setDocs(prev => [
         {
-          id: data.document_id,
-          title: data.title || url,
+          id: idDoDocumento(data),
+          title: typeof data.title === 'string' && data.title ? data.title : url,
           mime: 'text/plain',
           status: 'pending',
           effective_date: dataDoCrawl || null,
@@ -297,6 +314,25 @@ export default function KnowledgeHub({ getToken }: KnowledgeHubProps) {
 
   // Estavel: o preview escuta o Esc com ela como dependencia.
   const fecharPreview = useCallback(() => setPreviewDoc(null), [])
+
+  // Esc fecha os dialogos de upload e de URL, como no preview. O de URL nao
+  // fecha no meio do crawl, igual ao clique fora.
+  useEffect(() => {
+    if (!pendentes && !showUrlModal) return
+    const aoTeclar = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      if (pendentes) {
+        setPendentes(null)
+      } else if (!isCrawling) {
+        setShowUrlModal(false)
+        setUrlInput('')
+        setUrlError(null)
+        setDataDoCrawl('')
+      }
+    }
+    window.addEventListener('keydown', aoTeclar)
+    return () => window.removeEventListener('keydown', aoTeclar)
+  }, [pendentes, showUrlModal, isCrawling])
 
   const confirmarUpload = () => {
     if (!pendentes) return
@@ -377,7 +413,8 @@ export default function KnowledgeHub({ getToken }: KnowledgeHubProps) {
                 <Button variant="ghost" onClick={() => setPendentes(null)}>
                   Cancel
                 </Button>
-                <Button onClick={confirmarUpload} className="gap-2">
+                {/* Foco inicial aqui: Enter confirma, Esc cancela. */}
+                <Button onClick={confirmarUpload} className="gap-2" autoFocus>
                   <Upload className="h-4 w-4" />
                   Upload
                 </Button>

@@ -50,6 +50,12 @@ export function useChatStream(options: UseChatStreamOptions) {
   })
   const threadIdRef = useRef<string | null>(null)
   const enviandoRef = useRef(false)
+  // Enquanto uma conversa antiga carrega, enviar misturaria a pergunta nova
+  // com as mensagens que ainda vao chegar. E a geracao descarta o resultado de
+  // uma carga que foi ultrapassada por outra, ou por "New chat".
+  const [isLoadingThread, setIsLoadingThread] = useState(false)
+  const carregandoThreadRef = useRef(false)
+  const geracaoRef = useRef(0)
 
   const definirThread = useCallback((id: string | null) => {
     threadIdRef.current = id
@@ -58,7 +64,7 @@ export function useChatStream(options: UseChatStreamOptions) {
 
   const sendMessage = useCallback(async (content: string) => {
     const texto = content.trim()
-    if (!texto || enviandoRef.current) return
+    if (!texto || enviandoRef.current || carregandoThreadRef.current) return
     enviandoRef.current = true
 
     const { getToken, documentIds, asOf, onError, onDone } = opcoesRef.current
@@ -74,6 +80,8 @@ export function useChatStream(options: UseChatStreamOptions) {
     ])
     setIsLoading(true)
     setWorkflowSteps([])
+    let streamAberto = false
+    let recebeuDone = false
 
     try {
       const token = await getToken()
@@ -102,6 +110,7 @@ export function useChatStream(options: UseChatStreamOptions) {
 
       const reader = res.body?.getReader()
       if (!reader) throw new Error('No response body')
+      streamAberto = true
 
       const decoder = new TextDecoder()
       let buffer = ''
@@ -145,6 +154,7 @@ export function useChatStream(options: UseChatStreamOptions) {
               break
 
             case 'done':
+              recebeuDone = true
               if (event.data.thread_id) definirThread(event.data.thread_id)
               atualizar(m => ({
                 ...m,
@@ -168,6 +178,10 @@ export function useChatStream(options: UseChatStreamOptions) {
     } finally {
       // Resposta sem nenhum texto (erro, parada) nao fica como balao vazio.
       setMessages(prev => prev.filter(m => m.id !== assistantId || m.content))
+      // Sem `done` (evento de erro, queda, parada) o backend grava a trilha do
+      // mesmo jeito, no `finally` do stream, antes de fecha-lo: a trilha tem
+      // que recarregar tambem.
+      if (streamAberto && !recebeuDone) setAnswerCount(n => n + 1)
       setIsLoading(false)
       enviandoRef.current = false
       abortControllerRef.current = null
@@ -176,6 +190,9 @@ export function useChatStream(options: UseChatStreamOptions) {
 
   const resetChat = useCallback(() => {
     abortControllerRef.current?.abort()
+    geracaoRef.current += 1
+    carregandoThreadRef.current = false
+    setIsLoadingThread(false)
     setMessages([])
     definirThread(null)
     setIsLoading(false)
@@ -186,19 +203,29 @@ export function useChatStream(options: UseChatStreamOptions) {
     abortControllerRef.current?.abort()
   }, [])
 
-  /** Carrega uma conversa antiga. Devolve false quando nao conseguiu. */
-  const loadThread = useCallback(async (targetThreadId: string): Promise<boolean> => {
+  /**
+   * Carrega uma conversa antiga. 'cancelado' quando outra carga ou um "New
+   * chat" veio depois: o resultado desta e descartado, e nao e erro.
+   */
+  const loadThread = useCallback(async (
+    targetThreadId: string,
+  ): Promise<'ok' | 'erro' | 'cancelado'> => {
     abortControllerRef.current?.abort()
+    const geracao = ++geracaoRef.current
+    carregandoThreadRef.current = true
+    setIsLoadingThread(true)
     try {
       const token = await opcoesRef.current.getToken()
       const res = await fetch(`/api/threads/${encodeURIComponent(targetThreadId)}/messages`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       })
-      if (!res.ok) return false
+      if (geracao !== geracaoRef.current) return 'cancelado'
+      if (!res.ok) return 'erro'
 
       const data = (await res.json()) as {
         messages?: { role: string; content: string; citations?: Citation[] | null }[]
       }
+      if (geracao !== geracaoRef.current) return 'cancelado'
       const loadedMessages: Message[] = (data.messages || []).map((m, i) => ({
         id: `loaded-${targetThreadId}-${i}`,
         role: m.role === 'user' ? 'user' : 'assistant',
@@ -210,10 +237,16 @@ export function useChatStream(options: UseChatStreamOptions) {
       setMessages(loadedMessages)
       definirThread(targetThreadId)
       setWorkflowSteps([])
-      return true
+      return 'ok'
     } catch (err) {
+      if (geracao !== geracaoRef.current) return 'cancelado'
       console.error('Failed to load thread:', err)
-      return false
+      return 'erro'
+    } finally {
+      if (geracao === geracaoRef.current) {
+        carregandoThreadRef.current = false
+        setIsLoadingThread(false)
+      }
     }
   }, [definirThread])
 
@@ -223,6 +256,7 @@ export function useChatStream(options: UseChatStreamOptions) {
     threadId,
     workflowSteps,
     answerCount,
+    isLoadingThread,
     sendMessage,
     resetChat,
     stopGeneration,

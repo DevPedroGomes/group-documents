@@ -82,6 +82,7 @@ function ChatPageContent() {
     threadId,
     loadThread,
     answerCount,
+    isLoadingThread,
   } = useChatStream({
     getToken: getTokenAsync,
     documentIds,
@@ -95,8 +96,9 @@ function ChatPageContent() {
   const selecionarThread = useCallback(
     async (id: string) => {
       setError(null)
-      const ok = await loadThread(id)
-      if (!ok) {
+      const resultado = await loadThread(id)
+      if (resultado === 'cancelado') return
+      if (resultado === 'erro') {
         setError('Could not open that conversation.')
         return
       }
@@ -190,7 +192,7 @@ function ChatPageContent() {
                 <EmptyState
                   onSuggestionClick={sendMessage}
                   selecionados={documentIds.length}
-                  desabilitado={acervoSemDocumentoPronto}
+                  desabilitado={acervoSemDocumentoPronto || isLoadingThread}
                 />
               ) : (
                 <AnimatePresence mode="popLayout">
@@ -263,15 +265,17 @@ function ChatPageContent() {
             onSend={sendMessage}
             isLoading={isSending}
             onStop={stopGeneration}
-            disabled={acervoSemDocumentoPronto}
+            disabled={acervoSemDocumentoPronto || isLoadingThread}
             asOf={asOf}
             onAsOfChange={setAsOf}
             placeholder={
-              acervoSemDocumentoPronto
-                ? 'Your library has no ready documents yet. Upload one first.'
-                : documentIds.length === 0
-                  ? 'Ask anything across your whole library...'
-                  : `Ask about the ${documentIds.length} selected ${documentIds.length === 1 ? 'document' : 'documents'}...`
+              isLoadingThread
+                ? 'Opening the conversation...'
+                : acervoSemDocumentoPronto
+                  ? 'Your library has no ready documents yet. Upload one first.'
+                  : documentIds.length === 0
+                    ? 'Ask anything across your whole library...'
+                    : `Ask about the ${documentIds.length} selected ${documentIds.length === 1 ? 'document' : 'documents'}...`
             }
           />
         </div>
