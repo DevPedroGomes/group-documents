@@ -558,3 +558,132 @@ def test_pergunta_barrada_pelo_filtro_nao_consome_cota(chat):
 
     assert r.status_code == 400
     assert cenario.consumidos == []
+
+
+def test_gravacao_antes_do_done_nao_roda_no_event_loop(chat):
+    """Com um worker do uvicorn, SQL sincrono no loop segura todos os outros
+    requests enquanto grava."""
+    cliente, cenario = chat
+    cenario.acervo["qual o prazo?"] = [trecho("c1", "d1", "Politica"), trecho("c2", "d1", "Politica")]
+
+    perguntar(cliente, "qual o prazo?")
+
+    gravacoes = dict(cenario.gravacoes_no_loop)
+    assert gravacoes["message:assistant"] is False
+    assert gravacoes["decision"] is False
+
+
+# ---------------------------------------------------------------------------
+# Cliente que cai: o gerador e fechado ou cancelado no meio
+#
+# O TestClient sempre le o stream ate o fim; aqui a rota e chamada direto e o
+# gerador do SSE e conduzido na mao, como o Starlette faz quando a conexao cai.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def stream_direto(monkeypatch):
+    import asyncio
+
+    from starlette.requests import Request
+
+    from app.api.rate_limit import limiter
+    from app.api.routes import chat as chat_route
+
+    cenario = Cenario()
+    instalar(monkeypatch, cenario)
+    limiter.enabled = False
+
+    async def abrir(mensagem: str = "qual o prazo?"):
+        requisicao = Request({"type": "http", "method": "POST", "path": "/chat",
+                              "headers": [], "query_string": b""})
+        resposta = await chat_route.chat(requisicao, chat_route.ChatBody(message=mensagem))
+        return resposta.body_iterator
+
+    try:
+        yield cenario, abrir, asyncio
+    finally:
+        limiter.enabled = True
+
+
+def test_cliente_que_cai_depois_da_checagem_terminada_nao_perde_o_aviso(stream_direto):
+    """A checagem terminou antes do token, mas o cliente caiu antes de a rota
+    ler o resultado: o aviso tem de ir para a trilha mesmo assim."""
+    import threading
+    import time
+
+    cenario, abrir, asyncio = stream_direto
+    _duas_versoes(cenario)
+    cenario.resposta_conflito = DIVERGE
+    terminou = threading.Event()
+    cenario.depois_de_responder_conflito = terminou.set
+
+    def espera_a_checagem():
+        terminou.wait(5)
+        time.sleep(0.05)
+
+    cenario.tokens = [espera_a_checagem, "O prazo", " e de 15 dias."]
+
+    async def conduzir():
+        gerador = await abrir()
+        recebidos = []
+        async for pedaco in gerador:
+            recebidos.append(pedaco)
+            if '"type": "chunk"' in pedaco:
+                break
+        await gerador.aclose()  # a conexao caiu aqui
+        return recebidos
+
+    recebidos = asyncio.run(conduzir())
+
+    assert not any('"type": "conflict"' in r for r in recebidos)
+    (decisao,) = cenario.decisoes
+    assert decisao["conflict"] == {"summary": "O prazo difere.", "sources": ["Contrato", "Aditivo"],
+                                   "vigente": "Aditivo"}
+    assert cenario.mensagens[-1]["content"] == "O prazo"
+    assert decisao["message_id"] == "msg-2"
+
+
+def test_cancelamento_durante_a_gravacao_nao_grava_duas_vezes_nem_perde_o_id(stream_direto, monkeypatch):
+    """O cliente cai enquanto a thread grava a resposta. O `finally` roda no
+    loop ao mesmo tempo; sem a trava ele gravaria a trilha sem `message_id`
+    (a thread ainda nao tinha o id) e a decisao ficaria orfa."""
+    import threading
+
+    from app.api.routes import chat as chat_route
+
+    cenario, abrir, asyncio = stream_direto
+    cenario.acervo["qual o prazo?"] = [trecho("c1", "d1", "Politica"), trecho("c2", "d1", "Politica")]
+    gravando = threading.Event()
+    solta = threading.Event()
+    gravar = chat_route.save_message
+
+    def gravacao_lenta(thread_id, role, content, citations=None):
+        if role == "assistant":
+            gravando.set()
+            solta.wait(5)
+        return gravar(thread_id, role, content, citations)
+
+    monkeypatch.setattr(chat_route, "save_message", gravacao_lenta)
+
+    async def conduzir():
+        gerador = await abrir()
+
+        async def consumir():
+            async for _ in gerador:
+                pass
+
+        tarefa = asyncio.ensure_future(consumir())
+        while not gravando.is_set():
+            await asyncio.sleep(0.01)
+        threading.Timer(0.1, solta.set).start()
+        tarefa.cancel()  # a conexao caiu durante a gravacao
+        try:
+            await tarefa
+        except asyncio.CancelledError:
+            return True
+        return False
+
+    assert asyncio.run(conduzir()) is True
+    assert [m["role"] for m in cenario.mensagens] == ["user", "assistant"]
+    (decisao,) = cenario.decisoes
+    assert decisao["message_id"] == "msg-2"

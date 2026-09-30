@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import threading
 import time
 from typing import AsyncGenerator
 
@@ -315,6 +316,10 @@ async def chat(request: Request, body: ChatBody):
 
         message_id: str | None = None
         mensagem_gravada = trilha_gravada = False
+        # `registrar` roda numa thread no caminho feliz e no event loop no
+        # `finally`; se o cliente cai durante a gravacao, os dois se cruzam. A
+        # trava faz o segundo esperar o primeiro e encontrar tudo gravado.
+        trava_gravacao = threading.Lock()
 
         def registrar() -> None:
             """Grava a resposta (se houver texto) e a trilha, uma vez cada.
@@ -323,29 +328,30 @@ async def chat(request: Request, body: ChatBody):
             sem `message_id`, e o erro segue para quem chamou.
             """
             nonlocal message_id, mensagem_gravada, trilha_gravada
-            try:
-                if full_answer and not mensagem_gravada:
-                    mensagem_gravada = True
-                    message_id = save_message(thread_id, "assistant", full_answer, citations)
-            finally:
-                if not trilha_gravada:
-                    trilha_gravada = True
-                    save_decision(
-                        user_id=user_id,
-                        thread_id=thread_id,
-                        message_id=message_id,
-                        question=body.message,
-                        retrieved=recuperados,
-                        # Web entra na trilha junto do que foi aprovado: foi ao gerador.
-                        graded=[*aprovados, *resultados_web],
-                        web_used=usou_web,
-                        low_confidence=baixa_confianca,
-                        answered=bool(full_answer),
-                        conflict=conflito,
-                        as_of=body.as_of,
-                        queries=consultas,
-                        latency_ms=int((time.monotonic() - iniciado_em) * 1000),
-                    )
+            with trava_gravacao:
+                try:
+                    if full_answer and not mensagem_gravada:
+                        mensagem_gravada = True
+                        message_id = save_message(thread_id, "assistant", full_answer, citations)
+                finally:
+                    if not trilha_gravada:
+                        trilha_gravada = True
+                        save_decision(
+                            user_id=user_id,
+                            thread_id=thread_id,
+                            message_id=message_id,
+                            question=body.message,
+                            retrieved=recuperados,
+                            # Web entra na trilha junto do que foi aprovado: foi ao gerador.
+                            graded=[*aprovados, *resultados_web],
+                            web_used=usou_web,
+                            low_confidence=baixa_confianca,
+                            answered=bool(full_answer),
+                            conflict=conflito,
+                            as_of=body.as_of,
+                            queries=consultas,
+                            latency_ms=int((time.monotonic() - iniciado_em) * 1000),
+                        )
 
         def fechar_conflito() -> list[str]:
             """Registra o resultado da checagem e devolve os eventos a emitir."""
@@ -547,8 +553,9 @@ async def chat(request: Request, body: ChatBody):
                     yield evento
 
             # Grava ANTES do `done`: ele leva o `message_id`, e o cliente que
-            # busca a trilha logo em seguida precisa encontra-la gravada.
-            registrar()
+            # busca a trilha logo em seguida precisa encontra-la gravada. Em
+            # thread, como todo SQL daqui: no loop seguraria os outros requests.
+            await loop.run_in_executor(None, registrar)
             yield _sse("done", {
                 "thread_id": thread_id,
                 "message_id": message_id,
@@ -582,10 +589,15 @@ async def chat(request: Request, body: ChatBody):
                 await metering.devolver("chat")
 
         finally:
+            # Checagem que terminou mas nao chegou a ser lida (o cliente caiu
+            # entre tokens): o resultado ja existe e vai para a trilha.
+            if checagem is not None and checagem.done():
+                conflito = _resultado_da_checagem(checagem)
             # Rede de seguranca: se o stream quebrou (erro, cliente que caiu),
             # grava o que nao foi gravado. Saber ate onde o pipeline chegou
             # antes de quebrar e justamente o que se procura depois; sem texto,
-            # `message_id` fica nulo e `answered` falso.
+            # `message_id` fica nulo e `answered` falso. Sincrono de proposito:
+            # aqui nao da para esperar nada, o gerador pode estar sendo fechado.
             registrar()
 
     return StreamingResponse(

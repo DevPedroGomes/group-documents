@@ -7,6 +7,7 @@ o teste le o SSE. Sem rede, sem banco, sem chave.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 import threading
@@ -59,11 +60,21 @@ class Cenario:
         self.teto_erro: Exception | None = None
         # Ordem global: tipo de cada evento SSE montado e cada gravacao.
         self.log: list[str] = []
+        # (o que foi gravado, se rodou na thread do event loop)
+        self.gravacoes_no_loop: list[tuple[str, bool]] = []
         self._trava = threading.Lock()
 
     def anotar(self, item: str) -> None:
         with self._trava:
             self.log.append(item)
+
+
+def _no_event_loop() -> bool:
+    try:
+        asyncio.get_running_loop()
+        return True
+    except RuntimeError:
+        return False
 
 
 def instalar(monkeypatch, cenario: Cenario) -> None:
@@ -95,6 +106,7 @@ def instalar(monkeypatch, cenario: Cenario) -> None:
 
     def save_message(thread_id, role, content, citations=None):
         cenario.anotar(f"save_message:{role}")
+        cenario.gravacoes_no_loop.append((f"message:{role}", _no_event_loop()))
         cenario.mensagens.append(
             {"thread_id": thread_id, "role": role, "content": content, "citations": citations}
         )
@@ -102,6 +114,7 @@ def instalar(monkeypatch, cenario: Cenario) -> None:
 
     def save_decision(**kw):
         cenario.anotar("save_decision")
+        cenario.gravacoes_no_loop.append(("decision", _no_event_loop()))
         cenario.decisoes.append(kw)
 
     sse_original = chat_route._sse
