@@ -1,8 +1,9 @@
-"""FastAPI dependencies: authentication, database access."""
+"""FastAPI dependencies: authentication, database access, daily quota."""
 
 import uuid
 
 import jwt
+from agent_ops import metering
 from fastapi import Request, HTTPException
 from sqlalchemy import text as sqltext
 from starlette.concurrency import run_in_threadpool
@@ -55,3 +56,22 @@ async def require_user(request: Request) -> str:
     request.state.user_id = user_id
     request.state.user_token = token
     return user_id
+
+
+async def consumir_cota(tipo: str, limite: int) -> None:
+    """Consome uma unidade do teto diario `tipo`, ou responde o motivo da recusa.
+
+    `TetoIndisponivel` (Redis ilegivel) vira 503 sem `Retry-After`, porque
+    ninguem sabe quando volta; `TetoAtingido` vira 429 com o tempo ate a virada
+    do dia em UTC.
+    """
+    try:
+        await metering.consumir(tipo, limite)
+    except metering.TetoIndisponivel as exc:
+        raise HTTPException(status_code=503, detail=exc.mensagem) from exc
+    except metering.TetoAtingido as exc:
+        raise HTTPException(
+            status_code=429,
+            detail=exc.mensagem,
+            headers={"Retry-After": str(metering.segundos_ate_meia_noite_utc())},
+        ) from exc

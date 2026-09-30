@@ -254,3 +254,122 @@ def test_recusa_da_fila_desfaz_cota_linha_e_arquivo(docs, rota, erro, status):
     if status == 429:
         assert resposta.headers["Retry-After"] == "30"
     assert r.eventos[-3:] == ["devolver:ingest", "apagar_linha:doc-1", f"apagar_arquivo:{caminho}"]
+
+
+# ---------------------------------------------------------------------------
+# Busca semantica da lista: rate limit, cota e embedding fora do event loop
+# ---------------------------------------------------------------------------
+
+LINHA = {"id": "d1", "title": "Contrato", "mime": "application/pdf", "status": "completed",
+         "summary": None, "chunk_count": 3, "erro": None, "preso": False, "effective_date": None}
+
+
+def _no_event_loop() -> bool:
+    import asyncio
+
+    try:
+        asyncio.get_running_loop()
+        return True
+    except RuntimeError:
+        return False
+
+
+@pytest.fixture
+def lista(docs, monkeypatch):
+    from app.api.routes import documents as rotas
+    from app.services import embedding_cache
+
+    cliente, r = docs
+    r.embeddings, r.erro_do_embedding = [], None
+
+    def embedding(consulta):
+        r.embeddings.append((consulta, _no_event_loop()))
+        if r.erro_do_embedding:
+            raise r.erro_do_embedding
+        return [0.0] * 4
+
+    monkeypatch.setattr(embedding_cache, "get_query_embedding", embedding)
+    monkeypatch.setattr(rotas, "_documentos_parecidos", lambda qvec, uid: ["d1"])
+    monkeypatch.setattr(rotas, "_listar_documentos", lambda uid, ids: [dict(LINHA)])
+    return cliente, r
+
+
+def test_busca_semantica_consome_a_cota_do_chat_e_embeda_fora_do_loop(lista):
+    cliente, r = lista
+
+    resposta = cliente.get("/documents", params={"semantic_query": "prazo de entrega"})
+
+    assert resposta.status_code == 200, resposta.text
+    assert [i["id"] for i in resposta.json()["items"]] == ["d1"]
+    assert r.eventos == ["consumir:chat"]
+    assert r.embeddings == [("prazo de entrega", False)], "o embedding rodou no event loop"
+
+
+def test_lista_sem_busca_nao_consome_cota_nem_chama_provider(lista):
+    cliente, r = lista
+
+    assert cliente.get("/documents").status_code == 200
+    assert cliente.get("/documents", params={"semantic_query": "   "}).status_code == 200
+    assert r.eventos == [] and r.embeddings == []
+
+
+def test_busca_semantica_com_cota_estourada_nao_chama_o_provider(lista):
+    from agent_ops import metering
+
+    cliente, r = lista
+    r.teto = metering.TetoAtingido("acabou")
+
+    resposta = cliente.get("/documents", params={"semantic_query": "prazo"})
+
+    assert resposta.status_code == 429
+    assert r.embeddings == []
+
+
+def test_falha_do_embedding_devolve_a_cota(lista):
+    cliente, r = lista
+    r.erro_do_embedding = RuntimeError("429 do provider")
+
+    resposta = cliente.get("/documents", params={"semantic_query": "prazo"})
+
+    assert resposta.status_code == 503
+    assert "429 do provider" not in resposta.text
+    assert r.eventos == ["consumir:chat", "devolver:chat"]
+
+
+def test_busca_semantica_longa_demais_e_recusada(lista):
+    cliente, r = lista
+
+    assert cliente.get("/documents", params={"semantic_query": "x" * 501}).status_code == 422
+    assert r.eventos == []
+
+
+def test_busca_semantica_tem_rate_limit_e_a_lista_pura_nao(lista, limiter_em_memoria):
+    """A lista e consultada a cada 3s enquanto ha documento processando; so a
+    busca, que chama o provider, tem limite."""
+    cliente, _r = lista
+
+    assert {cliente.get("/documents").status_code for _ in range(25)} == {200}
+    codigos = [cliente.get("/documents", params={"semantic_query": "prazo"}).status_code
+               for _ in range(21)]
+    assert codigos == [200] * 20 + [429]
+
+
+@pytest.mark.parametrize("rota", ["upload", "crawl", "ingest", "busca"])
+@pytest.mark.parametrize("erro,status", [("TetoAtingido", 429), ("TetoIndisponivel", 503)])
+def test_cota_separa_teto_do_dia_de_redis_fora_do_ar(lista, rota, erro, status):
+    """Teto do dia e 429 com Retry-After; Redis ilegivel e 503 sem ele, e nada
+    e gravado nem chamado nos dois casos."""
+    from agent_ops import metering
+
+    cliente, r = lista
+    r.teto = getattr(metering, erro)("recusado")
+
+    if rota == "busca":
+        resposta = cliente.get("/documents", params={"semantic_query": "prazo"})
+    else:
+        resposta, _ = _chamar(cliente, rota)
+
+    assert resposta.status_code == status
+    assert ("Retry-After" in resposta.headers) is (status == 429)
+    assert len(r.eventos) == 1 and r.eventos[0].startswith("consumir:")
+    assert r.embeddings == []

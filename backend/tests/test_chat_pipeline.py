@@ -536,16 +536,18 @@ def test_erro_depois_da_checagem_terminada_grava_o_resultado_dela(chat):
     assert cenario.decisoes[0]["conflict"]["vigente"] == "Aditivo"
 
 
-def test_teto_diario_estourado_nao_chama_nada_pago(chat):
+@pytest.mark.parametrize("erro,status", [("TetoAtingido", 429), ("TetoIndisponivel", 503)])
+def test_teto_diario_estourado_nao_chama_nada_pago(chat, erro, status):
+    """Teto do dia e 429 com Retry-After; Redis ilegivel e 503 sem ele."""
     from agent_ops import metering
 
     cliente, cenario = chat
-    cenario.teto_erro = metering.TetoAtingido("Limite diario atingido.")
+    cenario.teto_erro = getattr(metering, erro)("Limite diario atingido.")
 
     r = cliente.post("/chat", json={"message": "qual o prazo?"}, headers={"Authorization": "Bearer x"})
 
-    assert r.status_code == 429
-    assert "Retry-After" in r.headers
+    assert r.status_code == status
+    assert ("Retry-After" in r.headers) is (status == 429)
     assert cenario.consumidos == ["chat"]
     assert cenario.buscas == [] and cenario.prompts_multi_query == [] and cenario.mensagens == []
 

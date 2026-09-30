@@ -12,7 +12,7 @@ import asyncio
 from datetime import date
 from typing import Optional
 
-from fastapi import APIRouter, Request, HTTPException
+from fastapi import APIRouter, Query, Request, HTTPException
 from pydantic import BaseModel, ConfigDict, field_validator
 from sqlalchemy import insert, text as sqltext
 from starlette.concurrency import run_in_threadpool
@@ -21,7 +21,7 @@ from starlette.datastructures import UploadFile
 from app.config.settings import get_settings
 from app.db.engine import engine
 from app.db.models import documents
-from app.api.dependencies import require_user
+from app.api.dependencies import consumir_cota, require_user
 from app.services.file_storage import save_file, get_file_abspath, delete_file
 from app.api.rate_limit import limiter
 from agent_ops import metering
@@ -112,18 +112,7 @@ async def _consumir_cota_de_ingestao() -> None:
     LLM uma vez por chunk. Consumir antes de gravar faz a recusa nao deixar nada
     para tras: nem documento fantasma no banco, nem arquivo orfao no volume.
     """
-    try:
-        await metering.consumir("ingest", get_settings().daily_ingest_limit)
-    except metering.TetoIndisponivel as exc:
-        # Backend de cota ilegivel: e indisponibilidade, nao limite atingido.
-        # Sem `Retry-After`, porque ninguem sabe quando o Redis volta.
-        raise HTTPException(status_code=503, detail=exc.mensagem) from exc
-    except metering.TetoAtingido as exc:
-        raise HTTPException(
-            status_code=429,
-            detail=exc.mensagem,
-            headers={"Retry-After": str(metering.segundos_ate_meia_noite_utc())},
-        ) from exc
+    await consumir_cota("ingest", get_settings().daily_ingest_limit)
 
 
 async def _desfazer(storage_path: str | None, doc_id=None) -> None:
@@ -509,16 +498,43 @@ def _listar_documentos(user_id: str, relevant_ids: list[str] | None):
         return conn.execute(sqltext(base_sql), params).mappings().all()
 
 
+async def _busca_semantica(consulta: str, user_id: str) -> list[str]:
+    """Ids dos documentos parecidos com a consulta.
+
+    Cada consulta e uma chamada paga ao Voyage, entao passa pelo teto diario do
+    chat (o mesmo orcamento de busca do app); se o embedding falhar, nada foi
+    cobrado e a cota volta.
+    """
+    from app.services.embedding_cache import get_query_embedding
+
+    await consumir_cota("chat", get_settings().daily_chat_limit)
+    try:
+        qvec = await run_in_threadpool(get_query_embedding, consulta)
+    except Exception as exc:
+        await metering.devolver("chat")
+        logger.warning("busca semantica da lista falhou: %s", exc)
+        raise HTTPException(503, "Semantic search is temporarily unavailable") from exc
+    return await run_in_threadpool(_documentos_parecidos, qvec, user_id)
+
+
+def _sem_busca_semantica(request: Request) -> bool:
+    # O limite vale so para a busca semantica: a lista pura e consultada a cada
+    # 3s enquanto ha documento processando, e nao chama provider nenhum.
+    return not (request.query_params.get("semantic_query") or "").strip()
+
+
 @router.get("/documents")
-async def list_documents(request: Request, query: Optional[str] = None, semantic_query: Optional[str] = None):
+@limiter.limit("20/minute", exempt_when=_sem_busca_semantica)
+async def list_documents(
+    request: Request,
+    query: Optional[str] = None,
+    semantic_query: Optional[str] = Query(None, max_length=500),
+):
     user_id = await require_user(request)
 
     relevant_ids = None
-    if semantic_query:
-        from app.services.embedding_cache import get_query_embedding
-
-        qvec = await run_in_threadpool(get_query_embedding, semantic_query)
-        relevant_ids = await run_in_threadpool(_documentos_parecidos, qvec, user_id)
+    if semantic_query and semantic_query.strip():
+        relevant_ids = await _busca_semantica(semantic_query.strip(), user_id)
         if not relevant_ids:
             return {"items": []}
 
