@@ -16,7 +16,7 @@ export function ChatHeader({ documentCount, onReset, hasMessages }: ChatHeaderPr
     <header className="sticky top-0 z-10 border-b border-white/10 glass-panel">
       <div className="flex items-center justify-between px-4 py-3">
         <div className="flex items-center gap-3">
-          <Link href="/">
+          <Link href="/library" aria-label="Back to the library">
             <Button variant="ghost" size="icon" className="h-9 w-9 rounded-full">
               <ArrowLeft className="h-4 w-4" />
             </Button>
