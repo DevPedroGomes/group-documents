@@ -513,6 +513,29 @@ def test_erro_com_checagem_pendente_fecha_o_passo_de_divergencia(chat):
     assert cenario.decisoes[0]["conflict"] is None
 
 
+def test_erro_depois_da_checagem_terminada_grava_o_resultado_dela(chat):
+    import threading
+    import time
+
+    cliente, cenario = chat
+    _duas_versoes(cenario)
+    cenario.resposta_conflito = DIVERGE
+    terminou = threading.Event()
+    cenario.depois_de_responder_conflito = terminou.set
+
+    def espera_a_checagem():
+        terminou.wait(5)
+        time.sleep(0.05)  # o loop registra o fim da checagem antes do erro
+
+    cenario.tokens = [espera_a_checagem, RuntimeError("provider fora do ar")]
+
+    evs = perguntar(cliente, "qual o prazo?")
+
+    passos = {p["step"]: p for p in do_tipo(evs, "workflow")[-1]}
+    assert passos["conflict"]["details"] == "Sources disagree"
+    assert cenario.decisoes[0]["conflict"]["vigente"] == "Aditivo"
+
+
 def test_teto_diario_estourado_nao_chama_nada_pago(chat):
     from agent_ops import metering
 

@@ -520,7 +520,7 @@ async def chat(request: Request, body: ChatBody):
             if citations:
                 yield _sse("sources", citations)
 
-            # Step 3: Generate (streaming)
+            # Step 5: Generate (streaming)
             workflow.append({"step": "generate", "status": "in_progress", "details": "Generating answer..."})
             passo_gerar = len(workflow) - 1
             yield _sse("workflow", workflow)
@@ -565,11 +565,10 @@ async def chat(request: Request, body: ChatBody):
             if checagem is not None:
                 if checagem.done():
                     conflito = _resultado_da_checagem(checagem)
-                workflow[passo_conflito] = {
-                    "step": "conflict",
-                    "status": "completed",
-                    "details": "Sources disagree" if conflito else "Check interrupted",
-                }
+                    detalhe = "Sources disagree" if conflito else "No disagreement found"
+                else:
+                    detalhe = "Check interrupted"
+                workflow[passo_conflito] = {"step": "conflict", "status": "completed", "details": detalhe}
                 checagem = None
                 yield _sse("workflow", workflow)
 

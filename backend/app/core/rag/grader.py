@@ -47,8 +47,8 @@ def grade_documents(
     `low_confidence` e verdadeiro so quando NADA passou o limiar calibrado
     (escala cohere) ou quando o lote e menor que o minimo saudavel (escala rrf).
     O gatilho antigo, "menos da metade passou", disparava no caso normal (dois
-    bons em cinco) e pagava um rewrite a toa. Com baixa confianca o chamador
-    reconsulta o acervo e avisa o gerador; nao e ele quem decide isso aqui.
+    bons em cinco) e pagava um rewrite a toa. O grader so reporta; quem
+    reconsulta o acervo e avisa o gerador e o chamador.
     """
     if not documents:
         return [], True
