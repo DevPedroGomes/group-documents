@@ -251,7 +251,7 @@ function ChatPageContent() {
             {/* A trilha existia no backend desde a migracao 003 e nao tinha como ser
                 vista: faltava a rota proxy. E o que separa este projeto de um chat
                 de provedor, que devolve a resposta e nunca o caminho ate ela. */}
-            <DecisionTrail threadId={threadId} />
+            <DecisionTrail threadId={threadId} answerCount={answerCount} />
 
             {/* A conversa por voz fica ACIMA do campo de texto, e nao numa pagina
                 propria, porque ela nao e outro produto: e outro jeito de perguntar
