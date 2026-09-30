@@ -207,7 +207,7 @@ services:
       - "traefik.http.middlewares.group-documents-security.headers.browserXssFilter=true"
       - "traefik.http.middlewares.group-documents-security.headers.referrerPolicy=strict-origin-when-cross-origin"
       - "traefik.http.middlewares.group-documents-security.headers.frameDeny=true"
-      - "traefik.http.middlewares.group-documents-security.headers.contentSecurityPolicy=default-src 'self' https:; script-src 'self' 'unsafe-inline' 'unsafe-eval' https:; style-src 'self' 'unsafe-inline' https:; img-src 'self' data: blob: https:; font-src 'self' data: https:; connect-src 'self' https: wss:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
+      - "traefik.http.middlewares.group-documents-security.headers.contentSecurityPolicy=default-src 'self' https:; script-src 'self' 'unsafe-inline' 'unsafe-eval' https:; style-src 'self' 'unsafe-inline' https:; img-src 'self' data: blob: https:; font-src 'self' data: https:; connect-src 'self' https: wss:; frame-src 'self' blob:; media-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
 
 volumes:
   pgdata:
