@@ -54,7 +54,8 @@ de documento deterministicos: a tabela e reproduzivel.
 USO
     cd backend
     .venv/bin/python -m scripts.avaliar_busca_textual
-    .venv/bin/python -m scripts.avaliar_busca_textual --json /tmp/aval.json
+    .venv/bin/python -m scripts.avaliar_busca_textual --json /tmp/aval.json \
+        --database-url postgresql://usuario:senha@localhost:5432/postgres
 """
 
 from __future__ import annotations
@@ -488,7 +489,6 @@ def tabela(resultado: dict, fatia: Callable[[dict], str], titulo: str) -> str:
             grupos.setdefault(fatia(l), []).append(l)
         for g in sorted(grupos, key=lambda g: (g != "pt", g)):
             a = _agregar(grupos[g])
-            c["agregado"] = c.get("agregado", {}) | {g: a}
             linhas.append(
                 f"| {nome} | {c['descricao']} | {g} | {a['n']} | {a['recall@5']:.3f} | "
                 f"{a['recall@15']:.3f} | {a['recall@45']:.3f} | {a['mrr']:.3f} | {a['zero']:.1f} |"
@@ -549,6 +549,11 @@ def main() -> None:
     print(tabela(resultado_pt, lambda l: l["grupo"], "grupo"))
 
     if args.json:
+        for c in resultado["candidatos"].values():
+            c["agregado"] = {
+                idioma: _agregar([x for x in c["perguntas"] if x["idioma"] == idioma])
+                for idioma in ("pt", "en")
+            }
         args.json.write_text(json.dumps(resultado, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"\njson: {args.json}", file=sys.stderr)
 
