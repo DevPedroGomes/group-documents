@@ -12,7 +12,7 @@ python-dotenv==1.0.1
 httpx>=0.24,<1.0
 
 # Auth (local JWT)
-PyJWT>=2.9
+PyJWT>=2.9,<3
 # passlib removed - using bcrypt directly
 bcrypt>=4.0.0
 
