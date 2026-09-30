@@ -1,6 +1,7 @@
 import voyageai
 
 from app.config.settings import get_settings
+from app.core import chamadas_pagas
 
 _client = None
 
@@ -46,6 +47,9 @@ def embed_sequences(inputs: list[list], input_type: str = "document") -> list[li
         model=settings.voyage_doc_model,
         input_type=input_type,
     )
+    # Anotada antes das checagens: uma resposta 200 com contagem ou dimensao
+    # erradas ja foi cobrada.
+    chamadas_pagas.registrar("voyage")
     vectors = result.embeddings
     if len(vectors) != len(inputs):
         raise RuntimeError(

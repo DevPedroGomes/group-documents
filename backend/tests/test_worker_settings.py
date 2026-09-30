@@ -80,7 +80,7 @@ def test_o_worker_resolve_o_redis_pela_config_compartilhada():
 def test_o_health_check_e_renovado_com_frequencia_util():
     # O healthcheck do compose (`arq ... --check`) le a chave que o worker
     # renova nesse intervalo. O default do arq e 3600s: um worker morto passaria
-    # ate uma hora "saudavel", sem restart.
+    # ate uma hora "saudavel" no sinal que o operador olha.
     assert worker.WorkerSettings.health_check_interval <= 60
 
 

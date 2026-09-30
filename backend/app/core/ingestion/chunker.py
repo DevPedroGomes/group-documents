@@ -6,6 +6,7 @@ Enrichment: Claude Haiku generates context per chunk (Anthropic's contextual ret
 """
 
 import logging
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 
@@ -22,21 +23,36 @@ def _token_count(text: str) -> int:
     return len(_encoder.encode(text))
 
 
+def _agrupar(partes: list[str], separador: str, max_tokens: int) -> list[str]:
+    """Junta partes consecutivas enquanto couberem no teto."""
+    saida: list[str] = []
+    atual: list[str] = []
+    for parte in partes:
+        if atual and _token_count(separador.join(atual + [parte])) > max_tokens:
+            saida.append(separador.join(atual))
+            atual = [parte]
+        else:
+            atual.append(parte)
+    if atual:
+        saida.append(separador.join(atual))
+    return saida
+
+
 def _quebrar_em_sentencas(text: str, max_tokens: int) -> list[str]:
     """Divide em sentencas e impoe um TETO por sentenca.
 
     O laco de `chunk_text` so fecha um chunk quando `current_chunk` ja tem algo:
     com ele vazio a condicao e falsa e a sentenca entra inteira, qualquer que
-    seja o tamanho. Como o whitespace ja foi colapsado antes, uma pagina sem
-    pontuacao — tabela, balanco, contrato em caixa alta — e UMA sentenca, e
-    virava um chunk de tamanho ilimitado: estoura o limite do embedding, e o
-    trecho que chega ao gerador vira a pagina toda.
+    seja o tamanho. Uma pagina sem pontuacao — tabela, balanco, contrato em
+    caixa alta — e UMA sentenca, e virava um chunk de tamanho ilimitado:
+    estoura o limite do embedding, e o trecho que chega ao gerador vira a
+    pagina toda.
 
-    Aqui a sentenca grande demais e partida por palavras. O corte fica pior que
-    um corte por sentenca, mas o chunk passa a existir.
+    Aqui a sentenca grande demais e partida por LINHA, que e onde uma tabela
+    se divide, e so a linha que sozinha estoura o teto e partida por palavras.
+    Os pedacos mantem a quebra de linha, entao cada valor segue na linha do
+    rotulo dele.
     """
-    import re
-
     sentencas = re.split(r"(?<=[.!?])\s+", text)
     saida: list[str] = []
 
@@ -45,17 +61,13 @@ def _quebrar_em_sentencas(text: str, max_tokens: int) -> list[str]:
             saida.append(sent)
             continue
 
-        palavras = sent.split()
-        pedaco: list[str] = []
-        for palavra in palavras:
-            candidato = pedaco + [palavra]
-            if pedaco and _token_count(" ".join(candidato)) > max_tokens:
-                saida.append(" ".join(pedaco))
-                pedaco = [palavra]
+        linhas: list[str] = []
+        for linha in sent.split("\n"):
+            if _token_count(linha) <= max_tokens:
+                linhas.append(linha)
             else:
-                pedaco = candidato
-        if pedaco:
-            saida.append(" ".join(pedaco))
+                linhas.extend(_agrupar(linha.split(), " ", max_tokens))
+        saida.extend(_agrupar(linhas, "\n", max_tokens))
 
     return saida
 
@@ -130,6 +142,11 @@ def chunk_document_pages(
     return all_chunks
 
 
+# Quanto do documento vai como contexto em cada chamada: ~12,5k tokens.
+_JANELA = 50_000
+# Palavras do comeco do chunk usadas para acha-lo no texto do documento.
+_PALAVRAS_PARA_ACHAR = 12
+
 _INSTRUCAO_CONTEXTO = (
     "Give a short succinct context (2-3 sentences) to situate this chunk "
     "within the overall document. Answer only with the context, no preamble."
@@ -176,6 +193,51 @@ def _contexto_de_um_chunk(doc_block: dict, chunk_text_str: str, meta: dict) -> s
         return chunk_text_str
 
 
+def _centros(chunks: list[tuple[str, dict]], texto: str) -> list[float]:
+    """Onde cada chunk esta no texto do documento, pelo meio dele.
+
+    O chunk nao e substring exata do texto (o chunker junta sentencas com um
+    espaco), entao a busca casa as primeiras palavras dele com qualquer
+    whitespace entre elas, a partir de onde o chunk anterior comecou. Chunk
+    nao achado fica na posicao proporcional a ordem dele.
+    """
+    centros: list[float] = []
+    cursor = 0
+    for i, (trecho, _meta) in enumerate(chunks):
+        palavras = trecho.split()[:_PALAVRAS_PARA_ACHAR]
+        achado = None
+        if palavras:
+            padrao = re.compile(r"\s+".join(map(re.escape, palavras)))
+            achado = padrao.search(texto, cursor) or padrao.search(texto)
+        if achado:
+            cursor = achado.start()
+            centros.append(achado.start() + len(trecho) / 2)
+        else:
+            centros.append((i + 0.5) / len(chunks) * len(texto))
+    return centros
+
+
+def _janelas(chunks: list[tuple[str, dict]], texto: str) -> list[tuple[str, list[int]]]:
+    """O trecho do documento que vai como contexto, e os chunks que o usam.
+
+    Documento que cabe em `_JANELA` vai inteiro, numa janela so. Acima disso o
+    corte fixo nos primeiros 50k dava ao chunk do fim um contexto que nao o
+    continha. Aqui o documento vira janelas de `_JANELA` caracteres que andam
+    de meia em meia janela, e cada chunk usa aquela em cujo meio ele cai: o
+    chunk fica dentro dela, com contexto dos dois lados.
+    """
+    if len(texto) <= _JANELA:
+        return [(texto, list(range(len(chunks))))]
+
+    passo = _JANELA // 2
+    ultima = -(-(len(texto) - _JANELA) // passo)  # teto: a ultima janela alcanca o fim
+    grupos: dict[int, list[int]] = {}
+    for i, centro in enumerate(_centros(chunks, texto)):
+        k = min(max(round((centro - _JANELA / 2) / passo), 0), ultima)
+        grupos.setdefault(k, []).append(i)
+    return [(texto[k * passo : k * passo + _JANELA], indices) for k, indices in sorted(grupos.items())]
+
+
 def enrich_chunks_with_context(
     chunks: list[tuple[str, dict]],
     full_document_text: str,
@@ -184,63 +246,62 @@ def enrich_chunks_with_context(
     """
     Contextual Retrieval da Anthropic: um modelo rapido (classe Haiku) escreve
     50-100 tokens situando cada chunk no documento, prefixados antes do embedding.
-    Reduz falha de recuperacao em ~49%, e ~67% junto com reranking.
+    Reduz falha de recuperacao em ~49%, e ~67% junto com reranking. Vale para
+    todo fluxo de texto: PDF, pagina da web e transcricao de audio.
 
-    O detalhe que decide o custo e o prompt caching. O documento inteiro (ate
-    50k caracteres, ~12,5k tokens) vai como input de TODA chamada — uma por
-    chunk. Sem cache, um PDF de 30 paginas (~50 chunks) manda ~650k tokens de
-    input e custa por volta de US$ 0,69 com Haiku 4.5. Marcando o bloco do
-    documento como cacheavel, a primeira chamada grava o cache e as seguintes
-    leem a 10% do preco: ~US$ 0,10 pelo mesmo documento, ~85% mais barato. E a
-    mesma ordem de grandeza que a propria Anthropic publica para esta tecnica
-    (US$ 94 -> US$ 12 em 1000 documentos).
+    O detalhe que decide o custo e o prompt caching. O documento (ate 50k
+    caracteres, ~12,5k tokens) vai como input de TODA chamada — uma por chunk.
+    Sem cache, um PDF de 30 paginas (~50 chunks) manda ~650k tokens de input e
+    custa por volta de US$ 0,69 com Haiku 4.5. Marcando o bloco do documento
+    como cacheavel, a primeira chamada grava o cache e as seguintes leem a 10%
+    do preco: ~US$ 0,10 pelo mesmo documento, ~85% mais barato.
 
-    Por isso o primeiro chunk roda SOZINHO: ele e quem grava o cache. Disparar
-    todos de uma vez faria todos errarem o cache ao mesmo tempo e cada um
-    pagaria a gravacao — o contrario do que se quer. Com o cache quente, o resto
-    vai em paralelo, o que tambem tira a ingestao de ~2 minutos sequenciais.
+    Por isso o primeiro chunk de cada janela roda SOZINHO: ele e quem grava o
+    cache. Disparar todos de uma vez faria todos errarem o cache ao mesmo tempo
+    e cada um pagaria a gravacao. Com o cache quente, o resto vai em paralelo.
 
-    O cache efemero da Anthropic dura ~5 minutos e cada chamada renova a
-    janela, entao um documento longo se mantem quente do inicio ao fim.
+    Documento maior que a janela: cada chunk recebe o trecho ao redor dele (ver
+    `_janelas`). Troca: uma gravacao de cache por janela em vez de uma por
+    documento, e contexto local em vez do comeco do documento; os chunks da
+    mesma janela continuam dividindo o cache.
     """
     if not chunks:
         return []
 
-    doc_context = full_document_text[:50000]
-    doc_block = {
-        "type": "text",
-        "text": f'<document title="{document_title}">\n{doc_context}\n</document>',
-        # Funciona nos dois caminhos do llm_client: nativo Anthropic e
-        # OpenRouter (que repassa cache_control por bloco de conteudo).
-        # Prompts curtos ficam abaixo do minimo cacheavel e simplesmente nao
-        # sao cacheados — sem erro, e sem custo relevante, porque documento
-        # curto tem poucos chunks.
-        "cache_control": {"type": "ephemeral"},
-    }
-
     resultados: list[Optional[str]] = [None] * len(chunks)
 
-    # 1) Primeiro chunk sozinho: grava o cache.
-    primeiro_texto, primeiro_meta = chunks[0]
-    resultados[0] = _contexto_de_um_chunk(doc_block, primeiro_texto, primeiro_meta)
+    for trecho, indices in _janelas(chunks, full_document_text):
+        doc_block = {
+            "type": "text",
+            "text": f'<document title="{document_title}">\n{trecho}\n</document>',
+            # Funciona nos dois caminhos do llm_client: nativo Anthropic e
+            # OpenRouter (que repassa cache_control por bloco de conteudo).
+            # Prompts curtos ficam abaixo do minimo cacheavel e simplesmente
+            # nao sao cacheados — sem erro, e sem custo relevante.
+            "cache_control": {"type": "ephemeral"},
+        }
 
-    # 2) O resto em paralelo, ja lendo do cache.
-    if len(chunks) > 1:
-        with ThreadPoolExecutor(max_workers=_PARALELISMO) as pool:
-            futuros = {
-                pool.submit(_contexto_de_um_chunk, doc_block, texto, meta): i
-                for i, (texto, meta) in enumerate(chunks[1:], start=1)
-            }
-            for futuro in as_completed(futuros):
-                i = futuros[futuro]
-                try:
-                    resultados[i] = futuro.result()
-                except Exception as e:
-                    # `_contexto_de_um_chunk` ja trata as suas falhas; isto aqui
-                    # e a rede de baixo, para nao perder o chunk se o pool
-                    # quebrar por outro motivo.
-                    logger.warning(f"Enrichment worker failed for chunk {i}: {e}")
-                    resultados[i] = chunks[i][0]
+        # 1) O primeiro chunk da janela sozinho: grava o cache.
+        primeiro = indices[0]
+        resultados[primeiro] = _contexto_de_um_chunk(doc_block, *chunks[primeiro])
+
+        # 2) O resto da janela em paralelo, ja lendo do cache.
+        if len(indices) > 1:
+            with ThreadPoolExecutor(max_workers=_PARALELISMO) as pool:
+                futuros = {
+                    pool.submit(_contexto_de_um_chunk, doc_block, *chunks[i]): i
+                    for i in indices[1:]
+                }
+                for futuro in as_completed(futuros):
+                    i = futuros[futuro]
+                    try:
+                        resultados[i] = futuro.result()
+                    except Exception as e:
+                        # `_contexto_de_um_chunk` ja trata as suas falhas; isto
+                        # e a rede de baixo, para nao perder o chunk se o pool
+                        # quebrar por outro motivo.
+                        logger.warning(f"Enrichment worker failed for chunk {i}: {e}")
+                        resultados[i] = chunks[i][0]
 
     # A ordem importa: `add_chunks` casa texts[i] com enriched_texts[i].
     return [(resultados[i] or chunks[i][0], chunks[i][1]) for i in range(len(chunks))]

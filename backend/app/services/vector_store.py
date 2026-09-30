@@ -4,7 +4,9 @@ with Reciprocal Rank Fusion (RRF).
 """
 
 import logging
+import re
 import uuid as uuid_mod
+from datetime import date
 from typing import Optional
 
 from sqlalchemy import insert, text as sqltext
@@ -50,22 +52,90 @@ def add_chunks(
     return len(recs)
 
 
-# A MESMA configuracao com que o trigger da 001 indexa. Indexar com uma e
-# consultar com outra devolve VAZIO, sem erro nenhum — ha teste cruzando os
-# dois arquivos.
+# As MESMAS configs com que o trigger da 008 indexa (o vetor e a soma das
+# duas); indexar com uma e consultar com outra devolve VAZIO, sem erro. Cada
+# metade descarta as stopwords das DUAS linguas: com OR e `ts_rank` sem IDF,
+# "de"/"o"/"the" virando termo fariam trecho sem relacao pontuar.
 #
-# Por que continua 'english' num acervo que e portugues: foi medido contra o
-# banco de producao, e a intuicao estava errada. O stemmer ingles remove o `-s`
-# final, e plural portugues tambem termina em `-s`, entao ele acerta o caso
-# comum por acidente. Trocar para 'simple' DERRUBA o recall ("documentos"
-# casava 5 chunks e passa a casar 0, porque sem stemming nao encontra
-# "documento"), e 'portuguese' empata com 'english' em todos os 8 termos
-# testados.
-#
-# A escolha certa nao e uma configuracao global e sim uma POR DOCUMENTO, com
-# coluna de idioma detectada na ingestao. Enquanto isso nao existir, mexer aqui
-# so troca de lugar quem fica errado.
-TEXT_SEARCH_CONFIG = "english"
+# Medido com scripts/avaliar_busca_textual.py num acervo SINTETICO de moldes
+# (demo, 500 documentos + 15 recados informais; LIMIT 45; empate contado
+# contra). MRR so da perna textual, antes ('english' com AND de todos os
+# termos) -> agora:
+#   pergunta literal do molde (5) ...................... 1,00 -> 1,00
+#   reescrita com o vocabulario do molde (20) .......... 0,00 -> 0,95
+#   outros tipos de documento (15) ..................... 0,00 -> 1,00
+#   digitada sem acento (6, grupo pos-hoc) ............. 0,00 -> 1,00
+#   ingles: manual + 60 distratores (10, 1 relevante) .. 0,30 -> 0,90
+#   pergunta com OUTRAS palavras (20, grupo pos-hoc) ... 0,00 -> 0,01
+#     (ordem aleatoria da 0,18 nesse grupo)
+#   conversa sem acento, "nao"/"ate"/"pra" (5, pos-hoc)  0,00 -> 1,00
+#     (sem limpar a pergunta: 0,82, e 20% do top-5 casado so por funcional)
+# O que isto NAO mostra: nos grupos altos quase toda pergunta tem um termo que
+# so existe nos documentos relevantes, entao o OR reduz a tarefa a achar um
+# termo raro. Quando a pessoa usa outras palavras, a perna textual nao acha
+# nada; a expectativa (nao medida aqui) e que a perna semantica cubra esse
+# caso. Nao mede a busca hibrida, o reranker nem trecho com o contexto do
+# enriquecimento. Sem `unaccent` (a 008 segue sem ela) o grupo sem acento nao
+# vale.
+TEXT_SEARCH_CONFIGS = ("busca_portugues", "busca_ingles")
+
+# Palavras funcionais que as stopwords do Postgres nao pegam: a lista portuguesa
+# so tem a forma ACENTUADA ("não", "até"), e "pra"/"pro"/"então" nem estao nela.
+# Com OR, cada uma viraria termo e casaria qualquer texto escrito do mesmo
+# jeito. Saem da PERGUNTA, antes do plainto_tsquery; no indice podem ficar,
+# porque termo que a consulta nunca manda nao casa.
+FUNCIONAIS_FORA_DA_STOPLIST = frozenset({
+    # forma sem acento das stopwords acentuadas da lista portuguesa
+    "ate", "eramos", "esta", "estao", "estavamos", "estiveramos", "estivessemos",
+    "foramos", "fossemos", "ha", "hao", "houvera", "houveramos", "houverao",
+    "houveriamos", "houvessemos", "ja", "nao", "nos", "sao", "sera", "serao",
+    "seriamos", "so", "tambem", "tera", "terao", "teriamos", "tinhamos",
+    "tiveramos", "tivessemos", "voce", "voces",
+    # fora da lista em qualquer grafia
+    "é", "pra", "pro", "pras", "pros", "então", "entao", "tá", "ta", "tô", "né",
+})
+
+_PALAVRA = re.compile(r"\w+")
+
+
+def limpar_consulta_textual(texto: str) -> str:
+    """A pergunta sem as palavras de FUNCIONAIS_FORA_DA_STOPLIST."""
+    return _PALAVRA.sub(
+        lambda m: " " if m.group(0).lower() in FUNCIONAIS_FORA_DA_STOPLIST else m.group(0),
+        texto,
+    )
+
+
+# Como a pergunta (ja limpa) vira tsquery: `plainto_tsquery` normaliza com cada
+# config e o AND entre os termos vira OR. Constante para o script de avaliacao
+# medir exatamente o que a busca executa.
+_TSQUERY_POR_CONFIG = " || ".join(
+    f"plainto_tsquery('{cfg}', :query_text)" for cfg in TEXT_SEARCH_CONFIGS
+)
+TSQUERY_SQL = f"CAST(replace(CAST(({_TSQUERY_POR_CONFIG}) AS text), ' & ', ' | ') AS tsquery)"
+
+
+# Data em que o documento vale: a de emissao, e na falta dela o dia (UTC) do
+# upload. E por ela que o recorte `as_of` corta e que `document_date` sai.
+DATA_EFETIVA_SQL = "COALESCE(d.effective_date, CAST(d.uploaded_at AT TIME ZONE 'UTC' AS date))"
+
+
+# O HNSW so devolve `ef_search` candidatos (default 40 no pgvector), e os
+# filtros por dono, documento e data rodam DEPOIS do scan do indice. Com 40,
+# abaixo do proprio LIMIT, tenant pequeno e consulta filtrada perdiam vizinho
+# semantico. Usa o dobro do LIMIT, com piso, sem passar do teto do pgvector.
+_EF_SEARCH_PISO = 100
+_EF_SEARCH_TETO = 1000
+
+
+def _ef_search(limite: int) -> int:
+    return min(_EF_SEARCH_TETO, max(_EF_SEARCH_PISO, 2 * limite))
+
+
+def _data_de_corte(as_of: str) -> date:
+    """`as_of` chega como data ISO ou data e hora ISO; o recorte usa so a DATA,
+    e inclusivo no dia. Formato invalido levanta ValueError."""
+    return date.fromisoformat(as_of[:10])
 
 
 def hybrid_search(
@@ -82,11 +152,12 @@ def hybrid_search(
 
     `user_id` is REQUIRED — every chunk read is filtered by ownership.
 
-    `as_of` responde com o acervo COMO ELE ESTAVA numa data: so entram
-    documentos ingeridos ate ali. E o que separa consulta de auditoria, e sai
-    barato porque a ingestao ja registra `created_at` em `documents`. Filtra
-    pelo documento, nao pelo chunk: reprocessar um documento nao deve fazer ele
-    aparecer num recorte anterior a existencia dele.
+    `as_of` responde com o acervo como ele VALIA numa data: so entram
+    documentos cuja data efetiva (`DATA_EFETIVA_SQL`) e ate aquele dia,
+    inclusive. Antes o corte era `uploaded_at`, e um acervo inteiro subido
+    num mes so devolvia ZERO trechos para "e em marco de 2025?". Filtra pelo
+    documento, nao pelo chunk: reprocessar um documento nao deve fazer ele
+    aparecer num recorte anterior a data dele.
 
     Sobre o campo `snippet`, que e o texto que chega ao gerador:
 
@@ -114,16 +185,15 @@ def hybrid_search(
     doc_filter = ""
     params = {
         "qvec": qvec_str,
-        "query_text": query_text,
+        "query_text": limpar_consulta_textual(query_text),
         "user_id": user_id,
         "limit": prefetch,
-        "ts_config": TEXT_SEARCH_CONFIG,
     }
 
     data_filter = ""
     if as_of:
-        params["as_of"] = as_of
-        data_filter = "AND d.uploaded_at <= CAST(:as_of AS timestamptz)"
+        params["as_of"] = _data_de_corte(as_of)
+        data_filter = f"AND {DATA_EFETIVA_SQL} <= CAST(:as_of AS date)"
 
     if document_ids:
         valid_ids = []
@@ -141,6 +211,7 @@ def hybrid_search(
     semantic_sql = sqltext(f"""
         SELECT c.id, c.document_id, d.title as document_title, c.page,
                left(c.content, 4000) as snippet,
+               {DATA_EFETIVA_SQL} as document_date,
                1 - (c.embedding <=> CAST(:qvec AS vector)) as score
         FROM chunks c
         JOIN documents d ON c.document_id = d.id
@@ -156,10 +227,11 @@ def hybrid_search(
     keyword_sql = sqltext(f"""
         SELECT c.id, c.document_id, d.title as document_title, c.page,
                left(c.content, 4000) as snippet,
-               ts_rank(c.search_vector, plainto_tsquery(:ts_config, :query_text)) as score
+               {DATA_EFETIVA_SQL} as document_date,
+               ts_rank(c.search_vector, {TSQUERY_SQL}) as score
         FROM chunks c
         JOIN documents d ON c.document_id = d.id
-        WHERE c.search_vector @@ plainto_tsquery(:ts_config, :query_text)
+        WHERE c.search_vector @@ {TSQUERY_SQL}
         AND c.user_id = CAST(:user_id AS uuid)
         {doc_filter}
         {data_filter}
@@ -168,6 +240,12 @@ def hybrid_search(
     """)
 
     with engine.begin() as conn:
+        # Equivale a SET LOCAL (que nao aceita parametro): vale so nesta
+        # transacao, que e a mesma da consulta semantica.
+        conn.execute(
+            sqltext("SELECT set_config('hnsw.ef_search', :ef, true)"),
+            {"ef": str(_ef_search(prefetch))},
+        )
         semantic_rows = conn.execute(semantic_sql, params).mappings().all()
         keyword_rows = conn.execute(keyword_sql, params).mappings().all()
 
@@ -201,6 +279,7 @@ def hybrid_search(
             "document_title": data["document_title"],
             "page": data["page"],
             "snippet": data["snippet"],
+            "document_date": data["document_date"].isoformat() if data["document_date"] else None,
             "relevance_score": item["score"],
             # A escala viaja junto com o numero. Sem isto o grader compara um
             # score de RRF (maximo 2/(k+1), ~0,033 com k=60) contra um limiar

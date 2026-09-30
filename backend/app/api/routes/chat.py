@@ -3,14 +3,16 @@
 import asyncio
 import json
 import logging
+import threading
 import time
+import uuid
 from typing import AsyncGenerator
 
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import insert, text as sqltext
-from starlette.concurrency import iterate_in_threadpool
+from starlette.concurrency import iterate_in_threadpool, run_in_threadpool
 
 from app.config.settings import get_settings
 from app.db.engine import engine
@@ -21,18 +23,47 @@ from agent_ops import metering
 from app.core.guardrails.input_validator import validate_input
 from app.core.rag.generator import stream_answer
 from app.core.rag.transformer import transform_query
-from app.core.rag.retriever import retrieve_documents
+from app.core.rag.retriever import reconsultar, retrieve_documents
 from app.core.rag.grader import grade_documents
-from app.core.rag.conflict import detectar_conflito
+from app.core.rag.conflict import detectar_conflito, vale_checar
+from app.core.rag.web import buscar_na_web, e_web
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 
+def validar_data_iso(v: str | None, campo: str = "as_of") -> str | None:
+    """Recorte no tempo: vazio vira None, e data invalida tem que virar 422 na
+    validacao do corpo, nao erro de CAST no Postgres."""
+    if not v:
+        return None
+    from datetime import datetime
+
+    texto = v.replace("Z", "+00:00")
+    try:
+        datetime.fromisoformat(texto)
+    except ValueError:
+        raise ValueError(f"{campo} precisa ser uma data ISO, como 2026-01-31 ou 2026-01-31T23:59:59Z")
+    return texto
+
+
+# Selecao de documentos: mais que isso nao e selecao, e vira um ANY(...) enorme
+# em cada perna da busca.
+MAX_DOCUMENTOS_SELECIONADOS = 200
+
+
+def validar_ids_de_documento(ids: list[str] | None) -> list[str] | None:
+    """Id invalido e 422 na validacao do corpo: mais adiante ele seria descartado
+    em silencio, e uma selecao so de ids invalidos viraria busca no acervo inteiro."""
+    for doc_id in ids or []:
+        uuid.UUID(doc_id)
+    return ids
+
+
 class ChatBody(BaseModel):
     message: str
-    document_ids: list[str] | None = None
+    document_ids: list[str] | None = Field(default=None, max_length=MAX_DOCUMENTOS_SELECIONADOS)
     thread_id: str | None = None
     # Recorte temporal: responde com o acervo como ele estava nesta data.
     # Consulta vira auditoria quando da para perguntar "e em janeiro?".
@@ -43,17 +74,12 @@ class ChatBody(BaseModel):
     @field_validator("as_of")
     @classmethod
     def _valida_as_of(cls, v: str | None) -> str | None:
-        """Data invalida tem que virar 422 aqui, nao erro de CAST no Postgres."""
-        if not v:
-            return None
-        from datetime import datetime
+        return validar_data_iso(v)
 
-        texto = v.replace("Z", "+00:00")
-        try:
-            datetime.fromisoformat(texto)
-        except ValueError:
-            raise ValueError("as_of precisa ser uma data ISO, como 2026-01-31 ou 2026-01-31T23:59:59Z")
-        return texto
+    @field_validator("document_ids")
+    @classmethod
+    def _valida_ids(cls, v: list[str] | None) -> list[str] | None:
+        return validar_ids_de_documento(v)
 
 
 # --- Thread management ---
@@ -66,7 +92,19 @@ def create_thread(user_id: str) -> str:
     return str(thread_id)
 
 
+def _e_uuid(valor: str) -> bool:
+    try:
+        uuid.UUID(str(valor))
+        return True
+    except ValueError:
+        return False
+
+
 def validate_thread_ownership(thread_id: str, user_id: str) -> bool:
+    # Id que nao e UUID nao e thread de ninguem: sem isto o CAST do Postgres
+    # levantava e a rota respondia 500 em vez de 403.
+    if not _e_uuid(thread_id):
+        return False
     with engine.begin() as conn:
         result = conn.execute(
             sqltext("SELECT user_id FROM threads WHERE id = :thread_id"),
@@ -78,15 +116,25 @@ def validate_thread_ownership(thread_id: str, user_id: str) -> bool:
 
 
 def get_thread_history(thread_id: str, user_id: str, limit: int = 20) -> list[dict]:
+    """As `limit` mensagens mais RECENTES da thread, em ordem cronologica.
+
+    O corte e feito do fim para o comeco e so depois reordenado: com `ASC LIMIT`
+    a conversa longa entregava as primeiras mensagens, e o modelo deixava de
+    ver justamente os turnos que a pergunta atual retoma.
+    """
     with engine.begin() as conn:
         rows = conn.execute(
             sqltext("""
-                SELECT m.role, m.content, m.citations, m.created_at
-                FROM messages m
-                JOIN threads t ON m.thread_id = t.id
-                WHERE m.thread_id = :thread_id AND t.user_id = CAST(:user_id AS uuid)
-                ORDER BY m.created_at ASC
-                LIMIT :limit
+                SELECT role, content, citations, created_at
+                FROM (
+                    SELECT m.id, m.role, m.content, m.citations, m.created_at
+                    FROM messages m
+                    JOIN threads t ON m.thread_id = t.id
+                    WHERE m.thread_id = :thread_id AND t.user_id = CAST(:user_id AS uuid)
+                    ORDER BY m.created_at DESC, m.id DESC
+                    LIMIT :limit
+                ) recentes
+                ORDER BY created_at ASC, id ASC
             """),
             {"thread_id": thread_id, "user_id": user_id, "limit": limit},
         ).mappings().all()
@@ -99,6 +147,16 @@ def get_thread_history(thread_id: str, user_id: str, limit: int = 20) -> list[di
         }
         for r in rows
     ]
+
+
+def _abrir_conversa(thread_id: str | None, user_id: str) -> tuple[str, list[dict]]:
+    """A thread pedida (se for da pessoa, senao 403) ou uma nova, e o historico dela."""
+    if thread_id:
+        if not validate_thread_ownership(thread_id, user_id):
+            raise HTTPException(403, "Thread does not belong to this user")
+    else:
+        thread_id = create_thread(user_id)
+    return thread_id, get_thread_history(thread_id, user_id)
 
 
 def save_message(
@@ -120,21 +178,56 @@ def save_message(
             """),
             {"thread_id": thread_id, "role": role, "content": content, "citations": citations_json},
         ).first()
+        # Na mesma transacao: a lista de threads ordena por `updated_at`, e sem
+        # isso a conversa mais recente nao subiria ao topo.
+        conn.execute(
+            sqltext("UPDATE threads SET updated_at = NOW() WHERE id = :thread_id"),
+            {"thread_id": thread_id},
+        )
     return str(row[0]) if row else None
 
 
 def _resumo_trechos(docs: list[dict]) -> list[dict]:
-    """Metadado dos trechos para a trilha: sem o texto, que ja vive em `chunks`."""
+    """Metadado dos trechos para a trilha: sem o texto, que ja vive em `chunks`.
+
+    Resultado web entra com `document_id` nulo e a `url`: nao e documento do
+    acervo, mas foi para o gerador e precisa aparecer no caminho da resposta.
+    """
     return [
         {
-            "document_id": str(d.get("document_id", "")),
+            "document_id": None if e_web(d) or not d.get("document_id") else str(d["document_id"]),
             "document_title": d.get("document_title"),
             "page": d.get("page"),
             "score": round(float(d.get("relevance_score", 0) or 0), 6),
             "score_scale": d.get("score_scale", "rrf"),
+            "document_date": d.get("document_date"),
+            "url": d.get("url"),
         }
         for d in docs
     ]
+
+
+def _resultado_da_checagem(checagem) -> dict | None:
+    """O aviso de uma checagem de divergencia ja terminada; falha vira "sem aviso"."""
+    try:
+        return checagem.result()
+    except Exception:
+        logger.warning("checagem de divergencia falhou", exc_info=True)
+        return None
+
+
+def _citacao(d: dict) -> dict:
+    """Citacao no contrato do SSE `sources` (e em `messages.citations`)."""
+    web = e_web(d)
+    return {
+        "kind": "web" if web else "document",
+        "document_id": None if web or not d.get("document_id") else str(d["document_id"]),
+        "document_title": d.get("document_title") or "",
+        "page": None if web else d.get("page"),
+        "snippet": (d.get("snippet") or "")[:300],
+        "document_date": None if web else d.get("document_date"),
+        "url": d.get("url") if web else None,
+    }
 
 
 def save_decision(
@@ -151,13 +244,19 @@ def save_decision(
     latency_ms: int,
     conflict: dict | None = None,
     as_of: str | None = None,
+    queries: list[str] | None = None,
 ) -> None:
     """Persiste o caminho que produziu uma resposta.
 
     Nunca derruba a resposta: se a gravacao da trilha falhar, o visitante ja
     recebeu o texto e perder a trilha e menos grave que devolver erro.
     """
-    escala = (graded or retrieved or [{}])[0].get("score_scale", "rrf")
+    # A escala da decisao e a dos trechos do ACERVO: o score do Tavily entra em
+    # `graded` com a propria etiqueta, mas nao diz se o rerank rodou.
+    escala = next(
+        (d.get("score_scale", "rrf") for d in [*graded, *retrieved] if not e_web(d)),
+        "rrf",
+    )
     try:
         with engine.begin() as conn:
             conn.execute(
@@ -166,13 +265,13 @@ def save_decision(
                         user_id, thread_id, message_id, question,
                         retrieved, graded, considered, kept,
                         score_scale, reranked, low_confidence, web_used,
-                        answered, latency_ms, conflict, as_of
+                        answered, latency_ms, conflict, as_of, queries
                     ) VALUES (
                         :user_id, :thread_id, :message_id, :question,
                         CAST(:retrieved AS jsonb), CAST(:graded AS jsonb), :considered, :kept,
                         :score_scale, :reranked, :low_confidence, :web_used,
                         :answered, :latency_ms, CAST(:conflict AS jsonb),
-                        CAST(:as_of AS timestamptz)
+                        CAST(:as_of AS timestamptz), CAST(:queries AS jsonb)
                     )
                 """),
                 {
@@ -183,7 +282,8 @@ def save_decision(
                     "retrieved": json.dumps(_resumo_trechos(retrieved)),
                     "graded": json.dumps(_resumo_trechos(graded)),
                     "considered": len(retrieved),
-                    "kept": len(graded),
+                    # Quantos trechos do acervo o grader manteve; web nao passa por ele.
+                    "kept": sum(1 for d in graded if not e_web(d)),
                     "score_scale": escala,
                     "reranked": escala == "cohere",
                     "low_confidence": low_confidence,
@@ -192,6 +292,7 @@ def save_decision(
                     "latency_ms": latency_ms,
                     "conflict": json.dumps(conflict) if conflict else None,
                     "as_of": as_of,
+                    "queries": json.dumps(list(queries or [])),
                 },
             )
     except Exception:
@@ -210,15 +311,9 @@ async def chat(request: Request, body: ChatBody):
     if not is_valid:
         raise HTTPException(400, reason)
 
-    # Thread management
-    thread_id = body.thread_id
-    if thread_id:
-        if not validate_thread_ownership(thread_id, user_id):
-            raise HTTPException(403, "Thread does not belong to this user")
-    else:
-        thread_id = create_thread(user_id)
-
-    history = get_thread_history(thread_id, user_id)
+    # SQL sincrono vai para thread, como todo o resto desta rota: no event loop
+    # (um worker so do uvicorn) seguraria todos os outros requests do app.
+    thread_id, history = await run_in_threadpool(_abrir_conversa, body.thread_id, user_id)
 
     # Teto diario global, consumido ANTES de qualquer chamada paga. Vem depois
     # da validacao e da checagem de posse da thread, que sao gratis: pergunta
@@ -236,8 +331,7 @@ async def chat(request: Request, body: ChatBody):
             headers={"Retry-After": str(metering.segundos_ate_meia_noite_utc())},
         ) from exc
 
-    # Save user message
-    save_message(thread_id, "user", body.message)
+    await run_in_threadpool(save_message, thread_id, "user", body.message)
 
     async def generate_sse() -> AsyncGenerator[str, None]:
         """Generate SSE stream with workflow steps + streamed answer."""
@@ -252,6 +346,66 @@ async def chat(request: Request, body: ChatBody):
         baixa_confianca = False
         usou_web = False
         conflito: dict | None = None
+        consultas: list[str] = []
+        resultados_web: list[dict] = []
+        reescrita: str | None = None
+        workflow: list[dict] = []
+        checagem: asyncio.Future | None = None  # divergencia, em paralelo
+        passo_conflito = -1
+
+        message_id: str | None = None
+        mensagem_gravada = trilha_gravada = False
+        # `registrar` roda numa thread no caminho feliz e no event loop no
+        # `finally`; se o cliente cai durante a gravacao, os dois se cruzam. A
+        # trava faz o segundo esperar o primeiro e encontrar tudo gravado.
+        trava_gravacao = threading.Lock()
+
+        def registrar() -> None:
+            """Grava a resposta (se houver texto) e a trilha, uma vez cada.
+
+            A trilha e gravada mesmo se gravar a mensagem falhar; nesse caso
+            sem `message_id`, e o erro segue para quem chamou.
+            """
+            nonlocal message_id, mensagem_gravada, trilha_gravada
+            with trava_gravacao:
+                try:
+                    if full_answer and not mensagem_gravada:
+                        mensagem_gravada = True
+                        message_id = save_message(thread_id, "assistant", full_answer, citations)
+                finally:
+                    if not trilha_gravada:
+                        trilha_gravada = True
+                        save_decision(
+                            user_id=user_id,
+                            thread_id=thread_id,
+                            message_id=message_id,
+                            question=body.message,
+                            retrieved=recuperados,
+                            # Web entra na trilha junto do que foi aprovado: foi ao gerador.
+                            graded=[*aprovados, *resultados_web],
+                            web_used=usou_web,
+                            low_confidence=baixa_confianca,
+                            answered=bool(full_answer),
+                            conflict=conflito,
+                            as_of=body.as_of,
+                            queries=consultas,
+                            latency_ms=int((time.monotonic() - iniciado_em) * 1000),
+                        )
+
+        def fechar_conflito() -> list[str]:
+            """Registra o resultado da checagem e devolve os eventos a emitir."""
+            nonlocal conflito, checagem
+            conflito = _resultado_da_checagem(checagem)
+            checagem = None
+            workflow[passo_conflito] = {
+                "step": "conflict",
+                "status": "completed",
+                "details": "Sources disagree" if conflito else "No disagreement found",
+            }
+            eventos = [_sse("workflow", workflow)]
+            if conflito:
+                eventos.append(_sse("conflict", conflito))
+            return eventos
 
         # Todo passo caro daqui para baixo e sincrono (LLM, embedding, SQL) e
         # roda em thread, nunca no event loop. Com 1 worker do uvicorn, uma
@@ -262,9 +416,13 @@ async def chat(request: Request, body: ChatBody):
 
         try:
             # Step 1: Retrieve
-            yield _sse("workflow", [{"step": "retrieve", "status": "in_progress", "details": "Searching documents..."}])
+            workflow.append({"step": "retrieve", "status": "in_progress", "details": "Searching documents..."})
+            yield _sse("workflow", workflow)
 
-            documents = await loop.run_in_executor(
+            # O historico vai junto para condensar pergunta de seguimento ("e em
+            # marco de 2025?"): a busca usa a pergunta autocontida, o gerador
+            # continua recebendo a original.
+            recuperacao = await loop.run_in_executor(
                 None,
                 lambda: retrieve_documents(
                     question=body.message,
@@ -272,24 +430,24 @@ async def chat(request: Request, body: ChatBody):
                     document_ids=body.document_ids,
                     as_of=body.as_of,
                     top_k=5,
+                    history=history,
                 ),
             )
+            documents = recuperacao.documents
+            consultas = list(recuperacao.queries)
 
             recuperados = list(documents)
-            workflow = [{"step": "retrieve", "status": "completed", "details": f"Found {len(documents)} chunks"}]
+            workflow[-1] = {"step": "retrieve", "status": "completed", "details": f"Found {len(documents)} chunks"}
             yield _sse("workflow", workflow)
 
             # Step 2: Grade
             workflow.append({"step": "grade", "status": "in_progress", "details": "Analyzing relevance..."})
             yield _sse("workflow", workflow)
 
-            filtered_docs, needs_web = await loop.run_in_executor(
+            filtered_docs, baixa_confianca = await loop.run_in_executor(
                 None, grade_documents, documents
             )
-            # `needs_web` do grader significa "o lote recuperado foi ruim": e a
-            # mesma condicao que sinaliza baixa confianca na resposta.
             aprovados = list(filtered_docs)
-            baixa_confianca = bool(needs_web)
 
             workflow[-1] = {
                 "step": "grade",
@@ -298,99 +456,114 @@ async def chat(request: Request, body: ChatBody):
             }
             yield _sse("workflow", workflow)
 
-            # Step 3: Transform + Web Search (if needed)
-            #
-            # O rewrite so serve de entrada para a busca web. Sem TAVILY_API_KEY
-            # o resultado dele era calculado, mostrado no painel e jogado fora:
-            # uma chamada paga de LLM por pergunta, sem efeito nenhum na
-            # resposta. Nao vale pagar por um rewrite que nao tem para onde ir.
-            settings = get_settings()
-            if needs_web and settings.tavily_api_key:
+            # Step 3: passo corretivo. Com baixa confianca, a pergunta e
+            # reescrita e o ACERVO e reconsultado com ela, antes de qualquer
+            # coisa sair do app. Antes a reescrita so alimentava o Tavily e o
+            # acervo nunca era consultado de novo.
+            if baixa_confianca:
                 workflow.append({"step": "transform", "status": "in_progress", "details": "Rewriting query..."})
                 yield _sse("workflow", workflow)
 
-                transformed_query = await loop.run_in_executor(
-                    None, transform_query, body.message
-                )
+                reescrita = await loop.run_in_executor(None, transform_query, consultas[0])
 
-                workflow[-1] = {
-                    "step": "transform",
-                    "status": "completed",
-                    "details": f"Rewrote: {transformed_query[:80]}...",
-                }
-                yield _sse("workflow", workflow)
+                if reescrita.strip().casefold() == consultas[0].strip().casefold():
+                    # Rewrite que devolve a mesma pergunta nao acha nada novo.
+                    workflow[-1] = {
+                        "step": "transform",
+                        "status": "completed",
+                        "details": "Rewrite gave the same question; kept the first search",
+                    }
+                    yield _sse("workflow", workflow)
+                else:
+                    workflow[-1] = {
+                        "step": "transform",
+                        "status": "completed",
+                        "details": f"Rewrote: {reescrita[:80]}",
+                    }
+                    workflow.append({"step": "requery", "status": "in_progress", "details": "Searching documents again..."})
+                    yield _sse("workflow", workflow)
 
-                # Web search fallback
+                    documents = await loop.run_in_executor(
+                        None,
+                        lambda: reconsultar(
+                            consulta=reescrita,
+                            pergunta=consultas[0],
+                            anteriores=recuperados,
+                            user_id=user_id,
+                            document_ids=body.document_ids,
+                            as_of=body.as_of,
+                            top_k=5,
+                        ),
+                    )
+                    consultas.append(reescrita)
+                    recuperados = list(documents)
+                    workflow[-1] = {
+                        "step": "requery",
+                        "status": "completed",
+                        "details": f"{len(documents)} chunks after merging both searches",
+                    }
+                    workflow.append({"step": "regrade", "status": "in_progress", "details": "Analyzing relevance again..."})
+                    yield _sse("workflow", workflow)
+
+                    filtered_docs, baixa_confianca = await loop.run_in_executor(
+                        None, grade_documents, documents
+                    )
+                    aprovados = list(filtered_docs)
+                    workflow[-1] = {
+                        "step": "regrade",
+                        "status": "completed",
+                        "details": f"Kept {len(filtered_docs)}/{len(documents)} documents",
+                    }
+                    yield _sse("workflow", workflow)
+
+            # Step 4: web, so se o acervo continua sem resposta DEPOIS da
+            # reconsulta, e so com opt-in explicito: a pergunta sai do app para
+            # um terceiro. Com `as_of` nunca: a web de hoje nao diz como era.
+            settings = get_settings()
+            if (
+                baixa_confianca
+                and settings.enable_web_fallback
+                and settings.tavily_api_key
+                and not body.as_of
+            ):
                 workflow.append({"step": "web_search", "status": "in_progress", "details": "Searching the web..."})
                 yield _sse("workflow", workflow)
 
                 try:
-                    from tavily import TavilyClient
-                    tavily_client = TavilyClient(api_key=settings.tavily_api_key)
-                    web_results = await loop.run_in_executor(
-                        None,
-                        lambda: tavily_client.search(transformed_query, max_results=3),
+                    resultados_web = await loop.run_in_executor(
+                        None, buscar_na_web, reescrita or consultas[0]
                     )
-
-                    for r in web_results.get("results", []):
-                        filtered_docs.append({
-                            "document_id": "web",
-                            "document_title": r.get("title", "Web Result"),
-                            "page": 0,
-                            "snippet": r.get("content", "")[:500],
-                            "relevance_score": r.get("score", 0.5),
-                            # Score do Tavily, nem RRF nem Cohere. Marcado para
-                            # nao ser confundido com nenhuma das duas escalas.
-                            "score_scale": "tavily",
-                        })
-
-                    usou_web = True
-                    workflow[-1] = {"step": "web_search", "status": "completed", "details": f"Found {len(web_results.get('results', []))} web results"}
-                    yield _sse("workflow", workflow)
+                    usou_web = bool(resultados_web)
+                    detalhe = f"Found {len(resultados_web)} web results"
                 except Exception as e:
                     logger.warning(f"Web search failed: {e}")
-                    workflow[-1] = {"step": "web_search", "status": "completed", "details": "Web search unavailable"}
-                    yield _sse("workflow", workflow)
+                    detalhe = "Web search unavailable"
+                workflow[-1] = {"step": "web_search", "status": "completed", "details": detalhe}
+                yield _sse("workflow", workflow)
 
             # Passo: as fontes divergem entre si?
             #
-            # Roda depois do grade porque so interessa o que de fato sobrou, e
-            # antes do generate porque o aviso acompanha a resposta na tela. O
-            # portao e deterministico (dois ou mais documentos distintos), a
-            # checagem e do modelo, e o resultado e AVISO: nada e filtrado.
-            if len({d.get("document_id") for d in filtered_docs if d.get("document_id") != "web"}) >= 2:
+            # Dispara depois do grade (so interessa o que sobrou) e roda EM
+            # PARALELO com a geracao: antes rodava em serie e atrasava o primeiro
+            # token. O evento `conflict` sai assim que a checagem termina, entre
+            # tokens ou depois do ultimo. O portao e deterministico (dois ou mais
+            # documentos do acervo), a checagem e do modelo, e o resultado e
+            # AVISO: nada e filtrado nem reordenado.
+            if vale_checar(filtered_docs):
                 workflow.append({"step": "conflict", "status": "in_progress", "details": "Comparing sources..."})
+                passo_conflito = len(workflow) - 1
+                checagem = loop.run_in_executor(None, detectar_conflito, list(filtered_docs))
                 yield _sse("workflow", workflow)
 
-                conflito = await loop.run_in_executor(None, detectar_conflito, filtered_docs)
+            # Fontes: do acervo e da web, cada uma com o seu `kind`. Antes a web
+            # ia para o gerador e ficava fora das citacoes.
+            citations = [_citacao(d) for d in [*filtered_docs, *resultados_web]]
+            if citations:
+                yield _sse("sources", citations)
 
-                workflow[-1] = {
-                    "step": "conflict",
-                    "status": "completed",
-                    "details": "Sources disagree" if conflito else "No disagreement found",
-                }
-                yield _sse("workflow", workflow)
-
-                if conflito:
-                    yield _sse("conflict", conflito)
-
-            # Send sources
-            if filtered_docs:
-                sources = [
-                    {
-                        "document_id": d["document_id"],
-                        "document_title": d["document_title"],
-                        "page": d["page"],
-                        "snippet": d["snippet"][:200],
-                    }
-                    for d in filtered_docs
-                    if d.get("document_id") != "web"
-                ]
-                citations = sources
-                yield _sse("sources", sources)
-
-            # Step 3: Generate (streaming)
+            # Step 5: Generate (streaming)
             workflow.append({"step": "generate", "status": "in_progress", "details": "Generating answer..."})
+            passo_gerar = len(workflow) - 1
             yield _sse("workflow", workflow)
 
             async for token in iterate_in_threadpool(
@@ -398,18 +571,49 @@ async def chat(request: Request, body: ChatBody):
                     question=body.message,
                     documents=filtered_docs,
                     history=history,
+                    low_confidence=baixa_confianca,
+                    web_results=resultados_web,
                 )
             ):
                 full_answer += token
                 yield _sse("chunk", token)
+                if checagem is not None and checagem.done():
+                    for evento in fechar_conflito():
+                        yield evento
 
-            workflow[-1] = {"step": "generate", "status": "completed", "details": "Done"}
+            workflow[passo_gerar] = {"step": "generate", "status": "completed", "details": "Done"}
             yield _sse("workflow", workflow)
 
-            # Done
-            yield _sse("done", {"thread_id": thread_id})
+            if checagem is not None:
+                # Terminou de gerar antes da checagem: espera por ela, que o
+                # aviso tem que chegar antes do `done`.
+                await asyncio.wait([checagem])
+                for evento in fechar_conflito():
+                    yield evento
+
+            # Grava ANTES do `done`: ele leva o `message_id`, e o cliente que
+            # busca a trilha logo em seguida precisa encontra-la gravada. Em
+            # thread, como todo SQL daqui: no loop seguraria os outros requests.
+            await loop.run_in_executor(None, registrar)
+            yield _sse("done", {
+                "thread_id": thread_id,
+                "message_id": message_id,
+                "low_confidence": baixa_confianca,
+            })
 
         except Exception as e:
+            # A checagem que ja terminou entra na trilha; a que ainda roda e
+            # abandonada, mas o passo nao fica "em andamento" para sempre.
+            if checagem is not None:
+                if checagem.done():
+                    conflito = _resultado_da_checagem(checagem)
+                    detalhe = "Sources disagree" if conflito else "No disagreement found"
+                else:
+                    detalhe = "Check interrupted"
+                workflow[passo_conflito] = {"step": "conflict", "status": "completed", "details": detalhe}
+                checagem = None
+                yield _sse("workflow", workflow)
+
             # O erro cru do provider NAO vai para a tela. Foi assim que uma
             # mensagem de rate limit da Voyage, com link do dashboard de
             # billing e nome do plano, apareceu para o visitante no meio do
@@ -424,28 +628,16 @@ async def chat(request: Request, body: ChatBody):
                 await metering.devolver("chat")
 
         finally:
-            # Save assistant message
-            message_id = None
-            if full_answer:
-                message_id = save_message(thread_id, "assistant", full_answer, citations)
-
-            # A trilha e gravada mesmo quando a geracao falhou: saber ate onde
-            # o pipeline chegou antes de quebrar e justamente o que se procura
-            # depois. Nesse caso `message_id` fica nulo e `answered` falso.
-            save_decision(
-                user_id=user_id,
-                thread_id=thread_id,
-                message_id=message_id,
-                question=body.message,
-                retrieved=recuperados,
-                graded=aprovados,
-                web_used=usou_web,
-                low_confidence=baixa_confianca,
-                answered=bool(full_answer),
-                conflict=conflito,
-                as_of=body.as_of,
-                latency_ms=int((time.monotonic() - iniciado_em) * 1000),
-            )
+            # Checagem que terminou mas nao chegou a ser lida (o cliente caiu
+            # entre tokens): o resultado ja existe e vai para a trilha.
+            if checagem is not None and checagem.done():
+                conflito = _resultado_da_checagem(checagem)
+            # Rede de seguranca: se o stream quebrou (erro, cliente que caiu),
+            # grava o que nao foi gravado. Saber ate onde o pipeline chegou
+            # antes de quebrar e justamente o que se procura depois; sem texto,
+            # `message_id` fica nulo e `answered` falso. Sincrono de proposito:
+            # aqui nao da para esperar nada, o gerador pode estar sendo fechado.
+            registrar()
 
     return StreamingResponse(
         generate_sse(),
@@ -467,23 +659,49 @@ async def chat(request: Request, body: ChatBody):
 # depois que a pagina recarrega.
 
 
-@router.get("/decisions/{message_id}")
-@limiter.limit("60/minute")
-async def get_decision(request: Request, message_id: str):
-    """Devolve a trilha que produziu uma resposta especifica."""
-    user_id = await require_user(request)
+_COLUNAS_DECISAO = """
+    id, thread_id, message_id, question, retrieved, graded,
+    considered, kept, score_scale, reranked, low_confidence,
+    web_used, answered, latency_ms, conflict, as_of, queries, created_at
+"""
 
+
+def _ler_decisao(message_id: str, user_id: str):
     with engine.begin() as conn:
-        row = conn.execute(
-            sqltext("""
-                SELECT id, thread_id, message_id, question, retrieved, graded,
-                       considered, kept, score_scale, reranked, low_confidence,
-                       web_used, answered, latency_ms, conflict, as_of, created_at
+        return conn.execute(
+            sqltext(f"""
+                SELECT {_COLUNAS_DECISAO}
                 FROM decisions
                 WHERE message_id = CAST(:message_id AS uuid) AND user_id = CAST(:user_id AS uuid)
             """),
             {"message_id": message_id, "user_id": user_id},
         ).mappings().first()
+
+
+def _listar_decisoes(user_id: str, thread_id: str | None, limit: int):
+    sql = f"""
+        SELECT {_COLUNAS_DECISAO}
+        FROM decisions
+        WHERE user_id = CAST(:user_id AS uuid)
+    """
+    params: dict = {"user_id": user_id, "limit": limit}
+    if thread_id:
+        sql += " AND thread_id = CAST(:thread_id AS uuid)"
+        params["thread_id"] = thread_id
+    sql += " ORDER BY created_at DESC LIMIT :limit"
+
+    with engine.begin() as conn:
+        return conn.execute(sqltext(sql), params).mappings().all()
+
+
+@router.get("/decisions/{message_id}")
+@limiter.limit("60/minute")
+async def get_decision(request: Request, message_id: str):
+    """Devolve a trilha que produziu uma resposta especifica."""
+    user_id = await require_user(request)
+    if not _e_uuid(message_id):
+        raise HTTPException(status_code=404, detail="No decision trail for that message")
+    row = await run_in_threadpool(_ler_decisao, message_id, user_id)
 
     if not row:
         raise HTTPException(status_code=404, detail="No decision trail for that message")
@@ -497,22 +715,9 @@ async def list_decisions(request: Request, thread_id: str | None = None, limit: 
     """Lista as trilhas do usuario, da mais recente para a mais antiga."""
     user_id = await require_user(request)
     limit = max(1, min(limit, 200))
-
-    sql = """
-        SELECT id, thread_id, message_id, question, retrieved, graded,
-               considered, kept, score_scale, reranked, low_confidence,
-               web_used, answered, latency_ms, conflict, as_of, created_at
-        FROM decisions
-        WHERE user_id = CAST(:user_id AS uuid)
-    """
-    params: dict = {"user_id": user_id, "limit": limit}
-    if thread_id:
-        sql += " AND thread_id = CAST(:thread_id AS uuid)"
-        params["thread_id"] = thread_id
-    sql += " ORDER BY created_at DESC LIMIT :limit"
-
-    with engine.begin() as conn:
-        rows = conn.execute(sqltext(sql), params).mappings().all()
+    if thread_id and not _e_uuid(thread_id):
+        raise HTTPException(status_code=404, detail="Thread not found")
+    rows = await run_in_threadpool(_listar_decisoes, user_id, thread_id, limit)
 
     return {"decisions": [_decision_payload(r) for r in rows]}
 
@@ -525,11 +730,15 @@ def _decision_payload(row) -> dict:
     com aviso de baixa confianca.
     """
     escala = row["score_scale"] or "rrf"
+    # Em ingles porque e texto de tela, e o painel e em ingles.
     explicacao = {
-        "cohere": "Score calibrado do reranker, de 0 a 1.",
-        "rrf": "Score de fusao das buscas (RRF). Fica na casa de 0,01 a 0,03 mesmo quando o trecho e bom.",
-        "tavily": "Score do buscador web, criterio proprio.",
-    }.get(escala, "Escala nao identificada.")
+        "cohere": "Calibrated reranker relevance, from 0 to 1.",
+        "rrf": (
+            "Rank fusion score (RRF) of the semantic and keyword searches. "
+            "It stays around 0.01 to 0.03 even when the excerpt is a good match."
+        ),
+        "tavily": "Web search engine score, on its own scale.",
+    }.get(escala, "Unknown score scale.")
 
     return {
         "id": str(row["id"]),
@@ -547,6 +756,7 @@ def _decision_payload(row) -> dict:
         "web_used": row["web_used"],
         "answered": row["answered"],
         "conflict": row["conflict"],
+        "queries": row["queries"] or [],
         "as_of": row["as_of"].isoformat() if row["as_of"] else None,
         "latency_ms": row["latency_ms"],
         "created_at": row["created_at"].isoformat() if row["created_at"] else None,
@@ -564,34 +774,15 @@ def _decision_payload(row) -> dict:
 # resolver um problema que o Postgres ja resolve neste tamanho.
 
 
-@router.get("/graph")
-@limiter.limit("30/minute")
-async def knowledge_graph(request: Request, days: int = 30, limit: int = 300):
-    """Monta o grafo do acervo a partir do que a trilha de decisao ja registrou.
+def _montar_grafo(linhas) -> tuple[list[dict], list[dict], list[dict]]:
+    """Nos de documento, nos de pergunta e arestas, a partir das decisoes.
 
-    Nos:   documento (tamanho = quantas vezes foi usado numa resposta)
-           pergunta  (uma por decisao)
-    Arestas:
-      pergunta -> documento : USOU      (o trecho sobreviveu ao grader)
-      documento -> documento: DIVERGE   (a checagem apontou contradicao)
+    A aresta DIVERGE liga SO os documentos cujos titulos o aviso citou em
+    `conflict.sources`, mapeados para `document_id` pelos trechos de `graded`
+    da mesma decisao. Antes ligava todo par de documentos usados na resposta,
+    e o grafo acusava de contradicao arquivos que nem estavam em causa. Titulo
+    que nao mapeia (ou que mapeia para mais de um documento) nao gera aresta.
     """
-    user_id = await require_user(request)
-    days = max(1, min(days, 365))
-    limit = max(10, min(limit, 1000))
-
-    with engine.begin() as conn:
-        linhas = conn.execute(
-            sqltext("""
-                SELECT id, question, graded, conflict, low_confidence, created_at
-                FROM decisions
-                WHERE user_id = CAST(:user_id AS uuid)
-                  AND created_at >= NOW() - CAST(:janela AS interval)
-                ORDER BY created_at DESC
-                LIMIT :limit
-            """),
-            {"user_id": user_id, "janela": f"{days} days", "limit": limit},
-        ).mappings().all()
-
     documentos: dict[str, dict] = {}
     perguntas: list[dict] = []
     arestas: list[dict] = []
@@ -607,10 +798,14 @@ async def knowledge_graph(request: Request, days: int = 30, limit: int = 300):
         })
 
         usados = set()
+        ids_por_titulo: dict[str, set[str]] = {}
         for trecho in (linha["graded"] or []):
             doc_id = trecho.get("document_id")
-            if not doc_id or doc_id == "web":
+            # Resultado web nao e documento do acervo e nao vira no.
+            if not doc_id or doc_id == "web" or trecho.get("url"):
                 continue
+            titulo = " ".join(str(trecho.get("document_title") or "").split()).casefold()
+            ids_por_titulo.setdefault(titulo, set()).add(doc_id)
             no = documentos.setdefault(doc_id, {
                 "id": f"d:{doc_id}",
                 "type": "document",
@@ -631,22 +826,62 @@ async def knowledge_graph(request: Request, days: int = 30, limit: int = 300):
         # A divergencia liga documento a documento, e e o par que o usuario
         # precisa abrir: sao os dois arquivos que dizem coisas diferentes.
         conflito = linha["conflict"] or {}
-        if conflito.get("summary"):
-            ids = [d for d in usados]
-            for i in range(len(ids)):
-                for j in range(i + 1, len(ids)):
-                    a, b = f"d:{ids[i]}", f"d:{ids[j]}"
-                    arestas.append({
-                        "source": a,
-                        "target": b,
-                        "type": "DIVERGE",
-                        "summary": conflito["summary"][:200],
-                    })
-                    for k in (ids[i], ids[j]):
-                        documentos[k]["conflicts"] += 1
+        if not conflito.get("summary"):
+            continue
+        citados: list[str] = []
+        for fonte in conflito.get("sources") or []:
+            ids = ids_por_titulo.get(" ".join(str(fonte).split()).casefold(), set())
+            if len(ids) == 1 and next(iter(ids)) not in citados:
+                citados.append(next(iter(ids)))
+        for i in range(len(citados)):
+            for j in range(i + 1, len(citados)):
+                arestas.append({
+                    "source": f"d:{citados[i]}",
+                    "target": f"d:{citados[j]}",
+                    "type": "DIVERGE",
+                    "summary": conflito["summary"][:200],
+                })
+                for k in (citados[i], citados[j]):
+                    documentos[k]["conflicts"] += 1
+
+    return list(documentos.values()), perguntas, arestas
+
+
+def _decisoes_do_grafo(user_id: str, days: int, limit: int):
+    with engine.begin() as conn:
+        return conn.execute(
+            sqltext("""
+                SELECT id, question, graded, conflict, low_confidence, created_at
+                FROM decisions
+                WHERE user_id = CAST(:user_id AS uuid)
+                  AND created_at >= NOW() - CAST(:janela AS interval)
+                ORDER BY created_at DESC
+                LIMIT :limit
+            """),
+            {"user_id": user_id, "janela": f"{days} days", "limit": limit},
+        ).mappings().all()
+
+
+@router.get("/graph")
+@limiter.limit("30/minute")
+async def knowledge_graph(request: Request, days: int = 30, limit: int = 300):
+    """Monta o grafo do acervo a partir do que a trilha de decisao ja registrou.
+
+    Nos:   documento (tamanho = quantas vezes foi usado numa resposta)
+           pergunta  (uma por decisao)
+    Arestas:
+      pergunta -> documento : USOU      (o trecho sobreviveu ao grader)
+      documento -> documento: DIVERGE   (a checagem apontou contradicao)
+    """
+    user_id = await require_user(request)
+    days = max(1, min(days, 365))
+    limit = max(10, min(limit, 1000))
+    linhas = await run_in_threadpool(_decisoes_do_grafo, user_id, days, limit)
+
+    documentos, perguntas, arestas = _montar_grafo(linhas)
 
     return {
-        "nodes": list(documentos.values()) + perguntas,
+        "nodes": documentos + perguntas,
         "edges": arestas,
         "window_days": days,
         "legend": {
@@ -658,13 +893,9 @@ async def knowledge_graph(request: Request, days: int = 30, limit: int = 300):
     }
 
 
-@router.get("/threads")
-async def list_threads(request: Request):
-    """List user's conversation threads."""
-    user_id = await require_user(request)
-
+def _listar_threads(user_id: str):
     with engine.begin() as conn:
-        rows = conn.execute(
+        return conn.execute(
             sqltext("""
                 SELECT t.id, t.title, t.updated_at,
                        (SELECT content FROM messages WHERE thread_id = t.id ORDER BY created_at ASC LIMIT 1) as first_message
@@ -675,6 +906,13 @@ async def list_threads(request: Request):
             """),
             {"user_id": user_id},
         ).mappings().all()
+
+
+@router.get("/threads")
+async def list_threads(request: Request):
+    """List user's conversation threads."""
+    user_id = await require_user(request)
+    rows = await run_in_threadpool(_listar_threads, user_id)
 
     return {
         "threads": [
@@ -693,10 +931,10 @@ async def get_messages(request: Request, thread_id: str):
     """Get messages for a thread."""
     user_id = await require_user(request)
 
-    if not validate_thread_ownership(thread_id, user_id):
+    if not await run_in_threadpool(validate_thread_ownership, thread_id, user_id):
         raise HTTPException(403, "Thread does not belong to this user")
 
-    history = get_thread_history(thread_id, user_id, limit=100)
+    history = await run_in_threadpool(get_thread_history, thread_id, user_id, 100)
     return {"messages": history, "thread_id": thread_id}
 
 
@@ -705,21 +943,23 @@ async def delete_thread(request: Request, thread_id: str):
     """Delete a thread and its messages (LGPD compliance). Ownership enforced."""
     user_id = await require_user(request)
 
-    with engine.begin() as conn:
-        row = conn.execute(
-            sqltext("SELECT id FROM threads WHERE id = :id AND user_id = CAST(:uid AS uuid)"),
-            {"id": thread_id, "uid": user_id},
-        ).first()
-        if not row:
-            raise HTTPException(404, "Thread not found")
-
-        # FK CASCADE removes message rows.
-        conn.execute(
-            sqltext("DELETE FROM threads WHERE id = :id AND user_id = CAST(:uid AS uuid)"),
-            {"id": thread_id, "uid": user_id},
-        )
+    if not await run_in_threadpool(_apagar_thread, thread_id, user_id):
+        raise HTTPException(404, "Thread not found")
 
     return {"deleted": True, "id": thread_id}
+
+
+def _apagar_thread(thread_id: str, user_id: str) -> bool:
+    """Apaga a thread da pessoa; False quando nao ha thread dela com esse id."""
+    if not _e_uuid(thread_id):
+        return False
+    with engine.begin() as conn:
+        # FK CASCADE removes message rows.
+        apagadas = conn.execute(
+            sqltext("DELETE FROM threads WHERE id = :id AND user_id = CAST(:uid AS uuid)"),
+            {"id": thread_id, "uid": user_id},
+        ).rowcount
+    return bool(apagadas)
 
 
 def _sse(event_type: str, data) -> str:

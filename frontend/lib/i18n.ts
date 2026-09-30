@@ -4,6 +4,7 @@ const dict = {
   en: {
     'nav.signIn': 'Sign in',
     'sections.index': 'Index',
+    'sections.different': 'Beyond citations',
     'sections.pipeline': 'Pipeline',
     'sections.features': 'Engineering',
     'sections.stack': 'Stack',
@@ -13,13 +14,14 @@ const dict = {
     'hero.title2': 'in one workspace,',
     'hero.title3': 'cited and corrected.',
     'hero.subtitle':
-      'Drop PDFs, images, audio and video into one workspace. Ask anything in plain language: a Corrective RAG pipeline retrieves, grades, rewrites and answers, every claim bound to a source span.',
+      'Drop PDFs, images, audio and video into one workspace. Ask in plain language: a corrective RAG pipeline retrieves, grades, searches again when nothing fits, and shows the passages behind every answer.',
     'hero.cta.open': 'Open the workspace',
-    'hero.cta.read': 'Read the pipeline',
+    'hero.cta.read': 'What makes it different',
   },
   pt: {
     'nav.signIn': 'Entrar',
     'sections.index': 'Início',
+    'sections.different': 'Além das citações',
     'sections.pipeline': 'Pipeline',
     'sections.features': 'Engenharia',
     'sections.stack': 'Stack',
@@ -29,9 +31,9 @@ const dict = {
     'hero.title2': 'em um só espaço,',
     'hero.title3': 'citado e corrigido.',
     'hero.subtitle':
-      'Coloque PDFs, imagens, áudio e vídeo em um único espaço. Pergunte em linguagem natural: um pipeline RAG corretivo recupera, avalia, reescreve e responde, com cada afirmação ligada a um trecho da fonte.',
+      'Coloque PDFs, imagens, áudio e vídeo em um único espaço. Pergunte em linguagem natural: um pipeline RAG corretivo recupera, avalia, busca de novo quando nada serve e mostra os trechos por trás de cada resposta.',
     'hero.cta.open': 'Abrir workspace',
-    'hero.cta.read': 'Ver o pipeline',
+    'hero.cta.read': 'O que muda aqui',
   },
 } as const
 

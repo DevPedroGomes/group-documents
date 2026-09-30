@@ -1,22 +1,22 @@
-"""Auth routes: register, login, me."""
+"""Auth routes: register, login, me.
+
+Bcrypt e SQL sao sincronos e o uvicorn roda um worker so: dentro de um
+`async def` eles seguram o event loop e congelam todo o app enquanto rodam.
+Rota que nao precisa esperar nada (register, login) e `def`, e o FastAPI a roda
+no threadpool; rota que espera `require_user` passa o trabalho sincrono por
+`run_in_threadpool`.
+"""
 
 import uuid
 import logging
 from datetime import datetime, timedelta, timezone
 
-from jose import jwt
+import jwt
 from fastapi import APIRouter, Request, HTTPException
 from pydantic import BaseModel, ConfigDict, EmailStr
 import bcrypt as _bcrypt
-
-
-def _hash_password(password: str) -> str:
-    return _bcrypt.hashpw(password.encode("utf-8")[:72], _bcrypt.gensalt()).decode("utf-8")
-
-
-def _verify_password(password: str, hashed: str) -> bool:
-    return _bcrypt.checkpw(password.encode("utf-8")[:72], hashed.encode("utf-8"))
 from sqlalchemy import insert, text as sqltext
+from starlette.concurrency import run_in_threadpool
 
 from app.config.settings import get_settings
 from app.db.engine import engine
@@ -27,6 +27,14 @@ from app.api.rate_limit import limiter
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+def _hash_password(password: str) -> str:
+    return _bcrypt.hashpw(password.encode("utf-8")[:72], _bcrypt.gensalt()).decode("utf-8")
+
+
+def _verify_password(password: str, hashed: str) -> bool:
+    return _bcrypt.checkpw(password.encode("utf-8")[:72], hashed.encode("utf-8"))
 
 
 class RegisterBody(BaseModel):
@@ -58,7 +66,7 @@ def _create_token(user_id: str, email: str) -> str:
 
 @router.post("/register")
 @limiter.limit(get_settings().auth_rate_limit)
-async def register(request: Request, body: RegisterBody):
+def register(request: Request, body: RegisterBody):
     """Create a new user account and return a JWT token."""
     if len(body.password) < 12:
         raise HTTPException(400, "Password must be at least 12 characters")
@@ -97,7 +105,7 @@ async def register(request: Request, body: RegisterBody):
 
 @router.post("/login")
 @limiter.limit(get_settings().auth_rate_limit)
-async def login(request: Request, body: LoginBody):
+def login(request: Request, body: LoginBody):
     """Authenticate user and return a JWT token."""
     with engine.begin() as conn:
         row = conn.execute(
@@ -129,16 +137,19 @@ async def login(request: Request, body: LoginBody):
     }
 
 
+def _ler_usuario(user_id: str):
+    with engine.begin() as conn:
+        return conn.execute(
+            sqltext("SELECT id, email, full_name, is_active, created_at FROM users WHERE id = :id"),
+            {"id": user_id},
+        ).first()
+
+
 @router.get("/me")
 async def me(request: Request):
     """Return the current authenticated user."""
     user_id = await require_user(request)
-
-    with engine.begin() as conn:
-        row = conn.execute(
-            sqltext("SELECT id, email, full_name, is_active, created_at FROM users WHERE id = :id"),
-            {"id": user_id},
-        ).first()
+    row = await run_in_threadpool(_ler_usuario, user_id)
 
     if not row:
         raise HTTPException(404, "User not found")

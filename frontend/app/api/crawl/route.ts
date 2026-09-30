@@ -1,20 +1,7 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest } from 'next/server'
+import { proxyToBackend } from '@/lib/api-proxy'
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
-
+// O backend baixa a pagina antes de responder, dai o prazo maior que o padrao.
 export async function POST(request: NextRequest) {
-  const authorization = request.headers.get('Authorization') || ''
-  const body = await request.text()
-
-  const response = await fetch(`${API_URL}/crawl`, {
-    method: 'POST',
-    headers: {
-      Authorization: authorization,
-      'Content-Type': 'application/json',
-    },
-    body,
-  })
-
-  const data = await response.json().catch(() => ({}))
-  return NextResponse.json(data, { status: response.status })
+  return proxyToBackend(request, '/crawl', { timeoutMs: 60_000 })
 }

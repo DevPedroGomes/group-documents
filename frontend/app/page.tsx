@@ -1,11 +1,7 @@
 import Landing from '@/components/Landing'
 
-export const metadata = {
-  title: 'BrainHub: Multi-modal Q&A with cited answers',
-  description:
-    'Upload PDFs, images, audio, and video into a shared workspace. Ask anything in natural language, get grounded answers with citations from a Corrective RAG pipeline.',
-}
-
+// Sem `metadata` aqui: o titulo e a descricao vem do layout, os mesmos do
+// Open Graph. Eram dois titulos diferentes para a mesma pagina.
 export default function Page() {
   return <Landing />
 }

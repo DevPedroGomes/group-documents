@@ -36,12 +36,25 @@ const ROTULO: Record<EstadoRealtime, string> = {
   falando: 'Speaking',
 }
 
-export function LiveVoice({ pronto }: { pronto: boolean }) {
+export function LiveVoice({
+  pronto,
+  documentIds,
+}: {
+  /** O acervo tem ao menos um documento pronto. */
+  pronto: boolean
+  /** Selecao atual; vazia = acervo inteiro, como no chat de texto. */
+  documentIds: string[]
+}) {
   const [estado, setEstado] = useState<EstadoRealtime>('parado')
   const [itens, setItens] = useState<Item[]>([])
   const [erro, setErro] = useState<string | null>(null)
   const sessaoRef = useRef<RealtimeSession | null>(null)
   const fimRef = useRef<HTMLDivElement | null>(null)
+  // A sessao le a selecao a cada busca, entao o ref acompanha a selecao atual.
+  const documentosRef = useRef(documentIds)
+  useEffect(() => {
+    documentosRef.current = documentIds
+  }, [documentIds])
 
   useEffect(() => {
     fimRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
@@ -69,6 +82,7 @@ export function LiveVoice({ pronto }: { pronto: boolean }) {
           { tipo: 'busca', id: `busca-${xs.length}-${Date.now()}`, busca },
         ]),
       onErro: setErro,
+      documentos: () => documentosRef.current,
     })
     sessaoRef.current = sessao
     try {
@@ -82,8 +96,8 @@ export function LiveVoice({ pronto }: { pronto: boolean }) {
   const ativo = estado !== 'parado'
 
   return (
-    <div className="flex flex-col gap-4 rounded-lg border bg-card p-4">
-      <div className="flex items-center gap-3">
+    <div className="flex flex-col gap-3 rounded-xl bg-white/[0.03] ring-1 ring-white/10 p-3 sm:p-4">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <Button
           onClick={ativo ? parar : comecar}
           disabled={!pronto && !ativo}
@@ -96,8 +110,8 @@ export function LiveVoice({ pronto }: { pronto: boolean }) {
 
         <span
           className={cn(
-            'text-sm text-muted-foreground',
-            estado === 'buscando' && 'text-foreground'
+            'text-sm text-neutral-400',
+            estado === 'buscando' && 'text-white'
           )}
         >
           {ROTULO[estado]}
@@ -108,13 +122,17 @@ export function LiveVoice({ pronto }: { pronto: boolean }) {
         )}
       </div>
 
-      {!pronto && (
-        <p className="text-sm text-muted-foreground">
-          Upload a document first — the agent only answers from your archive.
+      {!ativo && (
+        <p className="text-xs text-neutral-400">
+          {!pronto
+            ? 'Your library has no ready documents yet. Upload one first: the agent only answers from your library.'
+            : documentIds.length > 0
+              ? `Voice searches only the ${documentIds.length} selected ${documentIds.length === 1 ? 'document' : 'documents'}.`
+              : 'No documents selected: voice searches your whole library.'}
         </p>
       )}
 
-      {erro && <p className="text-sm text-destructive">{erro}</p>}
+      {erro && <p className="text-sm text-red-300">{erro}</p>}
 
       {itens.length > 0 && (
         <div className="max-h-80 space-y-3 overflow-y-auto pr-1">
@@ -124,7 +142,7 @@ export function LiveVoice({ pronto }: { pronto: boolean }) {
                 key={item.id}
                 className={cn(
                   'text-sm',
-                  item.quem === 'pessoa' ? 'text-foreground' : 'text-muted-foreground'
+                  item.quem === 'pessoa' ? 'text-white' : 'text-neutral-300'
                 )}
               >
                 <span className="mr-2 text-xs uppercase tracking-wide opacity-60">
@@ -150,7 +168,7 @@ export function LiveVoice({ pronto }: { pronto: boolean }) {
  */
 function TrilhaDaBusca({ busca }: { busca: BuscaNaConversa }) {
   return (
-    <div className="rounded-md border border-dashed bg-muted/40 p-3 text-sm">
+    <div className="rounded-lg border border-dashed border-white/10 bg-white/[0.02] p-3 text-sm text-neutral-200">
       <div className="flex items-start gap-2">
         <Search className="mt-0.5 h-3.5 w-3.5 shrink-0 opacity-60" />
         <div className="flex-1">
@@ -163,23 +181,28 @@ function TrilhaDaBusca({ busca }: { busca: BuscaNaConversa }) {
       </div>
 
       {busca.dataDeReferencia && (
-        <p className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
+        <p className="mt-2 flex items-center gap-2 text-xs text-blue-200">
           <CalendarClock className="h-3.5 w-3.5 shrink-0" />
           answered as of {busca.dataDeReferencia}
         </p>
       )}
 
       {busca.divergencia && (
-        <div className="mt-2 rounded border border-amber-500/40 bg-amber-500/10 p-2 text-xs">
-          <p className="flex items-center gap-2 font-medium text-amber-700 dark:text-amber-400">
+        <div className="mt-2 rounded-md border border-amber-400/30 bg-amber-400/[0.07] p-2.5 text-xs">
+          <p className="flex items-center gap-2 font-semibold text-amber-200">
             <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
             Your documents disagree
           </p>
-          <p className="mt-1 text-muted-foreground">{busca.divergencia.summary}</p>
-          {busca.divergencia.sources.length > 0 && (
-            <ul className="mt-1 list-inside list-disc text-muted-foreground">
+          <p className="mt-1 text-neutral-300">{busca.divergencia.summary}</p>
+          {(busca.divergencia.sources ?? []).length > 0 && (
+            <ul className="mt-1 list-inside list-disc text-neutral-400">
               {busca.divergencia.sources.map((s) => (
-                <li key={s}>{s}</li>
+                <li key={s}>
+                  {s}
+                  {s === busca.divergencia?.vigente && (
+                    <span className="ml-1.5 text-emerald-200">· most recent document date</span>
+                  )}
+                </li>
               ))}
             </ul>
           )}
@@ -187,8 +210,8 @@ function TrilhaDaBusca({ busca }: { busca: BuscaNaConversa }) {
       )}
 
       {!busca.divergencia && busca.trechos === 0 && (
-        <p className="mt-2 text-xs text-muted-foreground">
-          Nothing in the archive answered this — the agent should say so instead of guessing.
+        <p className="mt-2 text-xs text-neutral-400">
+          Nothing in the library answered this — the agent should say so instead of guessing.
         </p>
       )}
     </div>

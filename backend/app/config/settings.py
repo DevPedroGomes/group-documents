@@ -53,7 +53,6 @@ class Settings(BaseSettings):
     # pouco melhor. O ganho de recuperar figura, tabela e pagina escaneada
     # compensa num app que se chama "multi-modal".
     voyage_doc_model: str = "voyage-multimodal-3.5"
-    voyage_query_model: str = "voyage-multimodal-3.5"
     # Precisa bater com o vector(N) das migrations. Ver migrations/002.
     embedding_dimensions: int = 1024
     # Abaixo disto uma pagina de PDF e tratada como escaneada e vai para o
@@ -64,6 +63,10 @@ class Settings(BaseSettings):
     # DPI do render da pagina escaneada. 150 e legivel para OCR visual sem
     # estourar o limite de 16 milhoes de pixels do Voyage.
     pdf_render_dpi: int = 150
+    # Acima disto o PDF falha como permanente, antes de qualquer chamada paga:
+    # cada pagina custa extracao, enriquecimento e, se escaneada, visao e
+    # embedding de imagem, e o job tem 30 minutos.
+    max_pdf_pages: int = 300
 
     # Reranking (Cohere)
     cohere_api_key: Optional[str] = None
@@ -79,7 +82,6 @@ class Settings(BaseSettings):
     # RAG Pipeline
     chunk_size: int = 500
     chunk_overlap: int = 100
-    similarity_top_k: int = 5
     search_candidates_multiplier: int = 3
     relevance_threshold: float = 0.7
     rrf_k: int = 60
@@ -95,6 +97,11 @@ class Settings(BaseSettings):
 
     # Web Search Fallback (Tavily)
     tavily_api_key: Optional[str] = None
+    # Desligado por padrao: ligar ENVIA A PERGUNTA da pessoa a um terceiro, num
+    # app de perguntas sobre documentos privados. Mesmo ligado so roda quando o
+    # acervo continua sem resposta depois da reconsulta, e nunca com `as_of`
+    # (a web de hoje nao responde "como era em marco de 2025").
+    enable_web_fallback: bool = False
 
     # Multimodal
     #
@@ -112,9 +119,7 @@ class Settings(BaseSettings):
     deepgram_api_key: Optional[str] = None
     deepgram_model: str = "nova-3"
 
-    # Rate Limiting
-    rate_limit_requests: int = 30
-    rate_limit_window_seconds: int = 60
+    # Rate Limiting (os limites por rota ficam nos decoradores de cada uma)
     # Cadastro e aberto e gratuito, entao o rate limit por IP e a unica coisa
     # entre um script e uma fila infinita de contas novas.
     auth_rate_limit: str = "5/minute"
@@ -134,6 +139,11 @@ class Settings(BaseSettings):
     # pergunta por vez. Somar as duas no mesmo balde faria uma conversa longa
     # apagar a cota de texto do dia inteiro.
     daily_realtime_limit: int = 40
+    # Cada busca que o agente de voz dispara (`/realtime/tool/buscar`) paga
+    # multi-query, embedding, rerank e checagem de divergencia. Teto proprio,
+    # e nao o do chat: uma conversa faz varias buscas, e o teto de sessoes nao
+    # limita quantas uma sessao aberta dispara.
+    daily_realtime_tool_limit: int = 400
 
     # --- Conversa por voz (WebRTC contra a Realtime API da OpenAI) ---
     # Este e o UNICO lugar do app que fala com a OpenAI: o resto e Anthropic ou

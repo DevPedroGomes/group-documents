@@ -20,6 +20,7 @@ from agent_ops.config import get_config
 from arq.connections import RedisSettings
 from sqlalchemy import text as sqltext
 
+from app.core.ingestion.falhas import classificar
 from app.db.engine import engine
 from app.db.migrate import _LOCK_KEY
 from app.jobs.ingestao import process_ingestion
@@ -39,12 +40,14 @@ def _marcar_documento(doc_id: str, status: str) -> None:
     ruim, derrubar o envelope (e com ele a dead-letter) por causa de um UPDATE
     e pior.
     """
+    sql = "UPDATE documents SET status = :status"
+    if status == "processing":
+        # Retentativa agendada: a causa da tentativa que falhou nao vale mais, e
+        # a API a mostraria como `erro` de um documento em processamento.
+        sql += ", meta = COALESCE(meta, '{}'::jsonb) - 'error'"
     try:
         with engine.begin() as conn:
-            conn.execute(
-                sqltext("UPDATE documents SET status = :status WHERE id = :id"),
-                {"status": status, "id": doc_id},
-            )
+            conn.execute(sqltext(sql + " WHERE id = :id"), {"status": status, "id": doc_id})
     except Exception as exc:
         logger.exception(
             "worker.status_documento_falhou doc_id=%s status=%s erro=%s: %s",
@@ -80,7 +83,16 @@ async def ingerir(ctx, doc_id: str, user_id: str, storage_path: str) -> None:
         # o arq quem reenfileira o job, e engolir aqui o daria por terminado.
         raise
     except Exception as exc:
-        if queue.esgotou(ctx):
+        # Erro permanente (arquivo corrompido, formato, limite, 4xx do
+        # provider) nao se conserta retentando, e cada tentativa pagaria o
+        # enriquecimento de novo: vai direto para a dead-letter.
+        permanente = classificar(exc).permanente
+        if permanente or queue.esgotou(ctx):
+            if permanente:
+                logger.warning(
+                    "ingestao.falha_permanente doc_id=%s tentativa=%d erro=%s",
+                    doc_id, ctx["job_try"], exc,
+                )
             queue.descartar(engine, job_id, motivo=f"{type(exc).__name__}: {exc}")
             # `descartar` so mexe em `job_progress`. Sem esta linha o documento
             # fica em `processing` para sempre depois da ultima tentativa.
@@ -176,5 +188,7 @@ class WorkerSettings:
     # De quanto em quanto tempo o worker renova a chave de saude no Redis — a
     # mesma que `arq ... --check` (o healthcheck do compose) le. O default do
     # arq e 3600s: com ele, um worker morto continuaria "saudavel" por ate uma
-    # hora, e o `restart` do Docker so agiria depois disso.
+    # hora. O healthcheck e so SINAL (`docker ps` mostra unhealthy): nem
+    # `restart: unless-stopped` nem nada no compose reinicia container
+    # unhealthy sozinho; o restart so age quando o processo sai.
     health_check_interval = 30

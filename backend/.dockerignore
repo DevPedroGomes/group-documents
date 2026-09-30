@@ -7,3 +7,5 @@
 .gitignore
 __pycache__/
 *.pyc
+# Arquivos enviados numa execucao local nao entram na imagem
+uploads/

@@ -2,6 +2,8 @@ services:
   # MIGRATED 2026-05-07 -> central-db (/opt/docker/central-db).
   # Service kept commented for rollback. Volume pgdata preserved.
   # Rollback: uncomment, change backend DATABASE_URL host from central-db to postgres, remove `databases` from networks, re-add depends_on.
+  # O schema nao vem de script de init do Postgres: o backend aplica as
+  # migrations de backend/migrations ao subir, num banco vazio ou existente.
   # postgres:
   #   image: pgvector/pgvector:pg16
   #   container_name: group-documents-db
@@ -12,7 +14,6 @@ services:
   #     POSTGRES_PASSWORD: ${DB_PASSWORD}
   #   volumes:
   #     - pgdata:/var/lib/postgresql/data
-  #     - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql
   #   healthcheck:
   #     test: ["CMD-SHELL", "pg_isready -U brainhub -d brainhub"]
   #     interval: 10s
@@ -174,6 +175,13 @@ services:
     restart: unless-stopped
     environment:
       - NEXT_PUBLIC_API_URL=https://group-documents-api.pgdev.com.br
+      # As rotas /api/* do Next chamam o backend pela rede `internal`, e nao pela
+      # URL publica, repassando o IP do visitante (o `X-Real-Ip` do Traefik) no
+      # X-Forwarded-For. Usa o nome do container (unico no host) e nao o alias
+      # `backend`: o frontend tambem esta na rede externa `proxy`, onde o alias
+      # de outra stack poderia colidir. Pela URL publica todo visitante chegava ao rate limit
+      # com o IP deste container e dividia um balde so com todos os outros.
+      - API_INTERNAL_URL=http://group-documents-api:8000
     depends_on:
       backend:
         condition: service_started
@@ -202,7 +210,7 @@ services:
       - "traefik.http.middlewares.group-documents-security.headers.browserXssFilter=true"
       - "traefik.http.middlewares.group-documents-security.headers.referrerPolicy=strict-origin-when-cross-origin"
       - "traefik.http.middlewares.group-documents-security.headers.frameDeny=true"
-      - "traefik.http.middlewares.group-documents-security.headers.contentSecurityPolicy=default-src 'self' https:; script-src 'self' 'unsafe-inline' 'unsafe-eval' https:; style-src 'self' 'unsafe-inline' https:; img-src 'self' data: blob: https:; font-src 'self' data: https:; connect-src 'self' https: wss:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
+      - "traefik.http.middlewares.group-documents-security.headers.contentSecurityPolicy=default-src 'self' https:; script-src 'self' 'unsafe-inline' 'unsafe-eval' https:; style-src 'self' 'unsafe-inline' https:; img-src 'self' data: blob: https:; font-src 'self' data: https:; connect-src 'self' https: wss:; frame-src 'self' blob:; media-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
 
 volumes:
   pgdata:

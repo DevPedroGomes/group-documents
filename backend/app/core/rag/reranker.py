@@ -4,23 +4,31 @@ import logging
 from typing import TYPE_CHECKING, Optional
 
 from app.config.settings import get_settings
+from app.core import chamadas_pagas
 
 if TYPE_CHECKING:
     import cohere
 
 logger = logging.getLogger(__name__)
 
-_client: Optional["cohere.Client"] = None
+_client: Optional["cohere.ClientV2"] = None
 
 
-def _get_client() -> "cohere.Client":
+def _get_client() -> "cohere.ClientV2":
+    # ClientV2 e o cliente da API v2; o `cohere.Client` v1 e o legado. A
+    # assinatura de `rerank` foi conferida contra o SDK instalado (7.0.9).
     import cohere as _cohere
 
     global _client
     if _client is None:
         settings = get_settings()
-        _client = _cohere.Client(api_key=settings.cohere_api_key)
+        _client = _cohere.ClientV2(api_key=settings.cohere_api_key)
     return _client
+
+
+def reranker_ativo() -> bool:
+    settings = get_settings()
+    return bool(settings.enable_reranking and settings.cohere_api_key)
 
 
 def rerank_documents(
@@ -31,10 +39,13 @@ def rerank_documents(
     """
     Rerank documents using Cohere cross-encoder.
     Falls back to original order if Cohere is unavailable.
+
+    Cada documento volta como veio (copia do dict, com `document_date` e o
+    resto), so com `relevance_score` e `score_scale` trocados.
     """
     settings = get_settings()
 
-    if not settings.enable_reranking or not settings.cohere_api_key:
+    if not reranker_ativo():
         return documents[:top_n]
 
     if len(documents) <= 1:
@@ -49,8 +60,8 @@ def rerank_documents(
             query=query,
             documents=texts,
             top_n=min(top_n, len(documents)),
-            return_documents=False,
         )
+        chamadas_pagas.registrar("cohere")
 
         reranked = []
         for result in response.results:

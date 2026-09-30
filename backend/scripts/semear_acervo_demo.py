@@ -45,16 +45,24 @@ A chave é o título, que carrega o nome do arquivo do acervo. Rodar de novo pul
 que já existe, então um lote interrompido continua de onde parou sem duplicar
 chunk nem pagar embedding duas vezes.
 
+SENHA DA CONTA
+--------------
+Nao ha senha padrao: o repositorio e publico, e uma senha escrita aqui seria a
+senha da conta demo para qualquer um. Toda operacao que pode criar a conta exige
+`--senha` ou a env `ACERVO_DEMO_SENHA`, com pelo menos 16 caracteres. So
+`--estimar` dispensa, porque nao escreve nada.
+
 USO
     python -m scripts.semear_acervo_demo --email demo@gomio.com.br --estimar
-    python -m scripts.semear_acervo_demo --email demo@gomio.com.br --limite 50
-    python -m scripts.semear_acervo_demo --email demo@gomio.com.br
+    ACERVO_DEMO_SENHA=... python -m scripts.semear_acervo_demo --email demo@gomio.com.br --limite 50
+    python -m scripts.semear_acervo_demo --email demo@gomio.com.br --senha ...
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sys
 import uuid
 from pathlib import Path
@@ -69,12 +77,24 @@ from app.services.file_storage import save_file
 from scripts.gerar_acervo_demo import Documento, gerar
 
 MIME_PDF = "application/pdf"
+MINIMO_SENHA = 16
 PREFIXO = "[acervo-demo]"
 """Marca o título dos documentos semeados.
 
 Serve a duas coisas: torna a semeadura idempotente sem tabela nova, e deixa
 `--limpar` apagar o acervo sem tocar em documento que a pessoa subiu à mão.
 """
+
+
+def senha_da_conta(argumento: str | None) -> str:
+    """A senha vinda de `--senha` ou de `ACERVO_DEMO_SENHA`; sem ela, encerra."""
+    senha = argumento or os.environ.get("ACERVO_DEMO_SENHA") or ""
+    if len(senha) < MINIMO_SENHA:
+        raise SystemExit(
+            f"defina a senha da conta demo com --senha ou ACERVO_DEMO_SENHA "
+            f"(minimo {MINIMO_SENHA} caracteres); nao ha senha padrao"
+        )
+    return senha
 
 
 def _hash_senha(senha: str) -> str:
@@ -214,10 +234,12 @@ async def semear(user_id: str, docs: list[Documento], destino_pdf: Path, rpm: fl
                     mime=MIME_PDF,
                     storage_path=storage_path,
                     status="pending",
-                    # A data de emissão vive em `meta` porque é ela que dá sentido
-                    # ao recorte no tempo: sem isto, `as_of` não teria em que se
-                    # apoiar para este acervo.
+                    # A data de emissao e o que da sentido ao recorte no tempo:
+                    # `as_of` corta por `effective_date`. O acervo inteiro sobe no
+                    # mesmo dia, entao sem ela "e em marco de 2025?" nao acharia
+                    # nada. `meta.emitido_em` fica como registro de origem.
                     meta={"emitido_em": doc.emitido_em.isoformat(), "categoria": doc.categoria},
+                    effective_date=doc.emitido_em,
                 )
                 .returning(documents.c.id)
             ).scalar_one()
@@ -246,7 +268,8 @@ def main() -> None:
     # que valida o /auth/login recusa todos eles. A conta criada direto por SQL
     # existiria e nunca conseguiria entrar. Descoberto em 06/09/2026, semeando.
     p.add_argument("--email", default="demo@gomio.com.br")
-    p.add_argument("--senha", default="acervo-de-demonstracao")
+    p.add_argument("--senha", default=None,
+                   help=f"senha da conta demo (ou env ACERVO_DEMO_SENHA), minimo {MINIMO_SENHA} caracteres")
     p.add_argument("--quantidade", type=int, default=500)
     p.add_argument("--limite", type=int, default=0, help="semeia no máximo N nesta execução (0 = todos)")
     p.add_argument("--rpm", type=float, default=0,
@@ -259,6 +282,8 @@ def main() -> None:
                    help="reenfileira os documentos que ficaram em pending ou failed, e sai")
     args = p.parse_args()
 
+    # Antes de gerar ou tocar no banco: sem senha, nada acontece.
+    senha = None if args.estimar else senha_da_conta(args.senha)
     docs = gerar(args.quantidade)
 
     # `--estimar` nao pode escrever nada, nem criar a conta: um dry-run que deixa
@@ -277,7 +302,7 @@ def main() -> None:
         print(f"              + ~{len(pendentes)} chamadas de embedding (uma por documento)")
         return
 
-    user_id = garantir_usuario(args.email, args.senha)
+    user_id = garantir_usuario(args.email, senha)
 
     if args.limpar:
         print(f"{limpar(user_id)} documentos removidos de {args.email}")

@@ -21,6 +21,10 @@ class _Resultado:
     def scalar(self):
         return self._escalar
 
+    def first(self):
+        # Linha nenhuma: o `SELECT ... .first()` das rotas ve "nao existe".
+        return None
+
 
 class _Conexao:
     def __init__(self, motor: "MotorFalso", transacao: int):
