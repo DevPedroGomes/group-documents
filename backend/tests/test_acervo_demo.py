@@ -141,3 +141,61 @@ def test_cada_regra_tem_pergunta_em_linguagem_natural(regra):
     """A pergunta vira caso de eval. Sem ela a regra não é verificável."""
     assert regra.pergunta.endswith("?")
     assert len(regra.pergunta) > 20
+
+
+# ---------------------------------------------------------------------------
+# A conta demo nao tem senha padrao
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def semeadura(monkeypatch):
+    """O script com banco e fila trocados: anota com que senha a conta seria criada."""
+    import sys
+
+    from scripts import semear_acervo_demo as script
+
+    criadas: list[tuple[str, str]] = []
+    monkeypatch.setattr(script, "garantir_usuario", lambda email, senha: criadas.append((email, senha)) or "u")
+    monkeypatch.setattr(script, "limpar", lambda _uid: 0)
+    monkeypatch.delenv("ACERVO_DEMO_SENHA", raising=False)
+
+    def rodar(*argumentos):
+        monkeypatch.setattr(sys, "argv", ["semear_acervo_demo", "--email", "demo@exemplo.com.br",
+                                          "--quantidade", "50", *argumentos])
+        script.main()
+
+    return rodar, criadas, monkeypatch
+
+
+@pytest.mark.parametrize("argumentos", [(), ("--senha", "curta-demais"), ("--senha", "")])
+def test_sem_senha_explicita_e_longa_a_semeadura_nao_cria_a_conta(semeadura, argumentos):
+    """A senha padrao vivia no repo publico: era a senha da demo para qualquer um."""
+    rodar, criadas, _ = semeadura
+
+    with pytest.raises(SystemExit) as saida:
+        rodar("--limpar", *argumentos)
+
+    assert "ACERVO_DEMO_SENHA" in str(saida.value)
+    assert criadas == []
+
+
+def test_senha_vem_do_argumento_ou_da_env(semeadura):
+    rodar, criadas, monkeypatch = semeadura
+
+    rodar("--limpar", "--senha", "uma-senha-com-mais-de-16")
+    monkeypatch.setenv("ACERVO_DEMO_SENHA", "outra-senha-com-mais-de-16")
+    rodar("--limpar")
+
+    assert [senha for _, senha in criadas] == ["uma-senha-com-mais-de-16", "outra-senha-com-mais-de-16"]
+
+
+def test_estimar_nao_pede_senha_porque_nao_escreve_nada(semeadura, capsys):
+    from scripts import semear_acervo_demo as script
+
+    rodar, criadas, monkeypatch = semeadura
+    monkeypatch.setattr(script, "buscar_usuario", lambda _email: None)
+
+    rodar("--estimar")
+
+    assert criadas == []
+    assert "a semear:     50" in capsys.readouterr().out
