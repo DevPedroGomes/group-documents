@@ -96,24 +96,71 @@ def _limite(monkeypatch, limite: int) -> None:
 # Upload grande: recusado sem ler, sem cota, sem arquivo
 # ---------------------------------------------------------------------------
 
+_BLOCO = 16 * 1024
+_FRONTEIRA = "limite-de-teste"
+_CABECALHO_MULTIPART = (
+    f"--{_FRONTEIRA}\r\nContent-Disposition: form-data; name=\"title\"\r\n\r\nManual\r\n"
+    f"--{_FRONTEIRA}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.pdf\"\r\n"
+    "Content-Type: application/pdf\r\n\r\n%PDF-1.7\n"
+).encode()
+
+
+def _enviar_em_blocos(cliente, blocos: int, **cabecalhos) -> tuple:
+    """Manda um multipart de `blocos` x 16 KB em streaming e conta quanto a
+    rota chegou a puxar do corpo."""
+    import asyncio
+
+    import httpx
+
+    puxados = [0]
+
+    async def corpo():
+        puxados[0] += len(_CABECALHO_MULTIPART)
+        yield _CABECALHO_MULTIPART
+        for _ in range(blocos):
+            puxados[0] += _BLOCO
+            yield b"x" * _BLOCO
+
+    async def enviar():
+        transporte = httpx.ASGITransport(app=cliente.app)
+        async with httpx.AsyncClient(transport=transporte, base_url="http://teste") as c:
+            return await c.post(
+                "/upload", content=corpo(),
+                headers={"content-type": f"multipart/form-data; boundary={_FRONTEIRA}",
+                         "authorization": "Bearer x", **cabecalhos},
+            )
+
+    return asyncio.run(enviar()), puxados[0]
+
+
 def test_content_length_acima_do_limite_e_413_antes_de_ler_o_corpo(docs, monkeypatch):
-    from starlette.requests import Request
+    cliente, r = docs
+    _limite(monkeypatch, 1024)
+    total = len(_CABECALHO_MULTIPART) + 13 * _BLOCO
+
+    resposta, puxados = _enviar_em_blocos(cliente, 13, **{"content-length": str(total)})
+
+    assert resposta.status_code == 413, resposta.text
+    assert puxados == 0, "o corpo foi lido antes de olhar o Content-Length"
+    assert r.eventos == []
+
+
+@pytest.mark.parametrize("cabecalhos", [{}, {"content-length": "300"}])
+def test_corpo_sem_content_length_para_de_ser_lido_no_limite(docs, monkeypatch, cabecalhos):
+    """Chunked (sem Content-Length), ou com um Content-Length que mente: o
+    parser gravava o corpo inteiro num temporario antes de qualquer teto.
+    Agora a leitura para logo depois do limite mais a folga."""
+    from app.api.routes import documents as rotas
 
     cliente, r = docs
     _limite(monkeypatch, 1024)
-    lido: list[bool] = []
-    original = Request.form
 
-    def espiao(self, *a, **k):
-        lido.append(True)
-        return original(self, *a, **k)
-
-    monkeypatch.setattr(Request, "form", espiao)
-
-    resposta = _upload(cliente, b"%PDF-1.7\n" + b"x" * 200_000)
+    resposta, puxados = _enviar_em_blocos(cliente, 640, **cabecalhos)  # 10 MB
 
     assert resposta.status_code == 413, resposta.text
-    assert lido == [], "o multipart foi lido antes de olhar o Content-Length"
+    assert puxados <= 1024 + rotas._FOLGA_MULTIPART + 2 * _BLOCO, (
+        f"leu {puxados} bytes de um corpo que ja tinha passado do limite"
+    )
     assert r.eventos == []
 
 
@@ -240,6 +287,8 @@ def test_a_rota_enfileira_com_o_tenant_e_devolve_o_job_id(docs, monkeypatch, rot
 @pytest.mark.parametrize("erro,status", [
     (FilaCheia("cheia", retry_after=30), 429),
     (FilaIndisponivel("fora do ar"), 503),
+    # Redis caindo no meio do enqueue_job: nem cheia nem indisponivel.
+    (ConnectionError("conexao perdida no meio do enqueue"), 503),
 ])
 def test_recusa_da_fila_desfaz_cota_linha_e_arquivo(docs, rota, erro, status):
     """Fila cheia tem prazo para voltar (429 + Retry-After); Redis ilegivel nao
@@ -253,6 +302,7 @@ def test_recusa_da_fila_desfaz_cota_linha_e_arquivo(docs, rota, erro, status):
     assert resposta.status_code == status
     if status == 429:
         assert resposta.headers["Retry-After"] == "30"
+    assert "conexao perdida" not in resposta.text
     assert r.eventos[-3:] == ["devolver:ingest", "apagar_linha:doc-1", f"apagar_arquivo:{caminho}"]
 
 
@@ -373,3 +423,20 @@ def test_cota_separa_teto_do_dia_de_redis_fora_do_ar(lista, rota, erro, status):
     assert ("Retry-After" in resposta.headers) is (status == 429)
     assert len(r.eventos) == 1 and r.eventos[0].startswith("consumir:")
     assert r.embeddings == []
+
+
+def test_crawl_resolve_o_dns_fora_do_event_loop(docs, monkeypatch):
+    """`is_safe_url` faz getaddrinfo, que bloqueia ate o DNS responder."""
+    from app.core.ingestion import url_crawler
+
+    cliente, _r = docs
+    no_loop: list[bool] = []
+
+    def seguro(_url):
+        no_loop.append(_no_event_loop())
+        return True, None
+
+    monkeypatch.setattr(url_crawler, "is_safe_url", seguro)
+
+    assert cliente.post("/crawl", json={"url": "https://exemplo.com/p"}).status_code == 200
+    assert no_loop == [False]

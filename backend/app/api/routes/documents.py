@@ -10,13 +10,17 @@ import re
 import logging
 import asyncio
 from datetime import date
+from collections.abc import AsyncIterator
 from typing import Optional
 
 from fastapi import APIRouter, Query, Request, HTTPException
 from pydantic import BaseModel, ConfigDict, field_validator
 from sqlalchemy import insert, text as sqltext
 from starlette.concurrency import run_in_threadpool
-from starlette.datastructures import UploadFile
+from starlette.datastructures import FormData, UploadFile
+# `parse_options_header` pelo starlette, que resolve o nome do pacote
+# python-multipart conforme a versao instalada.
+from starlette.formparsers import MultiPartException, MultiPartParser, parse_options_header
 
 from app.config.settings import get_settings
 from app.db.engine import engine
@@ -161,7 +165,31 @@ async def _gravar_e_registrar(user_id: str, mime: str, dados: bytes, **linha) ->
     return doc_id, storage_path
 
 
-async def _recusar_e_desfazer(doc_id, storage_path: str, exc: FilaCheia) -> None:
+async def _enfileirar(request: Request, doc_id, user_id: str, storage_path: str) -> str:
+    """Enfileira a ingestao e devolve o `job_id`; se a fila falhar, desfaz tudo.
+
+    O digest identifica ESTA ingestao (a linha criada + o arquivo gravado), nao
+    o CONTEUDO do arquivo: `doc_id` e `storage_path` sao novos a cada
+    requisicao, entao reenviar o mesmo arquivo roda de novo. Dedup real exigiria
+    hash do conteudo consultado ANTES do `consumir`, fora de escopo aqui. O que
+    o digest entrega e um `job_id` deterministico, para o cliente acompanhar o
+    proprio upload mesmo quando `enfileirar` devolve None.
+    """
+    digest = digerir(f"{doc_id}:{storage_path}")
+    job_id = job_id_de(digest, tenant=user_id)
+    try:
+        await enfileirar(
+            request.app.state.fila,
+            "ingerir",
+            str(doc_id), user_id, storage_path,
+            digest=digest, tenant=user_id,
+        )
+    except Exception as exc:
+        await _recusar_e_desfazer(doc_id, storage_path, exc)
+    return job_id
+
+
+async def _recusar_e_desfazer(doc_id, storage_path: str, exc: Exception) -> None:
     """Desfaz os efeitos ja aplicados quando a fila RECUSA o trabalho, e vira HTTP.
 
     A ordem das rotas e: consome a cota -> grava o arquivo -> cria a linha
@@ -180,11 +208,16 @@ async def _recusar_e_desfazer(doc_id, storage_path: str, exc: FilaCheia) -> None
 
     if isinstance(exc, FilaIndisponivel):
         raise HTTPException(status_code=503, detail=exc.mensagem) from exc
-    raise HTTPException(
-        status_code=429,
-        detail=exc.mensagem,
-        headers={"Retry-After": str(exc.retry_after)},
-    ) from exc
+    if isinstance(exc, FilaCheia):
+        raise HTTPException(
+            status_code=429,
+            detail=exc.mensagem,
+            headers={"Retry-After": str(exc.retry_after)},
+        ) from exc
+    # Qualquer outra falha ao enfileirar (Redis caindo no meio do
+    # `enqueue_job`, por exemplo) desfaz igual; o detalhe fica no log.
+    logger.error("ingest.enfileiramento_falhou doc_id=%s: %s", doc_id, exc, exc_info=exc)
+    raise HTTPException(status_code=503, detail="The document could not be queued. Try again.") from exc
 
 
 class IngestBody(BaseModel):
@@ -202,6 +235,38 @@ _BLOCO_DE_LEITURA = 1024 * 1024
 
 def _grande_demais(limite: int) -> HTTPException:
     return HTTPException(413, f"File too large (max {limite // (1024 * 1024)}MB)")
+
+
+async def _contado(fluxo: AsyncIterator[bytes], teto: int, limite: int) -> AsyncIterator[bytes]:
+    """Repassa o corpo e levanta 413 assim que ele passa de `teto` bytes.
+
+    O parser do multipart grava o arquivo num temporario enquanto le; sem este
+    contador, um upload sem Content-Length (chunked), ou com um Content-Length
+    que mente, ia inteiro para o disco antes de qualquer checagem de tamanho.
+    """
+    lidos = 0
+    async for bloco in fluxo:
+        lidos += len(bloco)
+        if lidos > teto:
+            raise _grande_demais(limite)
+        yield bloco
+
+
+async def _ler_formulario(request: Request, limite: int) -> FormData:
+    """O multipart do upload, lido com o corpo limitado a `limite` + a folga."""
+    tipo, _ = parse_options_header(request.headers.get("content-type", ""))
+    if tipo != b"multipart/form-data":
+        raise HTTPException(422, "Expected multipart/form-data with 'file' and 'title'")
+    parser = MultiPartParser(
+        request.headers,
+        _contado(request.stream(), limite + _FOLGA_MULTIPART, limite),
+        max_files=1,
+        max_fields=10,
+    )
+    try:
+        return await parser.parse()
+    except MultiPartException as exc:
+        raise HTTPException(400, exc.message) from exc
 
 
 async def _ler_ate_o_limite(arquivo: UploadFile, limite: int) -> bytes:
@@ -231,7 +296,8 @@ async def upload_file(request: Request):
     Multipart com `file`, `title` e `effective_date` (opcional). O corpo e lido
     AQUI, e nao declarado como `File(...)`/`Form(...)`: o FastAPI leria e
     gravaria o multipart inteiro antes de chamar a rota, e nem o JWT nem o
-    Content-Length conseguiriam barrar um upload gigante antes de ele chegar.
+    tamanho conseguiriam barrar um upload gigante antes de ele chegar. O
+    Content-Length recusa cedo; o corpo contado recusa quem nao o manda.
     """
     user_id = await require_user(request)
     limite = get_settings().max_file_size
@@ -240,7 +306,8 @@ async def upload_file(request: Request):
     if declarado.isdigit() and int(declarado) > limite + _FOLGA_MULTIPART:
         raise _grande_demais(limite)
 
-    async with request.form(max_files=1, max_fields=10) as form:
+    form = await _ler_formulario(request, limite)
+    try:
         file, title, effective_date = form.get("file"), form.get("title"), form.get("effective_date")
         if not isinstance(file, UploadFile):
             raise HTTPException(422, "Field 'file' is required")
@@ -258,6 +325,8 @@ async def upload_file(request: Request):
 
         data = await _ler_ate_o_limite(file, limite)
         declared = (file.content_type or "").lower()
+    finally:
+        await form.close()
 
     if not data:
         raise HTTPException(400, "Empty file")
@@ -284,28 +353,7 @@ async def upload_file(request: Request):
         user_id, sniffed_mime, data, title=title, effective_date=data_efetiva,
     )
 
-    # O digest identifica ESTA ingestao (a linha criada + o arquivo gravado),
-    # nao o CONTEUDO do arquivo: `doc_id` e `storage_path` sao novos a cada
-    # requisicao. Entao reenviar o mesmo arquivo gera outro digest e roda de
-    # novo — nao ha dedup entre requisicoes, e nao havia como haver: a cota ja
-    # foi consumida acima, antes de qualquer consulta de deduplicacao.
-    # Dedup real exigiria hash do conteudo e uma linha `(tenant, digest)` em
-    # Postgres consultada ANTES do `consumir`, que esta fora de escopo aqui.
-    # O que este digest entrega: um `job_id` deterministico, para o cliente
-    # acompanhar o proprio upload mesmo quando `enfileirar` devolve None.
-    digest = digerir(f"{doc_id}:{storage_path}")
-    job_id = job_id_de(digest, tenant=user_id)
-    try:
-        await enfileirar(
-            request.app.state.fila,
-            "ingerir",
-            str(doc_id), user_id, storage_path,
-            digest=digest, tenant=user_id,
-        )
-    except FilaIndisponivel as exc:
-        await _recusar_e_desfazer(doc_id, storage_path, exc)
-    except FilaCheia as exc:
-        await _recusar_e_desfazer(doc_id, storage_path, exc)
+    job_id = await _enfileirar(request, doc_id, user_id, storage_path)
 
     return {"document_id": str(doc_id), "job_id": job_id, "status": "pending"}
 
@@ -344,7 +392,8 @@ async def crawl_url(request: Request, body: CrawlBody):
     if len(body.url) > 2048:
         raise HTTPException(400, "URL too long (max 2048 characters)")
 
-    ok, err = is_safe_url(body.url)
+    # Resolve DNS (getaddrinfo), que bloqueia: em thread, como o fetch abaixo.
+    ok, err = await run_in_threadpool(is_safe_url, body.url)
     if not ok:
         raise HTTPException(400, f"URL blocked: {err}")
 
@@ -368,28 +417,7 @@ async def crawl_url(request: Request, body: CrawlBody):
         title=title, meta={"source_url": body.url}, effective_date=body.effective_date,
     )
 
-    # O digest identifica ESTA ingestao (a linha criada + o arquivo gravado),
-    # nao o CONTEUDO do arquivo: `doc_id` e `storage_path` sao novos a cada
-    # requisicao. Entao reenviar o mesmo arquivo gera outro digest e roda de
-    # novo — nao ha dedup entre requisicoes, e nao havia como haver: a cota ja
-    # foi consumida acima, antes de qualquer consulta de deduplicacao.
-    # Dedup real exigiria hash do conteudo e uma linha `(tenant, digest)` em
-    # Postgres consultada ANTES do `consumir`, que esta fora de escopo aqui.
-    # O que este digest entrega: um `job_id` deterministico, para o cliente
-    # acompanhar o proprio upload mesmo quando `enfileirar` devolve None.
-    digest = digerir(f"{doc_id}:{storage_path}")
-    job_id = job_id_de(digest, tenant=user_id)
-    try:
-        await enfileirar(
-            request.app.state.fila,
-            "ingerir",
-            str(doc_id), user_id, storage_path,
-            digest=digest, tenant=user_id,
-        )
-    except FilaIndisponivel as exc:
-        await _recusar_e_desfazer(doc_id, storage_path, exc)
-    except FilaCheia as exc:
-        await _recusar_e_desfazer(doc_id, storage_path, exc)
+    job_id = await _enfileirar(request, doc_id, user_id, storage_path)
 
     return {"document_id": str(doc_id), "job_id": job_id, "status": "pending", "title": title}
 
@@ -429,28 +457,7 @@ async def ingest(request: Request, body: IngestBody):
         await _desfazer(None)
         raise HTTPException(500, "Error creating document record")
 
-    # O digest identifica ESTA ingestao (a linha criada + o arquivo gravado),
-    # nao o CONTEUDO do arquivo: `doc_id` e `storage_path` sao novos a cada
-    # requisicao. Entao reenviar o mesmo arquivo gera outro digest e roda de
-    # novo — nao ha dedup entre requisicoes, e nao havia como haver: a cota ja
-    # foi consumida acima, antes de qualquer consulta de deduplicacao.
-    # Dedup real exigiria hash do conteudo e uma linha `(tenant, digest)` em
-    # Postgres consultada ANTES do `consumir`, que esta fora de escopo aqui.
-    # O que este digest entrega: um `job_id` deterministico, para o cliente
-    # acompanhar o proprio upload mesmo quando `enfileirar` devolve None.
-    digest = digerir(f"{doc_id}:{body.storage_path}")
-    job_id = job_id_de(digest, tenant=user_id)
-    try:
-        await enfileirar(
-            request.app.state.fila,
-            "ingerir",
-            str(doc_id), user_id, body.storage_path,
-            digest=digest, tenant=user_id,
-        )
-    except FilaIndisponivel as exc:
-        await _recusar_e_desfazer(doc_id, body.storage_path, exc)
-    except FilaCheia as exc:
-        await _recusar_e_desfazer(doc_id, body.storage_path, exc)
+    job_id = await _enfileirar(request, doc_id, user_id, body.storage_path)
 
     return {"document_id": str(doc_id), "job_id": job_id, "status": "pending"}
 
