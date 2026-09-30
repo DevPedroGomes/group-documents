@@ -10,8 +10,6 @@ O que se prende aqui:
   bug que fez toda resposta sair com aviso de baixa confianca.
 """
 
-import ast
-import inspect
 from pathlib import Path
 
 import pytest
@@ -100,35 +98,9 @@ def test_falha_ao_gravar_a_trilha_nao_propaga(monkeypatch):
 # 3. Gravada tambem quando a geracao falha
 # ---------------------------------------------------------------------------
 
-def _corpo_do_generate_sse() -> ast.AsyncFunctionDef:
-    fonte = inspect.getsource(chat_route.chat)
-    arvore = ast.parse(inspect.cleandoc(fonte))
-    for no in ast.walk(arvore):
-        if isinstance(no, ast.AsyncFunctionDef) and no.name == "generate_sse":
-            return no
-    raise AssertionError("generate_sse nao encontrado")
-
-
-def test_trilha_e_gravada_no_finally_e_nao_no_caminho_feliz():
-    gen = _corpo_do_generate_sse()
-    tries = [n for n in ast.walk(gen) if isinstance(n, ast.Try) and n.finalbody]
-    assert tries, "generate_sse precisa de um finally"
-
-    chamadas_no_finally = {
-        n.func.id
-        for t in tries
-        for corpo in t.finalbody
-        for n in ast.walk(corpo)
-        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
-    }
-    # Se sair do finally, resposta que quebrou no meio deixa de registrar
-    # ate onde chegou, que e o caso mais util da trilha.
-    assert "save_decision" in chamadas_no_finally
-
-
-def test_answered_reflete_se_houve_texto():
-    fonte = inspect.getsource(chat_route.chat)
-    assert "answered=bool(full_answer)" in fonte.replace(" ", "").replace("\n", "")
+# Com SQL de mentira e a rota de verdade: tests/test_chat_pipeline.py (secao
+# "Gravacao"), inclusive erro no meio do stream, erro antes do primeiro token e
+# falha ao gravar a propria resposta.
 
 
 # ---------------------------------------------------------------------------
@@ -180,10 +152,8 @@ def test_payload_devolve_as_consultas_usadas():
 # 5. A resposta gravada devolve o id, senao a trilha fica orfa
 # ---------------------------------------------------------------------------
 
-def test_save_message_devolve_o_id():
-    fonte = inspect.getsource(chat_route.save_message)
-    assert "RETURNING id" in fonte
-    assert "-> str | None" in fonte
+# O id devolvido e o da linha gravada, com SQL real: tests/test_integracao_chat.py
+# (test_save_message_devolve_o_id_da_linha_gravada).
 
 
 # ---------------------------------------------------------------------------

@@ -236,25 +236,10 @@ def test_enriquecimento_preserva_a_ordem_dos_chunks(monkeypatch):
 # 6. Teto diario global
 # ---------------------------------------------------------------------------
 
-def test_chat_consome_teto_antes_de_qualquer_chamada_paga():
-    fonte = (BACKEND / "app/api/routes/chat.py").read_text()
-    arvore = ast.parse(fonte)
-    corpo = next(
-        n for n in ast.walk(arvore)
-        if isinstance(n, ast.AsyncFunctionDef) and n.name == "chat"
-    )
-    trecho = ast.get_source_segment(fonte, corpo) or ""
-    pos_teto = trecho.find('metering.consumir("chat"')
-    pos_stream = trecho.find("generate_sse")
-    assert pos_teto != -1, "rota de chat sem teto diario"
-    assert pos_teto < pos_stream, "teto consumido depois de comecar a responder"
-
-
-def test_erro_do_provider_nao_vaza_para_o_visitante():
-    """Uma mensagem de rate limit da Voyage, com link do dashboard de billing,
-    apareceu na tela do visitante no meio do stream."""
-    fonte = (BACKEND / "app/api/routes/chat.py").read_text()
-    assert '_sse("error", {"message": str(e)})' not in fonte
+# Teto consumido antes de qualquer chamada paga, e erro do provider que nao vaza
+# para a tela: pela rota em tests/test_chat_pipeline.py
+# (test_teto_diario_estourado_nao_chama_nada_pago,
+# test_erro_do_provider_nao_vaza_para_o_visitante).
 
 
 def test_cadastro_tem_rate_limit():

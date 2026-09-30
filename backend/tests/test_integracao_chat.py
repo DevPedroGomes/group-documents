@@ -172,3 +172,23 @@ def test_grafo_so_mostra_as_decisoes_do_dono(cliente):
 
     vazio = cliente.get("/graph", headers=cab_outro).json()
     assert vazio["nodes"] == [] and vazio["edges"] == []
+
+
+def test_save_message_devolve_o_id_da_linha_gravada(banco_limpo):
+    """O `done` leva este id, e a trilha aponta para ele: sem ele a decisao
+    ficaria orfa e o "por que ele respondeu isso?" nao teria ancora."""
+    from app.api.routes.chat import save_message
+    from app.db.engine import engine
+
+    u = _usuario()
+    thread_id = _thread_com_mensagens(u, 0)
+
+    message_id = save_message(thread_id, "assistant", "resposta", [{"kind": "document"}])
+
+    with engine.connect() as conn:
+        linha = conn.execute(
+            sqltext("SELECT content, citations FROM messages WHERE id = CAST(:id AS uuid)"),
+            {"id": message_id},
+        ).one()
+    assert linha.content == "resposta"
+    assert linha.citations == [{"kind": "document"}]
