@@ -4,6 +4,7 @@ with Reciprocal Rank Fusion (RRF).
 """
 
 import logging
+import re
 import uuid as uuid_mod
 from datetime import date
 from typing import Optional
@@ -57,8 +58,9 @@ def add_chunks(
 # "de"/"o"/"the" virando termo fariam trecho sem relacao pontuar.
 #
 # Medido com scripts/avaliar_busca_textual.py num acervo SINTETICO de moldes
-# (demo, 500 documentos; LIMIT 45; empate contado contra). MRR so da perna
-# textual, antes ('english' com AND de todos os termos) -> agora:
+# (demo, 500 documentos + 15 recados informais; LIMIT 45; empate contado
+# contra). MRR so da perna textual, antes ('english' com AND de todos os
+# termos) -> agora:
 #   pergunta literal do molde (5) ...................... 1,00 -> 1,00
 #   reescrita com o vocabulario do molde (20) .......... 0,00 -> 0,95
 #   outros tipos de documento (15) ..................... 0,00 -> 1,00
@@ -66,17 +68,47 @@ def add_chunks(
 #   ingles: manual + 60 distratores (10, 1 relevante) .. 0,30 -> 0,90
 #   pergunta com OUTRAS palavras (20, grupo pos-hoc) ... 0,00 -> 0,01
 #     (ordem aleatoria da 0,18 nesse grupo)
+#   conversa sem acento, "nao"/"ate"/"pra" (5, pos-hoc)  0,00 -> 1,00
+#     (sem limpar a pergunta: 0,82, e 20% do top-5 casado so por funcional)
 # O que isto NAO mostra: nos grupos altos quase toda pergunta tem um termo que
 # so existe nos documentos relevantes, entao o OR reduz a tarefa a achar um
 # termo raro. Quando a pessoa usa outras palavras, a perna textual nao acha
-# nada e quem responde e a semantica. Nao mede a busca hibrida, o reranker nem
-# trecho com o contexto do enriquecimento. Sem `unaccent` (a 008 segue sem
-# ela) o grupo sem acento nao vale.
+# nada; a expectativa (nao medida aqui) e que a perna semantica cubra esse
+# caso. Nao mede a busca hibrida, o reranker nem trecho com o contexto do
+# enriquecimento. Sem `unaccent` (a 008 segue sem ela) o grupo sem acento nao
+# vale.
 TEXT_SEARCH_CONFIGS = ("busca_portugues", "busca_ingles")
 
-# Como a pergunta vira tsquery: `plainto_tsquery` normaliza com cada config e o
-# AND entre os termos vira OR. Constante para o script de avaliacao medir
-# exatamente o que a busca executa.
+# Palavras funcionais que as stopwords do Postgres nao pegam: a lista portuguesa
+# so tem a forma ACENTUADA ("não", "até"), e "pra"/"pro"/"então" nem estao nela.
+# Com OR, cada uma viraria termo e casaria qualquer texto escrito do mesmo
+# jeito. Saem da PERGUNTA, antes do plainto_tsquery; no indice podem ficar,
+# porque termo que a consulta nunca manda nao casa.
+FUNCIONAIS_FORA_DA_STOPLIST = frozenset({
+    # forma sem acento das stopwords acentuadas da lista portuguesa
+    "ate", "eramos", "esta", "estao", "estavamos", "estiveramos", "estivessemos",
+    "foramos", "fossemos", "ha", "hao", "houvera", "houveramos", "houverao",
+    "houveriamos", "houvessemos", "ja", "nao", "nos", "sao", "sera", "serao",
+    "seriamos", "so", "tambem", "tera", "terao", "teriamos", "tinhamos",
+    "tiveramos", "tivessemos", "voce", "voces",
+    # fora da lista em qualquer grafia
+    "é", "pra", "pro", "pras", "pros", "então", "entao", "tá", "ta", "tô", "né",
+})
+
+_PALAVRA = re.compile(r"\w+")
+
+
+def limpar_consulta_textual(texto: str) -> str:
+    """A pergunta sem as palavras de FUNCIONAIS_FORA_DA_STOPLIST."""
+    return _PALAVRA.sub(
+        lambda m: " " if m.group(0).lower() in FUNCIONAIS_FORA_DA_STOPLIST else m.group(0),
+        texto,
+    )
+
+
+# Como a pergunta (ja limpa) vira tsquery: `plainto_tsquery` normaliza com cada
+# config e o AND entre os termos vira OR. Constante para o script de avaliacao
+# medir exatamente o que a busca executa.
 _TSQUERY_POR_CONFIG = " || ".join(
     f"plainto_tsquery('{cfg}', :query_text)" for cfg in TEXT_SEARCH_CONFIGS
 )
@@ -153,7 +185,7 @@ def hybrid_search(
     doc_filter = ""
     params = {
         "qvec": qvec_str,
-        "query_text": query_text,
+        "query_text": limpar_consulta_textual(query_text),
         "user_id": user_id,
         "limit": prefetch,
     }

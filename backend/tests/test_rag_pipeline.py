@@ -612,3 +612,13 @@ def test_rerank_que_falha_cai_na_ordem_do_rrf(monkeypatch):
     saida = rerank_documents("pergunta", _trechos_com_data(3), top_n=2)
 
     assert [(t["id"], t["score_scale"]) for t in saida] == [("c0", "rrf"), ("c1", "rrf")]
+
+
+def test_limpeza_da_pergunta_tira_funcionais_sem_acento_e_informais():
+    """As listas de stopwords do Postgres so tem a forma acentuada ("não",
+    "até") e nao tem "pra"/"então"; com OR, cada uma viraria termo da busca."""
+    from app.services.vector_store import limpar_consulta_textual
+
+    saida = limpar_consulta_textual("Ate quando NAO posso devolver pra voce? Entao, tá, é isso")
+    assert saida.split() == ["quando", "posso", "devolver", "?", ",", ",", "isso"]
+    assert limpar_consulta_textual("frete gratis acima de 150") == "frete gratis acima de 150"

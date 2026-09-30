@@ -39,8 +39,10 @@ GRUPOS
   (reescritas que reusam o vocabulario do molde), `outros-tipos` (fichas,
   chamados, atas, procedimentos), `en-manual` (ingles).
 - pos-hoc: `sem-acento` (rodada 1: digitada sem acento, termo decisivo so
-  existe acentuado) e `regra-vocab-diferente` (revisao 1: pergunta natural SEM
-  nenhum lexema do molde da regra; o script confere e aborta se houver).
+  existe acentuado), `regra-vocab-diferente` (revisao 1: pergunta natural SEM
+  nenhum lexema do molde da regra; o script confere e aborta se houver) e
+  `informal-sem-acento` (revisao 2: pergunta de regra escrita como conversa,
+  "nao", "ate", "pra", "voce"; mede o ruido que essas palavras trariam).
 
 REGRA DE RELEVANCIA (explicita, deterministica)
 -----------------------------------------------
@@ -50,8 +52,10 @@ gerador vira UM trecho (conferido na execucao), entao, para o tenant `pt`:
   duas versoes da politica e todo chamado daquela regra);
 - demais: predicado declarado na propria pergunta, sobre categoria e
   titulo/texto do documento gerado.
-Tenant `en` (acervo gerado + manual + distratores em ingles): so o trecho do
-manual cujo texto contem o marcador da resposta.
+Os dois tenants tambem tem recados informais escritos sem acento (nunca
+relevantes): sem eles, "nao"/"ate" da pergunta nao teriam com o que casar num
+acervo todo acentuado. Tenant `en` (acervo + recados + manual + distratores em
+ingles): so o trecho do manual cujo texto contem o marcador da resposta.
 
 METRICAS
 --------
@@ -59,13 +63,15 @@ METRICAS
 - MRR = media de 1/posicao do primeiro relevante no top-45 (0 se nao ha);
 - P@5 = relevantes no top-5 / 5;
 - ruido@5 = fracao dos resultados do top-5 cujas palavras da pergunta que
-  casaram sao TODAS funcionais (stopword pt ou en, ou forma sem acento de uma
-  stopword pt, ou "é"/"pra"/"pro");
+  casaram sao TODAS funcionais (stopword pt ou en do Postgres, ou uma de
+  `vector_store.FUNCIONAIS_FORA_DA_STOPLIST`, a mesma lista que o app tira da
+  pergunta);
 - zero % = diagnostico (ver acima).
 Empate de `ts_rank` e desfeito de forma PESSIMISTA: nao relevante primeiro.
 Linhas de base: R0 ordena todos os trechos do tenant por um hash fixo
-(aleatorio); R1 pega o conjunto que casa na config do app e ordena por hash
-(casar qualquer termo, sem ranking).
+(aleatorio); R1 pega o conjunto que casa na consulta do app e ordena por hash
+(casar qualquer termo, sem ranking). J e a config da 008 com a pergunta crua;
+APP e o que o app executa (J + a limpeza da pergunta em Python).
 
 USO
     cd backend
@@ -123,6 +129,8 @@ class Candidato:
     """tsquery; a pergunta chega em `:q`."""
     aleatorio: bool = False
     requer_unaccent: bool = False
+    preparar: Callable[[str], str] | None = None
+    """Transformacao da pergunta em Python antes do SQL (a do app, no APP)."""
 
 
 def _duplo(cfg_a: str, cfg_b: str, t: str = _TEXTO) -> str:
@@ -172,6 +180,7 @@ GRUPOS: dict[str, str] = {
     "en-manual": "original",
     "sem-acento": "pos-hoc, rodada 1",
     "regra-vocab-diferente": "pos-hoc, revisao 1",
+    "informal-sem-acento": "pos-hoc, revisao 2",
 }
 
 
@@ -341,6 +350,15 @@ def perguntas_ouro() -> list[Pergunta]:
         for p in VOCAB_DIFERENTE[r.chave]:
             ps.append(Pergunta(p, "pt", "regra-vocab-diferente", _da_regra(r.chave), r.chave))
 
+    informal = [
+        ("ate quando nao posso devolver pra voce um pacote lacrado?", "devolucao_lacrado_dias"),
+        ("voce ja da desconto pra quem assina?", "desconto_assinante"),
+        ("nao sei ate que horas o pedido e torrado no mesmo dia, sabe?", "corte_torra_no_dia"),
+        ("pra ter frete gratis entao preciso gastar quanto?", "frete_gratis_minimo"),
+        ("voce sabe se ja tem preco de atacado pra quem compra muitos quilos por mes?", "atacado_minimo_kg"),
+    ]
+    ps += [Pergunta(t, "pt", "informal-sem-acento", _da_regra(k), k) for t, k in informal]
+
     manual = [
         ("What is the minimum order value for free shipping?", "above 120 reais"),
         ("How long does domestic delivery take?", "Domestic delivery takes 2 to 4"),
@@ -355,6 +373,18 @@ def perguntas_ouro() -> list[Pergunta]:
     ]
     ps += [Pergunta(t, "en", "en-manual", _manual(m)) for t, m in manual]
     return ps
+
+
+def recados_informais(quantidade: int = 15, semente: int = 7) -> list[tuple[str, str]]:
+    """Recados internos escritos como conversa e sem acento. Quase so palavra
+    funcional: se "nao"/"ate"/"pra" da pergunta virassem termo, casariam aqui."""
+    moldes = [
+        "oi, voce ja viu? ate amanha nao da pra fechar isso, entao fica pra depois. ta bom pra voce?",
+        "nao esquece, ta? voce ja sabe, so manda quando der, pra mim tanto faz. ate mais.",
+        "entao, pro pessoal que ja saiu: nao tem reuniao ate sexta, so avisa voce tambem.",
+    ]
+    rng = random.Random(semente)
+    return [(f"recado-{n + 1:03d}", f"Recado {n + 1:03d}: {rng.choice(moldes)}") for n in range(quantidade)]
 
 
 def distratores_en(quantidade: int = 60, semente: int = 7) -> list[tuple[str, str]]:
@@ -445,6 +475,7 @@ def semear(docs: list[Documento]) -> list[Trecho]:
         fontes: list[tuple[str, Documento | None, list[str]]] = [
             (d.nome_arquivo, d, paginas[d.nome_arquivo]) for d in docs
         ]
+        fontes += [(chave, None, [texto]) for chave, texto in recados_informais()]
         if tenant == "en":
             fontes.append(("manual", None, paginas_manual))
             fontes += [(chave, None, [texto]) for chave, texto in distratores_en()]
@@ -483,17 +514,6 @@ def semear(docs: list[Documento]) -> list[Trecho]:
 # Medicao
 # ---------------------------------------------------------------------------
 
-# Formas sem acento das stopwords acentuadas do portugues (quem digita sem
-# acento escreve "nao", "ate"), mais funcionais que a lista do Postgres nao tem.
-SUPLEMENTO_FUNCIONAIS = frozenset({
-    "ate", "eramos", "esta", "estao", "estavamos", "estiveramos", "estivessemos",
-    "foramos", "fossemos", "ha", "hao", "houvera", "houveramos", "houverao",
-    "houveriamos", "houvessemos", "ja", "nao", "nos", "sao", "sera", "serao",
-    "seriamos", "so", "tambem", "tera", "terao", "teriamos", "tinhamos",
-    "tiveramos", "tivessemos", "voce", "voces", "é", "pra", "pro", "pras", "pros",
-})
-
-
 def _palavras(texto: str) -> list[str]:
     return list(dict.fromkeys(re.findall(r"\w+", texto.lower())))
 
@@ -504,7 +524,8 @@ def _app_como_candidato() -> Candidato:
     from app.services import vector_store
 
     return Candidato("APP", "vector_store + trigger em vigor", "search_vector",
-                     vector_store.TSQUERY_SQL.replace(":query_text", ":q"))
+                     vector_store.TSQUERY_SQL.replace(":query_text", ":q"),
+                     preparar=vector_store.limpar_consulta_textual)
 
 
 def linhas_de_base() -> list[Candidato]:
@@ -548,7 +569,7 @@ def medir(candidatos: list[Candidato], perguntas: list[Pergunta], trechos: list[
     from sqlalchemy import text as sqltext
 
     from app.db.engine import engine
-    from app.services.vector_store import TSQUERY_SQL
+    from app.services.vector_store import FUNCIONAIS_FORA_DA_STOPLIST, TSQUERY_SQL
 
     with engine.begin() as conn:
         tem_unaccent = bool(conn.execute(sqltext(
@@ -568,7 +589,7 @@ def medir(candidatos: list[Candidato], perguntas: list[Pergunta], trechos: list[
                 "SELECT w, ts_lexize('portuguese_stem', w) = '{}' OR ts_lexize('english_stem', w) = '{}' "
                 "FROM unnest(CAST(:ws AS text[])) AS w"), {"ws": todas})
             if f
-        } | (SUPLEMENTO_FUNCIONAIS & set(todas))
+        } | (FUNCIONAIS_FORA_DA_STOPLIST & set(todas))
 
     estavel = {t.id: f"{t.tenant}:{t.chave}#{t.indice}" for t in trechos}
     relevantes: list[set[str]] = []
@@ -619,7 +640,8 @@ def medir(candidatos: list[Candidato], perguntas: list[Pergunta], trechos: list[
         por_pergunta = []
         with engine.begin() as conn:
             for p, rel in zip(perguntas, relevantes):
-                linhas = [(str(i), float(s)) for i, s in conn.execute(sql, {"q": p.texto, "u": _user_id(p.idioma)})]
+                consulta = c.preparar(p.texto) if c.preparar else p.texto
+                linhas = [(str(i), float(s)) for i, s in conn.execute(sql, {"q": consulta, "u": _user_id(p.idioma)})]
                 if c.aleatorio:
                     linhas = [(i, float(_hash(estavel[i], p.texto))) for i, _ in linhas]
                 # Pessimista: no empate, o nao relevante vem antes.
@@ -630,7 +652,7 @@ def medir(candidatos: list[Candidato], perguntas: list[Pergunta], trechos: list[
                 if casou_sql is not None and top5:
                     casou = {
                         str(i): ws or []
-                        for i, ws in conn.execute(casou_sql, {"ws": _palavras(p.texto), "ids": top5})
+                        for i, ws in conn.execute(casou_sql, {"ws": _palavras(consulta), "ids": top5})
                     }
                     ruidosos = sum(
                         1 for i in top5
@@ -741,8 +763,8 @@ def main() -> None:
         admin.dispose()
 
     n_en = len(distratores_en())
-    print(f"acervo: {len(docs)} documentos (semente {args.semente}); tenant en: + manual (2 trechos) "
-          f"+ {n_en} distratores em ingles; LIMIT {LIMITE}; unaccent: "
+    print(f"acervo: {len(docs)} documentos (semente {args.semente}) + {len(recados_informais())} recados "
+          f"informais; tenant en: + manual (2 trechos) + {n_en} distratores em ingles; LIMIT {LIMITE}; unaccent: "
           f"{'presente' if resultado['tem_unaccent'] else 'AUSENTE (F e G fora)'}\n")
     print(relatorio(resultado))
 

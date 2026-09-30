@@ -111,29 +111,47 @@ def test_trigger_e_consulta_usam_as_mesmas_configs(banco_limpo):
     assert _buscar(u, "how long does international shipping take?")
 
 
-FUNCIONAIS = (
+# Stopwords das listas do Postgres, que so tem a forma acentuada do portugues.
+STOPWORDS = (
     "qual o de para da em um que não é com os as do no na uma por mais até você "
     "what is the of for to in a and on it with was this that are"
 )
+# O que as listas nao pegam: sem acento e informal. Sai da pergunta, em Python.
+FUNCIONAIS_SEM_ACENTO = "nao ate voce ja tambem sao ha pra pro estao sera so entao ta"
 
 
-def test_nenhuma_metade_emite_palavra_funcional_de_nenhuma_lingua(banco_limpo):
+def test_nenhuma_metade_emite_stopword_das_duas_linguas(banco_limpo):
     """Com OR e `ts_rank` sem IDF, um trecho que casa so "de" pontua perto de um
-    que casa o assunto. Cada metade descarta as stopwords das duas linguas, e a
-    consulta do app nao leva nenhuma delas."""
+    que casa o assunto. Cada metade descarta as stopwords das duas linguas.
+    A forma sem acento ("nao", "ate") nao esta nas listas: esse lado e o da
+    consulta, testado abaixo."""
     from app.db.engine import engine
-    from app.services.vector_store import TEXT_SEARCH_CONFIGS, TSQUERY_SQL
+    from app.services.vector_store import TEXT_SEARCH_CONFIGS
 
     with engine.begin() as conn:
         for cfg in TEXT_SEARCH_CONFIGS:
-            vetor = conn.execute(sqltext(f"SELECT to_tsvector('{cfg}', :t)::text"), {"t": FUNCIONAIS}).scalar()
-            assert vetor == "", f"{cfg} emite palavra funcional: {vetor}"
+            vetor = conn.execute(sqltext(f"SELECT to_tsvector('{cfg}', :t)::text"), {"t": STOPWORDS}).scalar()
+            assert vetor == "", f"{cfg} emite stopword: {vetor}"
+
+
+def test_a_consulta_nao_leva_palavra_funcional_nem_sem_acento_nem_informal(banco_limpo):
+    """O indice ainda guarda "nao"/"ate"/"pra" de quem escreve sem acento; o que
+    impede o casamento e a pergunta nao mandar esses termos. Confere a tsquery
+    do app e o efeito: um recado so com essas palavras nao volta."""
+    from app.db.engine import engine
+    from app.services.vector_store import TSQUERY_SQL, limpar_consulta_textual
+
+    pergunta = f"{STOPWORDS} {FUNCIONAIS_SEM_ACENTO} valor minimo frete gratis"
+    with engine.begin() as conn:
         consulta = conn.execute(
-            sqltext(f"SELECT {TSQUERY_SQL}::text"),
-            {"query_text": "Qual é o valor mínimo de frete grátis? What is the minimum for free shipping?"},
+            sqltext(f"SELECT {TSQUERY_SQL}::text"), {"query_text": limpar_consulta_textual(pergunta)}
         ).scalar()
     termos = set(re.findall(r"'([^']+)'", consulta))
-    assert termos and not termos & {"qual", "o", "de", "e", "é", "what", "is", "the", "for"}, termos
+    assert termos == {"valor", "minim", "minimo", "fret", "frete", "grat", "grati"}, termos
+
+    u = _usuario()
+    _trecho(u, _documento(u, "Recado"), "oi, voce ja viu? ate amanha nao da pra fechar, entao ta.", eixo=1)
+    assert _buscar(u, "ate quando nao posso devolver pra voce?") == []
 
 
 def test_sem_unaccent_a_008_degrada_e_a_busca_segue(banco_limpo, caplog):
