@@ -24,9 +24,15 @@ END $$;
 -- stopwords portuguesas sao acentuadas ("não", "até"): o descarte vem ANTES do
 -- unaccent. Config ja criada nao e refeita; instalar `unaccent` depois exige
 -- refazer o mapeamento de busca_portugues e reindexar.
+-- O dicionario vai qualificado pelo schema da extensao: em Postgres gerenciado
+-- ela costuma morar fora do search_path (ex.: `extensions`), e o nome solto
+-- nao resolveria.
 DO $$
 DECLARE
-    com_unaccent boolean := EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'unaccent');
+    schema_unaccent text := (
+        SELECT n.nspname FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace
+         WHERE e.extname = 'unaccent'
+    );
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_ts_dict WHERE dictname = 'portugues_stopwords') THEN
         CREATE TEXT SEARCH DICTIONARY portugues_stopwords
@@ -42,10 +48,12 @@ BEGIN
         ALTER TEXT SEARCH CONFIGURATION busca_portugues
             ALTER MAPPING FOR asciiword, asciihword, hword_asciipart
             WITH portugues_stopwords, ingles_stopwords, portuguese_stem;
-        IF com_unaccent THEN
-            ALTER TEXT SEARCH CONFIGURATION busca_portugues
-                ALTER MAPPING FOR word, hword, hword_part
-                WITH portugues_stopwords, ingles_stopwords, unaccent, portuguese_stem;
+        IF schema_unaccent IS NOT NULL THEN
+            EXECUTE format(
+                'ALTER TEXT SEARCH CONFIGURATION busca_portugues '
+                'ALTER MAPPING FOR word, hword, hword_part '
+                'WITH portugues_stopwords, ingles_stopwords, %I.unaccent, portuguese_stem',
+                schema_unaccent);
         ELSE
             ALTER TEXT SEARCH CONFIGURATION busca_portugues
                 ALTER MAPPING FOR word, hword, hword_part

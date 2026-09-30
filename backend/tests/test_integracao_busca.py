@@ -202,6 +202,29 @@ def test_sem_unaccent_a_008_degrada_e_a_busca_segue(banco_limpo, caplog):
             conn.execute(sqltext(f'DROP ROLE "{papel}"'))
 
 
+def test_unaccent_fora_do_search_path_e_achado_pelo_schema(banco_limpo):
+    """Em Postgres gerenciado a extensao costuma morar num schema proprio (ex.:
+    `extensions`), fora do search_path. O dicionario solto na 008 nao
+    resolveria e a migration derrubaria o boot."""
+    from app.db.engine import engine
+
+    with engine.begin() as conn:
+        conn.execute(sqltext("DROP TEXT SEARCH CONFIGURATION busca_portugues"))
+        conn.execute(sqltext("DROP EXTENSION unaccent"))
+        conn.execute(sqltext("CREATE SCHEMA extensoes"))
+        conn.execute(sqltext("CREATE EXTENSION unaccent SCHEMA extensoes"))
+        conn.execute(sqltext((BACKEND / "migrations" / "008_busca_textual.sql").read_text()))
+        caminho = conn.execute(sqltext("SHOW search_path")).scalar()
+        sem_acento = conn.execute(sqltext("SELECT to_tsvector('busca_portugues', 'grátis')::text")).scalar()
+
+    assert "extensoes" not in caminho
+    assert sem_acento == "'grat':1"
+    u = _usuario()
+    politica = _documento(u, "Politica")
+    _trecho(u, politica, "O frete nacional é grátis acima de 150 reais.", eixo=1)
+    assert _docs(_buscar(u, "frete gratis")) == [politica]
+
+
 def test_a_008_recalcula_o_vetor_das_linhas_que_ja_existiam(banco_limpo):
     """Linha gravada pelo trigger antigo ('english') tem de ser reindexada pela
     migration; reaplicar a 008 tambem prova que ela e idempotente."""

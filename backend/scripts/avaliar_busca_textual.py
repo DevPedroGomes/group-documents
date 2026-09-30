@@ -572,9 +572,20 @@ def medir(candidatos: list[Candidato], perguntas: list[Pergunta], trechos: list[
     from app.services.vector_store import FUNCIONAIS_FORA_DA_STOPLIST, TSQUERY_SQL
 
     with engine.begin() as conn:
-        tem_unaccent = bool(conn.execute(sqltext(
-            "SELECT count(*) FROM pg_extension WHERE extname = 'unaccent'")).scalar())
+        # Qualificado pelo schema: a extensao pode morar fora do search_path.
+        schema_unaccent = conn.execute(sqltext(
+            "SELECT n.nspname FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace "
+            "WHERE e.extname = 'unaccent'")).scalar()
+        tem_unaccent = schema_unaccent is not None
         candidatos = [c for c in candidatos if tem_unaccent or not c.requer_unaccent]
+        if tem_unaccent:
+            qualificado = '"' + schema_unaccent.replace('"', '""') + '".unaccent('
+            candidatos = [
+                dataclasses.replace(c, vetor=c.vetor.replace("unaccent(", qualificado),
+                                    consulta=c.consulta.replace("unaccent(", qualificado))
+                if c.requer_unaccent else c
+                for c in candidatos
+            ]
         for c in candidatos:
             if c.vetor in (None, "search_vector"):
                 continue
