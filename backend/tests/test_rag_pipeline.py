@@ -8,7 +8,6 @@ O criterio para um teste entrar aqui: se ele tivesse existido, o bug nao teria
 chegado ao ar.
 """
 
-import ast
 import inspect
 from pathlib import Path
 
@@ -242,17 +241,25 @@ def test_enriquecimento_preserva_a_ordem_dos_chunks(monkeypatch):
 # test_erro_do_provider_nao_vaza_para_o_visitante).
 
 
-def test_cadastro_tem_rate_limit():
-    """Cadastro aberto e gratuito sem limite e fila infinita de contas."""
-    fonte = (BACKEND / "app/api/routes/auth.py").read_text()
-    arvore = ast.parse(fonte)
-    for nome in ("register", "login"):
-        fn = next(
-            n for n in ast.walk(arvore)
-            if isinstance(n, ast.AsyncFunctionDef) and n.name == nome
-        )
-        decoradores = [ast.dump(d) for d in fn.decorator_list]
-        assert any("limit" in d for d in decoradores), f"/{nome} sem rate limit"
+@pytest.mark.parametrize("rota,corpo,sem_limite", [
+    ("/auth/register", {"email": "a@exemplo.com.br", "password": "curta"}, 400),
+    ("/auth/login", {"email": "a@exemplo.com.br", "password": "qualquer-senha-longa"}, 401),
+])
+def test_cadastro_e_login_tem_rate_limit(limiter_em_memoria, monkeypatch, rota, corpo, sem_limite):
+    """Cadastro aberto e gratuito sem limite e fila infinita de contas. Pela
+    rota: as cinco primeiras chegam ao handler, a sexta volta 429."""
+    from fastapi.testclient import TestClient
+
+    from app.api.routes import auth
+    from app.main import create_app
+    from tests.motor_falso import MotorFalso
+
+    monkeypatch.setattr(auth, "engine", MotorFalso(escalar=None))
+    cliente = TestClient(create_app())
+
+    codigos = [cliente.post(rota, json=corpo).status_code for _ in range(6)]
+
+    assert codigos == [sem_limite] * 5 + [429]
 
 
 def test_uvicorn_confia_no_proxy_para_enxergar_o_ip_real():

@@ -85,3 +85,22 @@ def banco_limpo(monkeypatch):
             )
             conn.execute(sqltext(f'DROP DATABASE IF EXISTS "{nome}"'))
         admin.dispose()
+
+
+@pytest.fixture
+def limiter_em_memoria(monkeypatch):
+    """O limiter da app de verdade, contando em memoria em vez de no Redis.
+
+    Serve para prender um rate limit pela rota sem Redis de pe: o decorador, a
+    chave por IP e o 429 sao os reais; so o armazenamento dos contadores muda.
+    """
+    from limits.storage import MemoryStorage
+    from limits.strategies import FixedWindowRateLimiter
+
+    from app.api.rate_limit import limiter
+
+    armazenamento = MemoryStorage()
+    monkeypatch.setattr(limiter, "_storage", armazenamento)
+    monkeypatch.setattr(limiter, "_limiter", FixedWindowRateLimiter(armazenamento))
+    monkeypatch.setattr(limiter, "enabled", True)
+    return limiter

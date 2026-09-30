@@ -1,4 +1,9 @@
-"""Document management routes: upload, ingest, list, preview, delete."""
+"""Document management routes: upload, ingest, list, preview, delete.
+
+Toda rota aqui espera `require_user`, entao e `async def`; o SQL, o disco e o
+embedding sao sincronos e vao por `run_in_threadpool`. No event loop (o uvicorn
+roda um worker so) cada um deles congelaria todos os outros requests do app.
+"""
 
 import os
 import re
@@ -10,6 +15,7 @@ from typing import Optional
 from fastapi import APIRouter, Request, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel, ConfigDict, field_validator
 from sqlalchemy import insert, text as sqltext
+from starlette.concurrency import run_in_threadpool
 
 from app.config.settings import get_settings
 from app.db.engine import engine
@@ -85,6 +91,19 @@ def validate_storage_path(path: str) -> bool:
     return bool(re.match(pattern, path, re.IGNORECASE))
 
 
+def _apagar_linha(doc_id) -> None:
+    with engine.begin() as conn:
+        conn.execute(sqltext("DELETE FROM documents WHERE id = :id"), {"id": doc_id})
+
+
+def _inserir_documento(**valores) -> str:
+    """Cria a linha do documento e devolve o id."""
+    with engine.begin() as conn:
+        return conn.execute(
+            insert(documents).values(**valores).returning(documents.c.id)
+        ).scalar_one()
+
+
 async def _recusar_e_desfazer(doc_id, storage_path: str, exc: FilaCheia) -> None:
     """Desfaz os efeitos ja aplicados quando a fila RECUSA o trabalho, e vira HTTP.
 
@@ -115,15 +134,12 @@ async def _recusar_e_desfazer(doc_id, storage_path: str, exc: FilaCheia) -> None
         logger.exception("ingest.devolucao_de_cota_falhou doc_id=%s", doc_id)
 
     try:
-        with engine.begin() as conn:
-            conn.execute(
-                sqltext("DELETE FROM documents WHERE id = :id"), {"id": doc_id}
-            )
+        await run_in_threadpool(_apagar_linha, doc_id)
     except Exception:
         logger.exception("ingest.remocao_do_documento_falhou doc_id=%s", doc_id)
 
     try:
-        delete_file(storage_path)
+        await run_in_threadpool(delete_file, storage_path)
     except Exception:
         logger.warning(f"File deletion failed for {storage_path}", exc_info=True)
 
@@ -189,7 +205,7 @@ async def upload_file(
             raise HTTPException(415, "Declared content-type does not match file contents")
 
     # Save to local storage with UUID-based filename derived from sniffed mime
-    storage_path = save_file(user_id, sniffed_mime, data)
+    storage_path = await run_in_threadpool(save_file, user_id, sniffed_mime, data)
 
     # Create document record
     # Teto diario global de ingestoes. A ingestao e o caminho MAIS caro do app:
@@ -209,17 +225,15 @@ async def upload_file(
         ) from exc
 
     try:
-        with engine.begin() as conn:
-            doc_id = conn.execute(
-                insert(documents).values(
-                    user_id=user_id,
-                    title=title,
-                    mime=sniffed_mime,
-                    storage_path=storage_path,
-                    status="pending",
-                    effective_date=data_efetiva,
-                ).returning(documents.c.id)
-            ).scalar_one()
+        doc_id = await run_in_threadpool(
+            _inserir_documento,
+            user_id=user_id,
+            title=title,
+            mime=sniffed_mime,
+            storage_path=storage_path,
+            status="pending",
+            effective_date=data_efetiva,
+        )
     except Exception as e:
         logger.error(f"DB error creating document: {e}")
         raise HTTPException(500, "Error creating document record")
@@ -302,7 +316,7 @@ async def crawl_url(request: Request, body: CrawlBody):
 
     title = (body.title or page_title or body.url)[:500]
 
-    storage_path = save_file(user_id, "text/plain", text.encode("utf-8"))
+    storage_path = await run_in_threadpool(save_file, user_id, "text/plain", text.encode("utf-8"))
 
     # Teto diario global de ingestoes. A ingestao e o caminho MAIS caro do app:
     # enriquecimento contextual chama o LLM uma vez por chunk. Consumido antes
@@ -321,18 +335,16 @@ async def crawl_url(request: Request, body: CrawlBody):
         ) from exc
 
     try:
-        with engine.begin() as conn:
-            doc_id = conn.execute(
-                insert(documents).values(
-                    user_id=user_id,
-                    title=title,
-                    mime="text/plain",
-                    storage_path=storage_path,
-                    status="pending",
-                    meta={"source_url": body.url},
-                    effective_date=body.effective_date,
-                ).returning(documents.c.id)
-            ).scalar_one()
+        doc_id = await run_in_threadpool(
+            _inserir_documento,
+            user_id=user_id,
+            title=title,
+            mime="text/plain",
+            storage_path=storage_path,
+            status="pending",
+            meta={"source_url": body.url},
+            effective_date=body.effective_date,
+        )
     except Exception as e:
         logger.error(f"DB error creating document: {e}")
         raise HTTPException(500, "Error creating document record")
@@ -399,16 +411,14 @@ async def ingest(request: Request, body: IngestBody):
         ) from exc
 
     try:
-        with engine.begin() as conn:
-            doc_id = conn.execute(
-                insert(documents).values(
-                    user_id=user_id,
-                    title=body.title,
-                    mime=body.mime,
-                    storage_path=body.storage_path,
-                    status="pending",
-                ).returning(documents.c.id)
-            ).scalar_one()
+        doc_id = await run_in_threadpool(
+            _inserir_documento,
+            user_id=user_id,
+            title=body.title,
+            mime=body.mime,
+            storage_path=body.storage_path,
+            status="pending",
+        )
     except Exception as e:
         logger.error(f"DB error creating document: {e}")
         raise HTTPException(500, "Error creating document record")
@@ -439,19 +449,12 @@ async def ingest(request: Request, body: IngestBody):
     return {"document_id": str(doc_id), "job_id": job_id, "status": "pending"}
 
 
-@router.get("/documents")
-async def list_documents(request: Request, query: Optional[str] = None, semantic_query: Optional[str] = None):
-    user_id = await require_user(request)
-
-    relevant_ids = None
-    if semantic_query:
-        from app.services.embedding_cache import get_query_embedding
-
-        qvec = get_query_embedding(semantic_query)
-        qvec_str = "[" + ",".join(map(str, qvec)) + "]"
-
-        with engine.begin() as conn:
-            sql = sqltext("""
+def _documentos_parecidos(qvec: list[float], user_id: str) -> list[str]:
+    """Ids dos documentos com algum chunk perto da consulta, do mais parecido ao menos."""
+    qvec_str = "[" + ",".join(map(str, qvec)) + "]"
+    with engine.begin() as conn:
+        rows = conn.execute(
+            sqltext("""
                 SELECT document_id, MAX(1 - (embedding <=> CAST(:qvec AS vector))) as max_score
                 FROM chunks
                 WHERE user_id = CAST(:user_id AS uuid)
@@ -459,12 +462,13 @@ async def list_documents(request: Request, query: Optional[str] = None, semantic
                 GROUP BY document_id
                 ORDER BY max_score DESC
                 LIMIT 50
-            """)
-            rows = conn.execute(sql, {"qvec": qvec_str, "user_id": user_id}).fetchall()
-            relevant_ids = [str(r[0]) for r in rows]
-            if not relevant_ids:
-                return {"items": []}
+            """),
+            {"qvec": qvec_str, "user_id": user_id},
+        ).fetchall()
+    return [str(r[0]) for r in rows]
 
+
+def _listar_documentos(user_id: str, relevant_ids: list[str] | None):
     with engine.begin() as conn:
         # `erro` vinha sendo gravado em meta->>'error' e nunca projetado: a tela
         # mostrava um badge "Failed" sem causa e sem saida. `preso` cobre o
@@ -485,7 +489,23 @@ async def list_documents(request: Request, query: Optional[str] = None, semantic
         else:
             base_sql += " ORDER BY uploaded_at DESC"
 
-        rows = conn.execute(sqltext(base_sql), params).mappings().all()
+        return conn.execute(sqltext(base_sql), params).mappings().all()
+
+
+@router.get("/documents")
+async def list_documents(request: Request, query: Optional[str] = None, semantic_query: Optional[str] = None):
+    user_id = await require_user(request)
+
+    relevant_ids = None
+    if semantic_query:
+        from app.services.embedding_cache import get_query_embedding
+
+        qvec = await run_in_threadpool(get_query_embedding, semantic_query)
+        relevant_ids = await run_in_threadpool(_documentos_parecidos, qvec, user_id)
+        if not relevant_ids:
+            return {"items": []}
+
+    rows = await run_in_threadpool(_listar_documentos, user_id, relevant_ids)
 
     items = [{
         "id": str(r["id"]),
@@ -507,30 +527,44 @@ async def list_documents(request: Request, query: Optional[str] = None, semantic
     return {"items": items}
 
 
-@router.get("/document/{doc_id}/preview")
-async def preview(request: Request, doc_id: str):
-    """Return the file content for an owned document. 404 (not 403) on mismatch."""
-    user_id = await require_user(request)
-
+def _caminho_do_documento(doc_id: str, user_id: str) -> str | None:
     with engine.begin() as conn:
         row = conn.execute(
             sqltext("SELECT storage_path FROM documents WHERE id = :id AND user_id = CAST(:uid AS uuid)"),
             {"id": doc_id, "uid": user_id},
         ).first()
-    if not row:
+    return row[0] if row else None
+
+
+@router.get("/document/{doc_id}/preview")
+async def preview(request: Request, doc_id: str):
+    """Return the file content for an owned document. 404 (not 403) on mismatch."""
+    user_id = await require_user(request)
+
+    storage_path = await run_in_threadpool(_caminho_do_documento, doc_id, user_id)
+    if not storage_path:
         # Hide existence — same response whether the doc doesn't exist or
         # belongs to someone else.
         raise HTTPException(404, "Document not found")
 
-    storage_path = row[0]
-
     try:
-        abs_path = get_file_abspath(storage_path)
+        abs_path = await run_in_threadpool(get_file_abspath, storage_path)
     except FileNotFoundError:
         raise HTTPException(404, "File not found on disk")
 
     from fastapi.responses import FileResponse
     return FileResponse(abs_path, filename=os.path.basename(storage_path))
+
+
+def _apagar_documento(doc_id: str, user_id: str) -> str | None:
+    """Apaga a linha (e os chunks, por FK CASCADE); devolve o arquivo dela, ou None."""
+    with engine.begin() as conn:
+        row = conn.execute(
+            sqltext("DELETE FROM documents WHERE id = :id AND user_id = CAST(:uid AS uuid) "
+                    "RETURNING storage_path"),
+            {"id": doc_id, "uid": user_id},
+        ).first()
+    return row[0] if row else None
 
 
 @router.delete("/documents/{doc_id}")
@@ -541,24 +575,13 @@ async def delete_document(request: Request, doc_id: str):
     """
     user_id = await require_user(request)
 
-    with engine.begin() as conn:
-        row = conn.execute(
-            sqltext("SELECT storage_path FROM documents WHERE id = :id AND user_id = CAST(:uid AS uuid)"),
-            {"id": doc_id, "uid": user_id},
-        ).first()
-        if not row:
-            raise HTTPException(404, "Document not found")
-        storage_path = row[0]
-
-        # FK CASCADE removes chunks rows. Explicitly delete the document.
-        conn.execute(
-            sqltext("DELETE FROM documents WHERE id = :id AND user_id = CAST(:uid AS uuid)"),
-            {"id": doc_id, "uid": user_id},
-        )
+    storage_path = await run_in_threadpool(_apagar_documento, doc_id, user_id)
+    if not storage_path:
+        raise HTTPException(404, "Document not found")
 
     # Remove the file from disk best-effort.
     try:
-        delete_file(storage_path)
+        await run_in_threadpool(delete_file, storage_path)
     except Exception as e:
         logger.warning(f"File deletion failed for {storage_path}: {e}")
 

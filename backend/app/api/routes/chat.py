@@ -5,13 +5,14 @@ import json
 import logging
 import threading
 import time
+import uuid
 from typing import AsyncGenerator
 
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, field_validator
 from sqlalchemy import insert, text as sqltext
-from starlette.concurrency import iterate_in_threadpool
+from starlette.concurrency import iterate_in_threadpool, run_in_threadpool
 
 from app.config.settings import get_settings
 from app.db.engine import engine
@@ -68,7 +69,19 @@ def create_thread(user_id: str) -> str:
     return str(thread_id)
 
 
+def _e_uuid(valor: str) -> bool:
+    try:
+        uuid.UUID(str(valor))
+        return True
+    except ValueError:
+        return False
+
+
 def validate_thread_ownership(thread_id: str, user_id: str) -> bool:
+    # Id que nao e UUID nao e thread de ninguem: sem isto o CAST do Postgres
+    # levantava e a rota respondia 500 em vez de 403.
+    if not _e_uuid(thread_id):
+        return False
     with engine.begin() as conn:
         result = conn.execute(
             sqltext("SELECT user_id FROM threads WHERE id = :thread_id"),
@@ -111,6 +124,16 @@ def get_thread_history(thread_id: str, user_id: str, limit: int = 20) -> list[di
         }
         for r in rows
     ]
+
+
+def _abrir_conversa(thread_id: str | None, user_id: str) -> tuple[str, list[dict]]:
+    """A thread pedida (se for da pessoa, senao 403) ou uma nova, e o historico dela."""
+    if thread_id:
+        if not validate_thread_ownership(thread_id, user_id):
+            raise HTTPException(403, "Thread does not belong to this user")
+    else:
+        thread_id = create_thread(user_id)
+    return thread_id, get_thread_history(thread_id, user_id)
 
 
 def save_message(
@@ -265,15 +288,9 @@ async def chat(request: Request, body: ChatBody):
     if not is_valid:
         raise HTTPException(400, reason)
 
-    # Thread management
-    thread_id = body.thread_id
-    if thread_id:
-        if not validate_thread_ownership(thread_id, user_id):
-            raise HTTPException(403, "Thread does not belong to this user")
-    else:
-        thread_id = create_thread(user_id)
-
-    history = get_thread_history(thread_id, user_id)
+    # SQL sincrono vai para thread, como todo o resto desta rota: no event loop
+    # (um worker so do uvicorn) seguraria todos os outros requests do app.
+    thread_id, history = await run_in_threadpool(_abrir_conversa, body.thread_id, user_id)
 
     # Teto diario global, consumido ANTES de qualquer chamada paga. Vem depois
     # da validacao e da checagem de posse da thread, que sao gratis: pergunta
@@ -291,8 +308,7 @@ async def chat(request: Request, body: ChatBody):
             headers={"Retry-After": str(metering.segundos_ate_meia_noite_utc())},
         ) from exc
 
-    # Save user message
-    save_message(thread_id, "user", body.message)
+    await run_in_threadpool(save_message, thread_id, "user", body.message)
 
     async def generate_sse() -> AsyncGenerator[str, None]:
         """Generate SSE stream with workflow steps + streamed answer."""
@@ -620,23 +636,47 @@ async def chat(request: Request, body: ChatBody):
 # depois que a pagina recarrega.
 
 
-@router.get("/decisions/{message_id}")
-@limiter.limit("60/minute")
-async def get_decision(request: Request, message_id: str):
-    """Devolve a trilha que produziu uma resposta especifica."""
-    user_id = await require_user(request)
+_COLUNAS_DECISAO = """
+    id, thread_id, message_id, question, retrieved, graded,
+    considered, kept, score_scale, reranked, low_confidence,
+    web_used, answered, latency_ms, conflict, as_of, queries, created_at
+"""
 
+
+def _ler_decisao(message_id: str, user_id: str):
     with engine.begin() as conn:
-        row = conn.execute(
-            sqltext("""
-                SELECT id, thread_id, message_id, question, retrieved, graded,
-                       considered, kept, score_scale, reranked, low_confidence,
-                       web_used, answered, latency_ms, conflict, as_of, queries, created_at
+        return conn.execute(
+            sqltext(f"""
+                SELECT {_COLUNAS_DECISAO}
                 FROM decisions
                 WHERE message_id = CAST(:message_id AS uuid) AND user_id = CAST(:user_id AS uuid)
             """),
             {"message_id": message_id, "user_id": user_id},
         ).mappings().first()
+
+
+def _listar_decisoes(user_id: str, thread_id: str | None, limit: int):
+    sql = f"""
+        SELECT {_COLUNAS_DECISAO}
+        FROM decisions
+        WHERE user_id = CAST(:user_id AS uuid)
+    """
+    params: dict = {"user_id": user_id, "limit": limit}
+    if thread_id:
+        sql += " AND thread_id = CAST(:thread_id AS uuid)"
+        params["thread_id"] = thread_id
+    sql += " ORDER BY created_at DESC LIMIT :limit"
+
+    with engine.begin() as conn:
+        return conn.execute(sqltext(sql), params).mappings().all()
+
+
+@router.get("/decisions/{message_id}")
+@limiter.limit("60/minute")
+async def get_decision(request: Request, message_id: str):
+    """Devolve a trilha que produziu uma resposta especifica."""
+    user_id = await require_user(request)
+    row = await run_in_threadpool(_ler_decisao, message_id, user_id)
 
     if not row:
         raise HTTPException(status_code=404, detail="No decision trail for that message")
@@ -650,22 +690,7 @@ async def list_decisions(request: Request, thread_id: str | None = None, limit: 
     """Lista as trilhas do usuario, da mais recente para a mais antiga."""
     user_id = await require_user(request)
     limit = max(1, min(limit, 200))
-
-    sql = """
-        SELECT id, thread_id, message_id, question, retrieved, graded,
-               considered, kept, score_scale, reranked, low_confidence,
-               web_used, answered, latency_ms, conflict, as_of, queries, created_at
-        FROM decisions
-        WHERE user_id = CAST(:user_id AS uuid)
-    """
-    params: dict = {"user_id": user_id, "limit": limit}
-    if thread_id:
-        sql += " AND thread_id = CAST(:thread_id AS uuid)"
-        params["thread_id"] = thread_id
-    sql += " ORDER BY created_at DESC LIMIT :limit"
-
-    with engine.begin() as conn:
-        rows = conn.execute(sqltext(sql), params).mappings().all()
+    rows = await run_in_threadpool(_listar_decisoes, user_id, thread_id, limit)
 
     return {"decisions": [_decision_payload(r) for r in rows]}
 
@@ -795,6 +820,21 @@ def _montar_grafo(linhas) -> tuple[list[dict], list[dict], list[dict]]:
     return list(documentos.values()), perguntas, arestas
 
 
+def _decisoes_do_grafo(user_id: str, days: int, limit: int):
+    with engine.begin() as conn:
+        return conn.execute(
+            sqltext("""
+                SELECT id, question, graded, conflict, low_confidence, created_at
+                FROM decisions
+                WHERE user_id = CAST(:user_id AS uuid)
+                  AND created_at >= NOW() - CAST(:janela AS interval)
+                ORDER BY created_at DESC
+                LIMIT :limit
+            """),
+            {"user_id": user_id, "janela": f"{days} days", "limit": limit},
+        ).mappings().all()
+
+
 @router.get("/graph")
 @limiter.limit("30/minute")
 async def knowledge_graph(request: Request, days: int = 30, limit: int = 300):
@@ -809,19 +849,7 @@ async def knowledge_graph(request: Request, days: int = 30, limit: int = 300):
     user_id = await require_user(request)
     days = max(1, min(days, 365))
     limit = max(10, min(limit, 1000))
-
-    with engine.begin() as conn:
-        linhas = conn.execute(
-            sqltext("""
-                SELECT id, question, graded, conflict, low_confidence, created_at
-                FROM decisions
-                WHERE user_id = CAST(:user_id AS uuid)
-                  AND created_at >= NOW() - CAST(:janela AS interval)
-                ORDER BY created_at DESC
-                LIMIT :limit
-            """),
-            {"user_id": user_id, "janela": f"{days} days", "limit": limit},
-        ).mappings().all()
+    linhas = await run_in_threadpool(_decisoes_do_grafo, user_id, days, limit)
 
     documentos, perguntas, arestas = _montar_grafo(linhas)
 
@@ -838,13 +866,9 @@ async def knowledge_graph(request: Request, days: int = 30, limit: int = 300):
     }
 
 
-@router.get("/threads")
-async def list_threads(request: Request):
-    """List user's conversation threads."""
-    user_id = await require_user(request)
-
+def _listar_threads(user_id: str):
     with engine.begin() as conn:
-        rows = conn.execute(
+        return conn.execute(
             sqltext("""
                 SELECT t.id, t.title, t.updated_at,
                        (SELECT content FROM messages WHERE thread_id = t.id ORDER BY created_at ASC LIMIT 1) as first_message
@@ -855,6 +879,13 @@ async def list_threads(request: Request):
             """),
             {"user_id": user_id},
         ).mappings().all()
+
+
+@router.get("/threads")
+async def list_threads(request: Request):
+    """List user's conversation threads."""
+    user_id = await require_user(request)
+    rows = await run_in_threadpool(_listar_threads, user_id)
 
     return {
         "threads": [
@@ -873,10 +904,10 @@ async def get_messages(request: Request, thread_id: str):
     """Get messages for a thread."""
     user_id = await require_user(request)
 
-    if not validate_thread_ownership(thread_id, user_id):
+    if not await run_in_threadpool(validate_thread_ownership, thread_id, user_id):
         raise HTTPException(403, "Thread does not belong to this user")
 
-    history = get_thread_history(thread_id, user_id, limit=100)
+    history = await run_in_threadpool(get_thread_history, thread_id, user_id, 100)
     return {"messages": history, "thread_id": thread_id}
 
 
@@ -885,21 +916,23 @@ async def delete_thread(request: Request, thread_id: str):
     """Delete a thread and its messages (LGPD compliance). Ownership enforced."""
     user_id = await require_user(request)
 
-    with engine.begin() as conn:
-        row = conn.execute(
-            sqltext("SELECT id FROM threads WHERE id = :id AND user_id = CAST(:uid AS uuid)"),
-            {"id": thread_id, "uid": user_id},
-        ).first()
-        if not row:
-            raise HTTPException(404, "Thread not found")
-
-        # FK CASCADE removes message rows.
-        conn.execute(
-            sqltext("DELETE FROM threads WHERE id = :id AND user_id = CAST(:uid AS uuid)"),
-            {"id": thread_id, "uid": user_id},
-        )
+    if not await run_in_threadpool(_apagar_thread, thread_id, user_id):
+        raise HTTPException(404, "Thread not found")
 
     return {"deleted": True, "id": thread_id}
+
+
+def _apagar_thread(thread_id: str, user_id: str) -> bool:
+    """Apaga a thread da pessoa; False quando nao ha thread dela com esse id."""
+    if not _e_uuid(thread_id):
+        return False
+    with engine.begin() as conn:
+        # FK CASCADE removes message rows.
+        apagadas = conn.execute(
+            sqltext("DELETE FROM threads WHERE id = :id AND user_id = CAST(:uid AS uuid)"),
+            {"id": thread_id, "uid": user_id},
+        ).rowcount
+    return bool(apagadas)
 
 
 def _sse(event_type: str, data) -> str:
