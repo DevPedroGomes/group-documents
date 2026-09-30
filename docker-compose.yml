@@ -177,9 +177,11 @@ services:
       - NEXT_PUBLIC_API_URL=https://group-documents-api.pgdev.com.br
       # As rotas /api/* do Next chamam o backend pela rede `internal`, e nao pela
       # URL publica, repassando o IP do visitante (o `X-Real-Ip` do Traefik) no
-      # X-Forwarded-For. Pela URL publica todo visitante chegava ao rate limit
+      # X-Forwarded-For. Usa o nome do container (unico no host) e nao o alias
+      # `backend`: o frontend tambem esta na rede externa `proxy`, onde o alias
+      # de outra stack poderia colidir. Pela URL publica todo visitante chegava ao rate limit
       # com o IP deste container e dividia um balde so com todos os outros.
-      - API_INTERNAL_URL=http://backend:8000
+      - API_INTERNAL_URL=http://group-documents-api:8000
     depends_on:
       backend:
         condition: service_started
