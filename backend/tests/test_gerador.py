@@ -99,3 +99,28 @@ def test_historico_vai_antes_da_pergunta(prompt):
     historico = [{"role": "user", "content": "oi"}, {"role": "assistant", "content": "ola"}]
     _gerar(question="e o prazo?", documents=[], history=historico)
     assert [m["role"] for m in prompt["messages"]] == ["user", "assistant", "user"]
+
+
+def test_janela_de_historico_que_abre_em_assistant_perde_as_mensagens_iniciais_ate_um_user():
+    from app.core.rag.generator import _build_messages
+
+    historico = [
+        {"role": "assistant", "content": "resposta solta"},
+        {"role": "assistant", "content": "outra"},
+        {"role": "user", "content": "pergunta"},
+        {"role": "assistant", "content": "resposta"},
+    ]
+
+    mensagens = _build_messages("e agora?", [], historico)
+
+    assert [m["role"] for m in mensagens] == ["user", "assistant", "user"]
+    assert mensagens[0]["content"] == "pergunta"
+    assert mensagens[-1]["content"].endswith("Question: e agora?")
+
+
+def test_historico_so_de_assistant_fica_apenas_com_a_pergunta_atual():
+    from app.core.rag.generator import _build_messages
+
+    mensagens = _build_messages("oi", [], [{"role": "assistant", "content": "x"}])
+
+    assert [m["role"] for m in mensagens] == ["user"]

@@ -80,6 +80,11 @@ def _build_messages(
         for msg in history:
             role = "user" if msg["role"] == "user" else "assistant"
             messages.append({"role": role, "content": msg["content"]})
+    # A API de mensagens exige que a primeira seja `user`. A janela recente pode
+    # abrir em `assistant` (corte no meio de um par, ou turno que morreu antes do
+    # primeiro token e deixou um `user` sem resposta).
+    while messages and messages[0]["role"] != "user":
+        messages.pop(0)
     messages.append({
         "role": "user",
         "content": f"{context}\n\nQuestion: {question}",
