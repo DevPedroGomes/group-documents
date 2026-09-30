@@ -60,7 +60,7 @@ _EXTRA_V6_NETS = [
 
 _BLOCKED_PORTS = {22, 23, 25, 3306, 5432, 6379, 27017}
 
-USER_AGENT = "GroupDocsBot/1.0 (+https://group-documents.pgdev.com.br)"
+USER_AGENT = "BrainHubBot/1.0 (+https://group-documents.pgdev.com.br)"
 MAX_BYTES = 5 * 1024 * 1024  # 5 MB hard cap on response body
 FETCH_TIMEOUT = 20.0
 MAX_REDIRECTS = 5
