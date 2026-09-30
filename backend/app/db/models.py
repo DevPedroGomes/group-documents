@@ -1,8 +1,8 @@
 from sqlalchemy import (
     Table, Column, String, Integer, Text, JSON, TIMESTAMP,
-    ForeignKey, MetaData, Float, Boolean,
+    ForeignKey, MetaData, Float, Boolean, Date,
 )
-from sqlalchemy.dialects.postgresql import UUID, ARRAY
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 from pgvector.sqlalchemy import Vector
 import os
@@ -41,6 +41,8 @@ documents = Table(
     Column("summary", Text),
     Column("chunk_count", Integer, default=0),
     Column("uploaded_at", TIMESTAMP(timezone=True), server_default=func.now()),
+    # Data em que o documento vale; o recorte `as_of` usa esta, com uploaded_at de reserva.
+    Column("effective_date", Date, nullable=True),
 )
 
 chunks = Table(
@@ -76,11 +78,10 @@ messages = Table(
     Column("role", Text, nullable=False),
     Column("content", Text, nullable=False),
     Column("citations", JSON),
-    Column("sources", ARRAY(UUID(as_uuid=True))),
     Column("created_at", TIMESTAMP(timezone=True), server_default=func.now()),
 )
 
 # A tabela `semantic_cache` foi declarada aqui e nunca escrita nem lida por
 # nenhum caminho do codigo — cache semantico de resposta jamais foi
-# implementado. Removida junto com as configs `semantic_cache_*`. A tabela
-# segue no banco, vazia, e pode ser dropada numa migration futura.
+# implementado. Removida junto com as configs `semantic_cache_*`; a migration
+# 007 dropa a tabela.

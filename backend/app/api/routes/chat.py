@@ -120,6 +120,12 @@ def save_message(
             """),
             {"thread_id": thread_id, "role": role, "content": content, "citations": citations_json},
         ).first()
+        # Na mesma transacao: a lista de threads ordena por `updated_at`, e sem
+        # isso a conversa mais recente nao subiria ao topo.
+        conn.execute(
+            sqltext("UPDATE threads SET updated_at = NOW() WHERE id = :thread_id"),
+            {"thread_id": thread_id},
+        )
     return str(row[0]) if row else None
 
 

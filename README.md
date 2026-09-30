@@ -119,15 +119,15 @@ Frontend is built and served by a multi-stage `node:20-alpine` image running as 
 
 ### Database
 
-PostgreSQL 16 with `vector`, `pgcrypto`, and `uuid-ossp` extensions. Tables (see `sql/init.sql`):
+PostgreSQL 16 with `vector`, `pgcrypto`, and `uuid-ossp` extensions. Tables (schema comes from `backend/migrations/`, applied on boot):
 
 | Table | Notable columns |
 |---|---|
 | `users` | `id (uuid pk)`, `email unique`, `password_hash` (bcrypt), `is_active`, `created_at` |
-| `documents` | `user_id` FK, `title`, `mime`, `storage_path`, `status`, `summary`, `chunk_count`, `meta jsonb`, `uploaded_at` |
+| `documents` | `user_id` FK, `title`, `mime`, `storage_path`, `status`, `summary`, `chunk_count`, `meta jsonb`, `effective_date`, `uploaded_at` |
 | `chunks` | `user_id` FK, `document_id` FK CASCADE, `page`, `chunk_index`, `content`, `enriched_content`, `embedding vector(1536)`, `token_count`, `metadata jsonb`, `search_vector tsvector`, `created_at` |
 | `threads` | `user_id` FK, `title`, `created_at`, `updated_at` |
-| `messages` | `thread_id` FK CASCADE, `role`, `content`, `citations jsonb`, `sources uuid[]`, `created_at` |
+| `messages` | `thread_id` FK CASCADE, `role`, `content`, `citations jsonb`, `created_at` |
 | `semantic_cache` | reserved for future cross-query reuse, not wired in this build |
 
 Indexes: HNSW on `chunks.embedding` (`vector_cosine_ops`, `m=16`, `ef_construction=64`), GIN on `chunks.search_vector`, B-trees on every FK and on `documents.uploaded_at DESC`. A trigger keeps `search_vector` in sync from `content || ' ' || enriched_content`.
@@ -221,9 +221,9 @@ Prerequisites: Docker 24+, Docker Compose v2.
    docker compose up -d --build
    ```
 
-   This brings up `postgres` (with `sql/init.sql` auto-applied via the entrypoint), `redis`, `backend`, and `frontend`. The backend waits on the `pg_isready` and `redis-cli ping` healthchecks.
+   This brings up `postgres` (the backend applies `backend/migrations/` on boot), `redis`, `backend`, and `frontend`. The backend waits on the `pg_isready` and `redis-cli ping` healthchecks.
 3. Visit the frontend at `http://localhost:3000` (or the configured Traefik host). Register a user via `POST /auth/register`; passwords need at least 12 characters.
-4. To iterate without Docker: `cd backend && python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt && uvicorn app.main:app --reload --port 8000`. The frontend uses `cd frontend && npm install && npm run dev`. You still need a reachable Postgres with `pgvector` and a Redis instance, and `sql/init.sql` must be applied manually.
+4. To iterate without Docker: `cd backend && python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt && uvicorn app.main:app --reload --port 8000`. The frontend uses `cd frontend && npm install && npm run dev`. You still need a reachable Postgres with `pgvector` and a Redis instance. The backend applies `backend/migrations/` on boot.
 
 ## Deployment
 

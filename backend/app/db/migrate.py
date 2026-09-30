@@ -6,7 +6,7 @@ Voyage (1024), e TODA ingestao passou a falhar no INSERT. Ninguem percebeu
 porque nada comparava schema esperado x schema real.
 
 Contrato:
-- Arquivos ficam em `sql/migrations/NNN_nome.sql`, aplicados em ordem numerica.
+- Arquivos ficam em `backend/migrations/NNN_nome.sql`, aplicados em ordem numerica.
 - Cada arquivo roda UMA vez, dentro de UMA transacao, e e registrado em
   `schema_migrations`. Falha => rollback daquele arquivo e a app NAO sobe.
 - Migration ja registrada e pulada. Rodar duas vezes e no-op.
@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 # app/db/migrate.py -> app/ -> backend/ -> backend/migrations
 # Fica DENTRO de backend/ de proposito: o build context da imagem e `./backend`,
-# entao `sql/` na raiz do repo nao existe no container.
+# entao nada fora de `backend/` existe no container.
 MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "migrations"
 
 # Numero arbitrario mas fixo: identifica ESTE runner no pg_advisory_lock.
