@@ -481,7 +481,7 @@ def _listar_documentos(user_id: str, relevant_ids: list[str] | None):
         # outro silencio — se a fila perde o job, o documento fica em
         # pending/processing para sempre e o browser faz polling indefinido.
         base_sql = (
-            "SELECT id, title, mime, status, summary, chunk_count, "
+            "SELECT id, title, mime, status, summary, chunk_count, effective_date, "
             "meta->>'error' AS erro, "
             "(status IN ('pending','processing') "
             " AND uploaded_at < now() - interval '30 minutes') AS preso "
@@ -540,6 +540,8 @@ async def list_documents(
 
     rows = await run_in_threadpool(_listar_documentos, user_id, relevant_ids)
 
+    # O SELECT ja trazia `erro` e `preso` e o dict os descartava: o badge
+    # "Failed"/"Stalled" da tela nunca tinha o que mostrar.
     items = [{
         "id": str(r["id"]),
         "title": r["title"],
@@ -547,6 +549,9 @@ async def list_documents(
         "status": r["status"],
         "summary": r.get("summary"),
         "chunk_count": r.get("chunk_count", 0),
+        "erro": r.get("erro"),
+        "preso": bool(r.get("preso")),
+        "effective_date": r["effective_date"].isoformat() if r.get("effective_date") else None,
     } for r in rows]
 
     if query:

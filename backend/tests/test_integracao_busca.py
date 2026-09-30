@@ -438,6 +438,42 @@ def test_crawl_recusa_data_invalida(cliente_docs, invalida):
     assert _datas_gravadas() == []
 
 
+def test_lista_de_documentos_devolve_erro_preso_e_data_efetiva(cliente_docs):
+    """O SELECT ja projetava `erro` e `preso` e o dict da resposta os
+    descartava: o badge "Failed"/"Stalled" da tela nunca aparecia."""
+    from app.db.engine import engine
+
+    uid = cliente_docs.get("/auth/me").json()["id"]
+    linhas = [
+        ("Falhou", "failed", '{"source_url": "https://x.com.br", "error": "The file could not be read."}', 5, None),
+        ("Parado", "pending", None, 45, date(2025, 3, 10)),
+        ("Recente", "processing", None, 5, None),
+        ("Pronto", "completed", "{}", 60, date(2024, 1, 2)),
+    ]
+    with engine.begin() as conn:
+        for titulo, status, meta, idade, data in linhas:
+            conn.execute(
+                sqltext(
+                    "INSERT INTO documents (user_id, title, mime, storage_path, status, meta, "
+                    "uploaded_at, effective_date) VALUES (:u, :t, 'application/pdf', 'x', :s, "
+                    "CAST(:m AS jsonb), now() - make_interval(mins => :i), :d)"
+                ),
+                {"u": uid, "t": titulo, "s": status, "m": meta, "i": idade, "d": data},
+            )
+
+    r = cliente_docs.get("/documents")
+
+    assert r.status_code == 200, r.text
+    itens = {i["title"]: i for i in r.json()["items"]}
+    assert itens["Falhou"]["erro"] == "The file could not be read."
+    assert itens["Falhou"]["preso"] is False
+    assert itens["Parado"]["preso"] is True, "pending ha 45 minutos e documento preso"
+    assert itens["Parado"]["effective_date"] == "2025-03-10"
+    assert itens["Recente"]["preso"] is False and itens["Recente"]["erro"] is None
+    assert itens["Pronto"]["effective_date"] == "2024-01-02"
+    assert itens["Falhou"]["effective_date"] is None
+
+
 # ---------------------------------------------------------------------------
 # HNSW: candidatos suficientes para o LIMIT e os filtros
 # ---------------------------------------------------------------------------
