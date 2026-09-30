@@ -36,7 +36,7 @@ export type BuscaNaConversa = {
   trechos: number
   baixaConfianca: boolean
   /** Preenchido quando duas ou mais fontes respondem diferente a mesma pergunta. */
-  divergencia: { summary: string; sources: string[] } | null
+  divergencia: { summary: string; sources: string[]; vigente?: string | null } | null
   dataDeReferencia: string | null
 }
 
@@ -45,6 +45,12 @@ type Callbacks = {
   onFala?: (fala: FalaNaConversa) => void
   onBusca?: (busca: BuscaNaConversa) => void
   onErro?: (mensagem: string) => void
+  /**
+   * Os documentos selecionados no momento de cada busca. Lido na hora, e nao
+   * copiado no construtor: a selecao pode mudar com a conversa aberta.
+   * Vazio busca no acervo inteiro.
+   */
+  documentos?: () => string[]
 }
 
 export class RealtimeSession {
@@ -213,6 +219,9 @@ export class RealtimeSession {
       pergunta = String(args.pergunta ?? '')
       dataDeReferencia = args.data_de_referencia ? String(args.data_de_referencia) : null
 
+      // Sem os ids a voz buscava no acervo inteiro mesmo com documentos
+      // selecionados, enquanto o chat de texto respeitava a selecao.
+      const documentos = this.cb.documentos?.() ?? []
       const r = await fetchWithAuth('/api/realtime/tool/buscar', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -220,6 +229,7 @@ export class RealtimeSession {
           pergunta,
           data_de_referencia: dataDeReferencia,
           thread_id: this.threadId,
+          ...(documentos.length > 0 ? { document_ids: documentos } : {}),
         }),
         // Sem isto, um backend pendurado nao e silencio de 15s: e silencio sem fim.
         signal: AbortSignal.timeout(20_000),

@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useState, Suspense } from 'react'
+import { useCallback, useEffect, useRef, useState, Suspense } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
 import { useAuth } from '@/contexts/AuthContext'
 import { useChatStream } from '@/hooks/useChatStream'
@@ -16,7 +16,7 @@ import { Card } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { AnimatePresence, motion } from 'framer-motion'
 import { Loader2, ArrowRight } from 'lucide-react'
-import type { Citation } from '@/lib/types'
+import type { Citation, LibraryDocument } from '@/lib/types'
 
 function ChatPageContent() {
   const router = useRouter()
@@ -24,6 +24,8 @@ function ChatPageContent() {
   const scrollRef = useRef<HTMLDivElement>(null)
   const { user, loading, getToken } = useAuth()
   const [error, setError] = useState<string | null>(null)
+  /** O acervo; `null` enquanto nao carregou (ou se falhou): nada e bloqueado por isso. */
+  const [acervo, setAcervo] = useState<LibraryDocument[] | null>(null)
 
   // Get document IDs from URL
   const documentIds = searchParams.get('docs')?.split(',').filter(Boolean) || []
@@ -35,7 +37,30 @@ function ChatPageContent() {
     }
   }, [loading, user, router])
 
-  const getTokenAsync = async () => getToken() || undefined
+  const getTokenAsync = useCallback(async () => getToken() ?? undefined, [getToken])
+
+  // A voz so precisa saber se o acervo tem documento pronto: sem selecao ela
+  // busca no acervo inteiro, como o chat de texto.
+  useEffect(() => {
+    if (!user) return
+    let cancelado = false
+    ;(async () => {
+      try {
+        const token = await getTokenAsync()
+        const res = await fetch('/api/documents', {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        })
+        if (!res.ok) return
+        const data = (await res.json()) as { items?: LibraryDocument[] }
+        if (!cancelado) setAcervo(data.items ?? [])
+      } catch {
+        // Sem a lista a voz segue habilitada; so nao sabe se o acervo esta vazio.
+      }
+    })()
+    return () => {
+      cancelado = true
+    }
+  }, [user, getTokenAsync])
 
   const {
     messages,
@@ -167,7 +192,10 @@ function ChatPageContent() {
           {/* A conversa por voz fica ACIMA do campo de texto, e nao numa pagina
               propria, porque ela nao e outro produto: e outro jeito de perguntar
               ao mesmo acervo. A trilha que ela mostra e a mesma que o chat grava. */}
-          <LiveVoice pronto={documentIds.length > 0} />
+          <LiveVoice
+            pronto={acervo === null || acervo.some((d) => d.status === 'completed')}
+            documentIds={documentIds}
+          />
 
           <ChatInput
             onSend={sendMessage}
