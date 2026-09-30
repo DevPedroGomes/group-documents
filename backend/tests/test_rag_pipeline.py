@@ -95,38 +95,8 @@ def test_lote_vazio_pede_busca_web():
 # enriquecimento o prefixo gerado pela IA comia ~300 dos 500 caracteres.
 # ---------------------------------------------------------------------------
 
-def _sql_do_hybrid_search() -> str:
-    return (BACKEND / "app/services/vector_store.py").read_text()
-
-
-def test_snippet_nao_e_truncado_em_500_caracteres():
-    sql = _sql_do_hybrid_search()
-    assert "), 500) as snippet" not in sql, (
-        "snippet voltou a ser cortado em 500 chars — o gerador recebe menos de "
-        "um terco do chunk"
-    )
-
-
-def test_snippet_vem_do_chunk_cru_e_nao_do_enriquecido():
-    """O contexto escrito na ingestao serve ao EMBEDDING. Manda-lo ao gerador
-    faz o modelo ler o resumo de outro modelo em vez do documento."""
-    sql = _sql_do_hybrid_search()
-    assert "left(c.content," in sql
-    assert "COALESCE(c.enriched_content" not in sql
-
-
-def test_snippet_cabe_um_chunk_inteiro():
-    """chunk_size=500 tokens ~ 2000 caracteres. O teto tem de ser maior."""
-    from app.config.settings import Settings
-
-    sql = _sql_do_hybrid_search()
-    import re
-
-    limites = {int(m) for m in re.findall(r"left\(c\.content,\s*(\d+)\)", sql)}
-    assert limites, "nao achei o teto do snippet no SQL"
-    chars_por_token_aprox = 4
-    minimo = Settings.model_fields["chunk_size"].default * chars_por_token_aprox
-    assert min(limites) >= minimo, f"teto {min(limites)} menor que um chunk (~{minimo} chars)"
+# Coberto com SQL real em tests/test_integracao_busca.py
+# (test_snippet_e_o_trecho_cru_inteiro).
 
 
 # ---------------------------------------------------------------------------
@@ -193,11 +163,8 @@ def test_cache_de_embedding_so_pede_o_que_falta(monkeypatch):
 # nao pode ser quebrada sem alguem perceber.
 # ---------------------------------------------------------------------------
 
-def test_as_duas_pernas_da_busca_filtram_por_user_id():
-    sql = _sql_do_hybrid_search()
-    assert sql.count("c.user_id = CAST(:user_id AS uuid)") >= 2, (
-        "semantica e keyword precisam AMBAS filtrar por dono antes do RRF"
-    )
+# As duas pernas filtrando por dono: tests/test_integracao_busca.py
+# (test_trecho_de_outro_usuario_nunca_volta_em_nenhuma_perna), com SQL real.
 
 
 def test_retrieve_documents_exige_user_id():
@@ -448,63 +415,8 @@ def test_bloco_com_cache_control_sobrevive_a_traducao():
 # ---------------------------------------------------------------------------
 
 
-def _sql_sem_comentarios(sql: str) -> str:
-    """So o SQL executavel.
-
-    O cabecalho da 006 CITA o `to_tsvector('english', ...)` antigo para explicar
-    o que estava errado — sem tirar os comentarios, o teste le a explicacao como
-    se fosse a configuracao em vigor.
-    """
-    return "\n".join(
-        linha for linha in sql.splitlines() if not linha.lstrip().startswith("--")
-    )
-
-
-def test_a_consulta_usa_a_mesma_config_textual_do_trigger():
-    """Cruza dois arquivos em vez de prender uma string.
-
-    Indexar com uma configuracao e consultar com outra devolve vazio, sem erro
-    nenhum: o Postgres aceita as duas chamadas e simplesmente nao casa nada. Era
-    assim que o `english` do trigger convivia com um acervo em portugues sem
-    ninguem notar — a perna vetorial disfarcava.
-    """
-    import re
-
-    from app.services import vector_store
-
-    migration = _sql_sem_comentarios(
-        (BACKEND / "migrations" / "001_baseline.sql").read_text()
-    )
-    no_trigger = re.search(r"to_tsvector\(\s*'([a-z]+)'", migration)
-
-    assert no_trigger, "o trigger da 006 deixou de declarar a configuracao textual"
-    assert no_trigger.group(1) == vector_store.TEXT_SEARCH_CONFIG, (
-        f"o trigger indexa com '{no_trigger.group(1)}' e a consulta usa "
-        f"'{vector_store.TEXT_SEARCH_CONFIG}' — a busca por palavra-chave "
-        f"devolveria vazio em silencio"
-    )
-
-
-def test_trocar_a_config_textual_exige_medir_antes():
-    """Este teste existe por causa de um erro que quase foi para producao.
-
-    A intuicao era que `english` num acervo portugues fazia stemming errado e
-    que `simple` seria mais neutro. Medido contra o banco de producao, o oposto:
-    o stemmer ingles remove o `-s` final e plural portugues tambem termina em
-    `-s`, entao ele acerta o caso comum por acidente. Com `simple`,
-    "documentos" deixou de casar os 5 chunks que casava. `portuguese` empatou
-    com `english` nos 8 termos testados.
-
-    A solucao real e idioma POR DOCUMENTO, nao uma configuracao global. Ate la,
-    quem trocar esta constante tem de trocar o trigger junto E medir o recall
-    antes — nao ha ganho conhecido em mexer.
-    """
-    from app.services import vector_store
-
-    assert vector_store.TEXT_SEARCH_CONFIG == "english", (
-        "trocar a configuracao textual sem medir o recall ja derrubou a busca "
-        "uma vez; ver o comentario em vector_store.py"
-    )
+# A config textual do trigger contra a da consulta, e o piso medido do
+# conjunto-ouro, rodam com SQL real em tests/test_integracao_busca.py.
 
 
 def test_sentenca_sem_pontuacao_nao_vira_chunk_ilimitado():

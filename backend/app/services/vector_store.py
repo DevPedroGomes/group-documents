@@ -50,26 +50,33 @@ def add_chunks(
     return len(recs)
 
 
-# A MESMA configuracao com que o trigger da 001 indexa. Indexar com uma e
-# consultar com outra devolve VAZIO, sem erro nenhum — ha teste cruzando os
-# dois arquivos.
+# As MESMAS configuracoes com que o trigger da 008 indexa (o vetor e a soma das
+# duas). Indexar com uma e consultar com outra devolve VAZIO, sem erro nenhum;
+# ha teste de integracao cruzando trigger e consulta.
 #
-# Por que continua 'english' num acervo que e portugues: foi medido contra o
-# banco de producao, e a intuicao estava errada. O stemmer ingles remove o `-s`
-# final, e plural portugues tambem termina em `-s`, entao ele acerta o caso
-# comum por acidente. Trocar para 'simple' DERRUBA o recall ("documentos"
-# casava 5 chunks e passa a casar 0, porque sem stemming nao encontra
-# "documento"), e 'portuguese' empata com 'english' em todos os 8 termos
-# testados.
-#
-# A escolha certa nao e uma configuracao global e sim uma POR DOCUMENTO, com
-# coluna de idioma detectada na ingestao. Enquanto isso nao existir, mexer aqui
-# so troca de lugar quem fica errado.
-TEXT_SEARCH_CONFIG = "english"
+# Medido com scripts/avaliar_busca_textual.py (acervo demo de 500 documentos,
+# 46 perguntas em portugues e 10 em ingles, LIMIT 45). O que valia antes
+# ('english' com AND de todos os termos) deixava 89% das perguntas em portugues
+# sem NENHUM resultado (MRR 0,11) e 70% das em ingles (MRR 0,30): "qual", "o",
+# "de", "para" viravam termos obrigatorios. 'portuguese' com AND quase nao
+# muda (80% vazias). O que decide e casar QUALQUER termo, com `ts_rank`
+# ordenando por quantos casaram:
+#   portuguese, OR ............... pt recall@45 0,87  MRR 0,87   en MRR 0,90
+#   portuguese+english, OR ....... pt recall@45 0,87  MRR 0,90   en MRR 1,00
+#   pt sem acento, OR ............ pt recall@45 0,95  MRR 0,99   en MRR 0,90
+#   pt sem acento+english, OR .... pt recall@45 0,95  MRR 0,99   en MRR 1,00  <- esta
+# Sem acento pesa quando a pessoa digita "alfandega" e o documento diz
+# "alfândega"; o ingles cobre documento em ingles. Diferenca entre as duas
+# ultimas linhas e de uma ou duas perguntas.
+TEXT_SEARCH_CONFIGS = ("portugues_sem_acento", "english")
 
-# Como a pergunta vira tsquery. Constante para o script de avaliacao
-# (scripts/avaliar_busca_textual.py) medir exatamente o que a busca executa.
-TSQUERY_SQL = f"plainto_tsquery('{TEXT_SEARCH_CONFIG}', :query_text)"
+# Como a pergunta vira tsquery: `plainto_tsquery` normaliza com cada config e o
+# AND entre os termos vira OR. Constante para o script de avaliacao medir
+# exatamente o que a busca executa.
+_TSQUERY_POR_CONFIG = " || ".join(
+    f"plainto_tsquery('{cfg}', :query_text)" for cfg in TEXT_SEARCH_CONFIGS
+)
+TSQUERY_SQL = f"CAST(replace(CAST(({_TSQUERY_POR_CONFIG}) AS text), ' & ', ' | ') AS tsquery)"
 
 
 def hybrid_search(
