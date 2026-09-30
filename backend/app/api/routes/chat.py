@@ -10,7 +10,7 @@ from typing import AsyncGenerator
 
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import insert, text as sqltext
 from starlette.concurrency import iterate_in_threadpool, run_in_threadpool
 
@@ -48,9 +48,22 @@ def validar_data_iso(v: str | None, campo: str = "as_of") -> str | None:
     return texto
 
 
+# Selecao de documentos: mais que isso nao e selecao, e vira um ANY(...) enorme
+# em cada perna da busca.
+MAX_DOCUMENTOS_SELECIONADOS = 200
+
+
+def validar_ids_de_documento(ids: list[str] | None) -> list[str] | None:
+    """Id invalido e 422 na validacao do corpo: mais adiante ele seria descartado
+    em silencio, e uma selecao so de ids invalidos viraria busca no acervo inteiro."""
+    for doc_id in ids or []:
+        uuid.UUID(doc_id)
+    return ids
+
+
 class ChatBody(BaseModel):
     message: str
-    document_ids: list[str] | None = None
+    document_ids: list[str] | None = Field(default=None, max_length=MAX_DOCUMENTOS_SELECIONADOS)
     thread_id: str | None = None
     # Recorte temporal: responde com o acervo como ele estava nesta data.
     # Consulta vira auditoria quando da para perguntar "e em janeiro?".
@@ -62,6 +75,11 @@ class ChatBody(BaseModel):
     @classmethod
     def _valida_as_of(cls, v: str | None) -> str | None:
         return validar_data_iso(v)
+
+    @field_validator("document_ids")
+    @classmethod
+    def _valida_ids(cls, v: list[str] | None) -> list[str] | None:
+        return validar_ids_de_documento(v)
 
 
 # --- Thread management ---

@@ -552,6 +552,31 @@ def test_teto_diario_estourado_nao_chama_nada_pago(chat, erro, status):
     assert cenario.buscas == [] and cenario.prompts_multi_query == [] and cenario.mensagens == []
 
 
+@pytest.mark.parametrize("selecao", [
+    ["nao-e-uuid"],
+    [f"00000000-0000-0000-0000-{i:012d}" for i in range(201)],
+])
+def test_selecao_invalida_ou_grande_demais_e_422_sem_cota(chat, selecao):
+    """Id invalido seria descartado em silencio pela busca, e uma selecao so de
+    ids invalidos viraria busca no acervo inteiro."""
+    cliente, cenario = chat
+
+    r = cliente.post("/chat", json={"message": "qual o prazo?", "document_ids": selecao},
+                     headers={"Authorization": "Bearer x"})
+
+    assert r.status_code == 422
+    assert cenario.consumidos == [] and cenario.buscas == []
+
+
+def test_selecao_de_ate_200_documentos_chega_a_busca(chat):
+    cliente, cenario = chat
+    selecao = [f"00000000-0000-0000-0000-{i:012d}" for i in range(200)]
+
+    assert cliente.post("/chat", json={"message": "qual o prazo?", "document_ids": selecao},
+                        headers={"Authorization": "Bearer x"}).status_code == 200
+    assert cenario.buscas and all(b["document_ids"] == selecao for b in cenario.buscas)
+
+
 def test_pergunta_barrada_pelo_filtro_nao_consome_cota(chat):
     cliente, cenario = chat
 

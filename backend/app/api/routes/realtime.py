@@ -40,7 +40,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-import uuid
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
@@ -50,7 +49,13 @@ from sqlalchemy import insert
 from agent_ops import metering
 from app.api.dependencies import consumir_cota, require_user
 from app.api.rate_limit import limiter
-from app.api.routes.chat import save_decision, validar_data_iso, validate_thread_ownership
+from app.api.routes.chat import (
+    MAX_DOCUMENTOS_SELECIONADOS,
+    save_decision,
+    validar_data_iso,
+    validar_ids_de_documento,
+    validate_thread_ownership,
+)
 from app.config.settings import get_settings
 from app.core import chamadas_pagas
 from app.core.guardrails.input_validator import validate_input
@@ -162,7 +167,7 @@ class BuscaPedido(BaseModel):
     pergunta: str = Field(min_length=1, max_length=1000)
     data_de_referencia: str | None = None
     thread_id: str | None = None
-    document_ids: list[str] | None = None
+    document_ids: list[str] | None = Field(default=None, max_length=MAX_DOCUMENTOS_SELECIONADOS)
     """A mesma selecao de documentos do chat: a busca fica restrita a eles."""
 
     model_config = ConfigDict(str_strip_whitespace=True)
@@ -175,11 +180,7 @@ class BuscaPedido(BaseModel):
     @field_validator("document_ids")
     @classmethod
     def _valida_ids(cls, v: list[str] | None) -> list[str] | None:
-        # Id invalido e 422 aqui: mais adiante ele seria descartado em silencio,
-        # e uma selecao so de ids invalidos viraria busca no acervo inteiro.
-        for doc_id in v or []:
-            uuid.UUID(doc_id)
-        return v
+        return validar_ids_de_documento(v)
 
 
 class Trecho(BaseModel):
@@ -208,6 +209,14 @@ class BuscaResposta(BaseModel):
     agente afirmar com confianca que o documento da pessoa nao continha aquilo."""
 
 
+def _criar_thread_de_voz(user_id: str) -> str:
+    # SQL sincrono: a rota o chama por thread, fora do event loop.
+    with engine.begin() as conn:
+        return str(conn.execute(
+            insert(threads).values(user_id=user_id, title="Conversa por voz").returning(threads.c.id)
+        ).scalar_one())
+
+
 @router.post("/session", response_model=SessaoResposta)
 @limiter.limit("10/minute")
 async def criar_sessao(request: Request) -> SessaoResposta:
@@ -233,10 +242,7 @@ async def criar_sessao(request: Request) -> SessaoResposta:
             headers={"Retry-After": str(metering.segundos_ate_meia_noite_utc())},
         ) from exc
 
-    with engine.begin() as conn:
-        thread_id = conn.execute(
-            insert(threads).values(user_id=user_id, title="Conversa por voz").returning(threads.c.id)
-        ).scalar_one()
+    thread_id = await asyncio.to_thread(_criar_thread_de_voz, user_id)
 
     corpo = {
         "session": {

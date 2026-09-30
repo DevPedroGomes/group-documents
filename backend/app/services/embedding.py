@@ -47,12 +47,14 @@ def embed_sequences(inputs: list[list], input_type: str = "document") -> list[li
         model=settings.voyage_doc_model,
         input_type=input_type,
     )
+    # Anotada antes das checagens: uma resposta 200 com contagem ou dimensao
+    # erradas ja foi cobrada.
+    chamadas_pagas.registrar("voyage")
     vectors = result.embeddings
     if len(vectors) != len(inputs):
         raise RuntimeError(
             f"Embedding count mismatch: expected {len(inputs)}, got {len(vectors)}"
         )
-    chamadas_pagas.registrar("voyage")
     _assert_dim(vectors[0], settings.voyage_doc_model)
     return vectors
 

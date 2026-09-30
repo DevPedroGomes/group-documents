@@ -20,23 +20,12 @@ Nenhum toca a rede.
 
 from __future__ import annotations
 
-import ast
-import inspect
 from pathlib import Path
 
+import httpx
 import pytest
 
 from app.api.routes import realtime as rt
-
-FONTE = Path(inspect.getfile(rt)).read_text(encoding="utf-8")
-ARVORE = ast.parse(FONTE)
-
-
-def _funcao(nome: str) -> ast.AsyncFunctionDef:
-    for no in ast.walk(ARVORE):
-        if isinstance(no, ast.AsyncFunctionDef) and no.name == nome:
-            return no
-    raise AssertionError(f"{nome} não existe mais em realtime.py")
 
 
 # ---------------------------------------------------------------------------
@@ -210,18 +199,106 @@ def test_a_tool_nao_aceita_campo_extra():
 # 5. Teto e degradação
 # ---------------------------------------------------------------------------
 
-def test_o_teto_e_consumido_antes_de_cunhar_a_credencial():
-    """Ordem importa: cunhar antes deixaria a credencial paga de pé com cota estourada."""
-    fonte = ast.get_source_segment(FONTE, _funcao("criar_sessao")) or ""
-    assert "consumir" in fonte and "CLIENT_SECRETS_URL" in fonte
-    assert fonte.index("consumir") < fonte.index("CLIENT_SECRETS_URL"), (
-        "o teto passou a ser consumido depois de cunhar a credencial"
-    )
+@pytest.fixture
+def sessao(monkeypatch):
+    """A rota que cunha a credencial, com a OpenAI, a cota e o banco em dubles."""
+    from types import SimpleNamespace
+
+    from agent_ops import metering
+    from fastapi.testclient import TestClient
+
+    from app.api.rate_limit import limiter
+    from app.config.settings import get_settings
+    from app.main import create_app
+
+    r = SimpleNamespace(eventos=[], corpo=None, erro=None, teto=None)
+
+    async def usuario(_request):
+        return "00000000-0000-0000-0000-00000000000a"
+
+    async def consumir(tipo, _limite):
+        r.eventos.append(f"consumir:{tipo}")
+        if r.teto:
+            raise r.teto
+
+    async def devolver(tipo):
+        r.eventos.append(f"devolver:{tipo}")
+
+    def criar_thread(_user_id):
+        import asyncio
+
+        try:
+            asyncio.get_running_loop()
+            r.eventos.append("thread:no-loop")
+        except RuntimeError:
+            r.eventos.append("thread")
+        return "00000000-0000-0000-0000-0000000000b0"
+
+    class OpenAIFalsa:
+        def __init__(self, *_a, **_k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_a):
+            return False
+
+        async def post(self, url, json=None, headers=None):
+            r.eventos.append("cunhar")
+            r.corpo = json
+            if r.erro:
+                raise r.erro
+            return httpx.Response(200, json={"value": "ek_teste", "expires_at": 1234},
+                                  request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(rt, "require_user", usuario)
+    monkeypatch.setattr(metering, "consumir", consumir)
+    monkeypatch.setattr(metering, "devolver", devolver)
+    monkeypatch.setattr(rt, "_criar_thread_de_voz", criar_thread)
+    monkeypatch.setattr(rt.httpx, "AsyncClient", OpenAIFalsa)
+    monkeypatch.setattr(get_settings(), "openai_api_key", "chave-de-teste")
+    monkeypatch.setattr(limiter, "enabled", False)
+
+    cliente = TestClient(create_app())
+
+    def abrir():
+        return cliente.post("/realtime/session", headers={"Authorization": "Bearer x"})
+
+    return abrir, r
 
 
-def test_sem_chave_da_openai_a_voz_recusa_em_vez_de_quebrar():
-    fonte = ast.get_source_segment(FONTE, _funcao("criar_sessao")) or ""
-    assert "openai_api_key" in fonte and "503" in fonte
+def test_o_teto_e_consumido_antes_de_cunhar_a_credencial(sessao):
+    """Cunhar antes deixaria a credencial paga de pe com a cota estourada. A
+    thread da conversa e criada fora do event loop."""
+    abrir, r = sessao
+
+    resposta = abrir()
+
+    assert resposta.status_code == 200, resposta.text
+    assert resposta.json()["client_secret"] == "ek_teste"
+    assert resposta.json()["thread_id"] == "00000000-0000-0000-0000-0000000000b0"
+    assert r.eventos == ["consumir:realtime", "thread", "cunhar"]
+
+
+def test_cota_estourada_nao_cunha_credencial(sessao):
+    from agent_ops import metering
+
+    abrir, r = sessao
+    r.teto = metering.TetoAtingido("acabou")
+
+    assert abrir().status_code == 429
+    assert r.eventos == ["consumir:realtime"]
+
+
+def test_sem_chave_da_openai_a_voz_recusa_em_vez_de_quebrar(sessao, monkeypatch):
+    from app.config.settings import get_settings
+
+    abrir, r = sessao
+    monkeypatch.setattr(get_settings(), "openai_api_key", None)
+
+    assert abrir().status_code == 503
+    assert r.eventos == []
 
 
 def test_resposta_vazia_e_valida_e_nao_erro():
@@ -369,6 +446,7 @@ def test_selecao_de_documentos_chega_a_busca(voz):
 
 @pytest.mark.parametrize("corpo", [
     {"document_ids": ["nao-e-uuid"]},
+    {"document_ids": [f"00000000-0000-0000-0000-{i:012d}" for i in range(201)]},
     {"data_de_referencia": "mes passado"},
     {"data_de_referencia": "2025-02-30"},
 ])
@@ -424,23 +502,35 @@ def test_chamada_paga_feita_numa_thread_chega_a_medicao():
     assert asyncio.run(cenario()) == ["llm"]
 
 
-def test_llm_e_embedding_de_verdade_anotam_a_chamada_que_voltou(monkeypatch):
+@pytest.mark.parametrize("openrouter", [False, True])
+def test_chamada_cobrada_e_anotada_mesmo_se_ler_a_resposta_falhar(monkeypatch, openrouter):
+    """O provider respondeu, entao cobrou: uma resposta que o parse ou a
+    checagem recusam depois nao pode fazer a cota voltar."""
     from types import SimpleNamespace
 
     from app.core import chamadas_pagas, llm_client
     from app.services import embedding
 
+    resposta_estranha = SimpleNamespace(content=None, choices=[])
+    cliente_llm = SimpleNamespace(
+        messages=SimpleNamespace(create=lambda **_kw: resposta_estranha),
+        chat=SimpleNamespace(completions=SimpleNamespace(create=lambda **_kw: resposta_estranha)),
+    )
+
     class Voyage:
         def multimodal_embed(self, inputs, model, input_type):
-            return SimpleNamespace(embeddings=[[0.0] * 1024 for _ in inputs])
+            return SimpleNamespace(embeddings=[])  # contagem errada
 
-    monkeypatch.setattr(llm_client, "_is_openrouter", lambda: False)
-    monkeypatch.setattr(llm_client, "_anthropic_complete", lambda *_a: "ok")
+    monkeypatch.setattr(llm_client, "_is_openrouter", lambda: openrouter)
+    monkeypatch.setattr(llm_client, "_anthropic_client", lambda: cliente_llm)
+    monkeypatch.setattr(llm_client, "_openrouter_client", lambda: cliente_llm)
     monkeypatch.setattr(embedding, "_get_client", lambda: Voyage())
 
     with chamadas_pagas.medir() as pagas:
-        llm_client.chat_complete(model="m", max_tokens=1, messages=[])
-        embedding.embed_sequences([["texto"]])
+        with pytest.raises((TypeError, IndexError)):
+            llm_client.chat_complete(model="m", max_tokens=1, messages=[])
+        with pytest.raises(RuntimeError):
+            embedding.embed_sequences([["texto"]])
 
     assert pagas == ["llm", "voyage"]
 
@@ -452,7 +542,7 @@ def test_llm_e_embedding_de_verdade_anotam_a_chamada_que_voltou(monkeypatch):
 FRONTEND = Path(__file__).resolve().parents[2] / "frontend"
 
 
-def test_transcricao_da_entrada_e_configurada_porque_o_navegador_a_escuta():
+def test_transcricao_da_entrada_e_configurada_porque_o_navegador_a_escuta(sessao):
     """Cruza os dois lados em vez de prender uma string.
 
     `audio.input.transcription` nasce null na API. Sem configurar, o evento
@@ -461,29 +551,34 @@ def test_transcricao_da_entrada_e_configurada_porque_o_navegador_a_escuta():
     morto e metade da linha do tempo do painel vazia: so a fala do agente
     aparecia, a da pessoa nunca.
     """
-    sessao = FRONTEND / "lib" / "realtime-session.ts"
-    escuta = "input_audio_transcription.completed" in sessao.read_text()
+    from app.config.settings import get_settings
 
-    fonte = inspect.getsource(rt.criar_sessao)
-    configura = '"transcription"' in fonte
+    abrir, r = sessao
+    escuta = "input_audio_transcription.completed" in (FRONTEND / "lib" / "realtime-session.ts").read_text()
+
+    assert abrir().status_code == 200
+    transcricao = r.corpo["session"]["audio"]["input"].get("transcription") or {}
 
     assert escuta, "o navegador deixou de escutar a transcricao da entrada"
-    assert configura, (
+    assert transcricao.get("model") == get_settings().realtime_transcribe_model, (
         "o navegador escuta input_audio_transcription.completed, mas a sessao nao "
         "configura audio.input.transcription — o evento nunca sera emitido"
     )
 
 
-def test_turn_detection_e_explicito_e_nao_herdado():
+def test_turn_detection_e_explicito_e_nao_herdado(sessao):
     """O default e threshold 0.5 / silencio 500ms, e ninguem sabia disso.
 
     Com a frase de preenchimento o agente fala muito mais, e 0.5 realimenta pelo
     alto-falante. 500ms tambem corta quem pausa para pensar.
     """
-    fonte = inspect.getsource(rt.criar_sessao)
-    assert '"turn_detection"' in fonte, "turn_detection voltou a ser herdado do default"
-    assert '"silence_duration_ms"' in fonte
-    assert '"threshold"' in fonte
+    abrir, r = sessao
+
+    assert abrir().status_code == 200
+    deteccao = r.corpo["session"]["audio"]["input"].get("turn_detection")
+
+    assert deteccao, "turn_detection voltou a ser herdado do default"
+    assert deteccao["threshold"] != 0.5 and deteccao["silence_duration_ms"] > 500
 
 
 def test_o_modelo_e_mandado_falar_antes_de_buscar():
@@ -525,7 +620,7 @@ def test_a_busca_dispara_antes_do_fim_da_resposta():
 # ---------------------------------------------------------------------------
 
 
-def test_cota_volta_quando_a_credencial_nao_e_cunhada():
+def test_cota_volta_quando_a_credencial_nao_e_cunhada(sessao):
     """O teto e consumido ANTES do mint de proposito: uma conversa de voz e
     aberta, e sem isso um visitante segura a linha e gasta o dia sozinho. Essa
     decisao fica.
@@ -534,15 +629,14 @@ def test_cota_volta_quando_a_credencial_nao_e_cunhada():
     sessao, ela nunca existiu, e cobrar por ela gasta uma das 40 diarias sem
     ninguem ter falado. Mesmo padrao ja usado em documents.py e chat.py.
     """
-    fonte = inspect.getsource(rt.criar_sessao)
-    pos_consumo = fonte.index('consumir("realtime"')
-    pos_devolucao = fonte.find('devolver("realtime"')
+    abrir, r = sessao
+    r.erro = httpx.ConnectError("openai fora do ar")
 
-    assert pos_devolucao > 0, "a rota consome a cota e nunca devolve"
-    assert pos_devolucao > pos_consumo, "a devolucao precisa vir depois do consumo"
-    assert "httpx.HTTPError" in fonte[pos_consumo:pos_devolucao], (
-        "a devolucao tem de estar no caminho de falha do mint, nao no caminho feliz"
-    )
+    resposta = abrir()
+
+    assert resposta.status_code == 503
+    assert "openai fora do ar" not in resposta.text
+    assert r.eventos == ["consumir:realtime", "thread", "cunhar", "devolver:realtime"]
 
 
 def test_a_queda_da_conexao_e_observada():

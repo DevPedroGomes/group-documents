@@ -42,11 +42,8 @@ def chat_complete(
     `messages` should be in [{role, content}] form (works for both providers).
     """
     if _is_openrouter():
-        texto = _openrouter_complete(model, max_tokens, messages, system, temperature)
-    else:
-        texto = _anthropic_complete(model, max_tokens, messages, system, temperature)
-    chamadas_pagas.registrar("llm")
-    return texto
+        return _openrouter_complete(model, max_tokens, messages, system, temperature)
+    return _anthropic_complete(model, max_tokens, messages, system, temperature)
 
 
 def chat_stream(
@@ -135,6 +132,9 @@ def _anthropic_complete(model, max_tokens, messages, system, temperature):
     resp = client.messages.create(
         **_kwargs_anthropic(model, max_tokens, messages, system, temperature)
     )
+    # Anotada assim que o provider responde: a resposta ja foi cobrada, mesmo
+    # que ler o conteudo dela falhe logo abaixo.
+    chamadas_pagas.registrar("llm")
     return _primeiro_texto(resp.content)
 
 
@@ -217,6 +217,7 @@ def _openrouter_complete(model, max_tokens, messages, system, temperature):
         max_tokens=max_tokens,
         temperature=temperature,
     )
+    chamadas_pagas.registrar("llm")  # ja cobrada, mesmo se o parse abaixo falhar
     return resp.choices[0].message.content or ""
 
 
