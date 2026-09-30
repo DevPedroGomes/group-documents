@@ -136,6 +136,54 @@ def test_nenhuma_metade_emite_palavra_funcional_de_nenhuma_lingua(banco_limpo):
     assert termos and not termos & {"qual", "o", "de", "e", "é", "what", "is", "the", "for"}, termos
 
 
+def test_sem_unaccent_a_008_degrada_e_a_busca_segue(banco_limpo, caplog):
+    """Producao e um Postgres externo: se o papel da app nao puder criar
+    `unaccent`, a 008 nao pode derrubar o boot (migrate.py e fatal). Simula
+    exatamente isso: reaplica a 008 com um papel sem CREATE no banco, depois de
+    tirar a extensao. O papel e temporario e sai no fim, com o que for dele."""
+    import logging
+    import uuid
+
+    from app.db.engine import engine
+
+    papel = f"gd_test_{uuid.uuid4().hex[:12]}"
+    sql_008 = (BACKEND / "migrations" / "008_busca_textual.sql").read_text()
+    with engine.begin() as conn:
+        conn.execute(sqltext("DROP TEXT SEARCH CONFIGURATION busca_portugues"))
+        conn.execute(sqltext("DROP TEXT SEARCH CONFIGURATION busca_ingles"))
+        conn.execute(sqltext("DROP EXTENSION unaccent"))
+        conn.execute(sqltext(f'CREATE ROLE "{papel}" NOLOGIN'))
+        conn.execute(sqltext(f'GRANT CREATE ON SCHEMA public TO "{papel}"'))
+        conn.execute(sqltext(f'GRANT SELECT, UPDATE ON chunks TO "{papel}"'))
+        conn.execute(sqltext(f'ALTER FUNCTION update_search_vector() OWNER TO "{papel}"'))
+    try:
+        # O dialeto psycopg2 do SQLAlchemy consome os avisos do servidor e os
+        # manda para este logger em nivel INFO.
+        caplog.set_level(logging.INFO, logger="sqlalchemy.dialects.postgresql")
+        with engine.begin() as conn:
+            conn.execute(sqltext(f'SET LOCAL ROLE "{papel}"'))
+            conn.execute(sqltext(sql_008))
+        with engine.begin() as conn:
+            tem_unaccent = conn.execute(sqltext(
+                "SELECT count(*) FROM pg_extension WHERE extname = 'unaccent'")).scalar()
+            acentuado = conn.execute(sqltext("SELECT to_tsvector('busca_portugues', 'grátis')::text")).scalar()
+
+        assert tem_unaccent == 0
+        assert "unaccent indisponivel" in caplog.text, caplog.text
+        assert acentuado == "'grát':1", "sem a extensao, o acento fica"
+
+        u = _usuario()
+        politica = _documento(u, "Politica")
+        _trecho(u, politica, "Resposta: o frete nacional é grátis acima de 150 reais.", eixo=1)
+        _trecho(u, _documento(u, "Ata"), "Revisão dos indicadores do mês anterior no setor de Logística.", eixo=2)
+        assert _docs(_buscar(u, "qual o valor minimo de frete?")) == [politica]
+    finally:
+        with engine.begin() as conn:
+            conn.execute(sqltext(f'REASSIGN OWNED BY "{papel}" TO CURRENT_USER'))
+            conn.execute(sqltext(f'DROP OWNED BY "{papel}"'))
+            conn.execute(sqltext(f'DROP ROLE "{papel}"'))
+
+
 def test_a_008_recalcula_o_vetor_das_linhas_que_ja_existiam(banco_limpo):
     """Linha gravada pelo trigger antigo ('english') tem de ser reindexada pela
     migration; reaplicar a 008 tambem prova que ela e idempotente."""

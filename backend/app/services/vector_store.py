@@ -70,7 +70,8 @@ def add_chunks(
 # so existe nos documentos relevantes, entao o OR reduz a tarefa a achar um
 # termo raro. Quando a pessoa usa outras palavras, a perna textual nao acha
 # nada e quem responde e a semantica. Nao mede a busca hibrida, o reranker nem
-# trecho com o contexto do enriquecimento.
+# trecho com o contexto do enriquecimento. Sem `unaccent` (a 008 segue sem
+# ela) o grupo sem acento nao vale.
 TEXT_SEARCH_CONFIGS = ("busca_portugues", "busca_ingles")
 
 # Como a pergunta vira tsquery: `plainto_tsquery` normaliza com cada config e o

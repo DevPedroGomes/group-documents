@@ -1,5 +1,6 @@
--- 008: a busca por palavra-chave passa a indexar portugues sem acento e
--- ingles, e a consulta (vector_store.py) casa QUALQUER termo em vez de todos.
+-- 008: a busca por palavra-chave passa a indexar portugues (sem acento, quando
+-- a extensao existir) e ingles, e a consulta (vector_store.py) casa QUALQUER
+-- termo em vez de todos.
 --
 -- MOTIVACAO: o trigger da 001 indexava com 'english' e a consulta fazia AND de
 -- todos os termos. "qual", "o", "de", "para" viravam termos obrigatorios e
@@ -7,16 +8,25 @@
 -- pratica so vetorial. Numeros, e o que eles NAO mostram, no comentario de
 -- TEXT_SEARCH_CONFIGS em vector_store.py (scripts/avaliar_busca_textual.py).
 
--- `unaccent` e contrib, disponivel na imagem pgvector/pgvector:pg16 e marcado
--- como extensao confiavel (o dono do banco pode criar).
-CREATE EXTENSION IF NOT EXISTS unaccent;
+-- `unaccent` e contrib e extensao confiavel, mas o Postgres de producao e
+-- externo e o papel pode nao poder cria-la. Sem ela a busca segue, so sem
+-- tirar acento; falhar aqui derrubaria o boot, porque migrate.py e fatal.
+DO $$
+BEGIN
+    CREATE EXTENSION IF NOT EXISTS unaccent;
+EXCEPTION WHEN insufficient_privilege OR undefined_file OR feature_not_supported THEN
+    RAISE WARNING '008: unaccent indisponivel (%); a busca textual segue sem tirar acento', SQLERRM;
+END $$;
 
 -- Cada metade descarta as stopwords das DUAS linguas antes do stemmer. Com OR,
 -- "de"/"o"/"qual" (que o stemmer ingles nao conhece) e "the"/"is" (que o
 -- portugues nao conhece) virariam termos e casariam trecho sem relacao. As
 -- stopwords portuguesas sao acentuadas ("não", "até"): o descarte vem ANTES do
--- unaccent.
+-- unaccent. Config ja criada nao e refeita; instalar `unaccent` depois exige
+-- refazer o mapeamento de busca_portugues e reindexar.
 DO $$
+DECLARE
+    com_unaccent boolean := EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'unaccent');
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_ts_dict WHERE dictname = 'portugues_stopwords') THEN
         CREATE TEXT SEARCH DICTIONARY portugues_stopwords
@@ -32,9 +42,15 @@ BEGIN
         ALTER TEXT SEARCH CONFIGURATION busca_portugues
             ALTER MAPPING FOR asciiword, asciihword, hword_asciipart
             WITH portugues_stopwords, ingles_stopwords, portuguese_stem;
-        ALTER TEXT SEARCH CONFIGURATION busca_portugues
-            ALTER MAPPING FOR word, hword, hword_part
-            WITH portugues_stopwords, ingles_stopwords, unaccent, portuguese_stem;
+        IF com_unaccent THEN
+            ALTER TEXT SEARCH CONFIGURATION busca_portugues
+                ALTER MAPPING FOR word, hword, hword_part
+                WITH portugues_stopwords, ingles_stopwords, unaccent, portuguese_stem;
+        ELSE
+            ALTER TEXT SEARCH CONFIGURATION busca_portugues
+                ALTER MAPPING FOR word, hword, hword_part
+                WITH portugues_stopwords, ingles_stopwords, portuguese_stem;
+        END IF;
     END IF;
 
     -- Metade inglesa so com palavra ASCII: palavra acentuada e portuguesa, ja
