@@ -63,3 +63,6 @@ dmypy.json
 
 # Logs
 *.log
+
+# Arquivos enviados numa execucao local (UPLOADS_PATH=./uploads): sao da pessoa, nao do repositorio
+uploads/
