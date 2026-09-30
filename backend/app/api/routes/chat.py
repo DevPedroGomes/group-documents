@@ -78,15 +78,25 @@ def validate_thread_ownership(thread_id: str, user_id: str) -> bool:
 
 
 def get_thread_history(thread_id: str, user_id: str, limit: int = 20) -> list[dict]:
+    """As `limit` mensagens mais RECENTES da thread, em ordem cronologica.
+
+    O corte e feito do fim para o comeco e so depois reordenado: com `ASC LIMIT`
+    a conversa longa entregava as primeiras mensagens, e o modelo deixava de
+    ver justamente os turnos que a pergunta atual retoma.
+    """
     with engine.begin() as conn:
         rows = conn.execute(
             sqltext("""
-                SELECT m.role, m.content, m.citations, m.created_at
-                FROM messages m
-                JOIN threads t ON m.thread_id = t.id
-                WHERE m.thread_id = :thread_id AND t.user_id = CAST(:user_id AS uuid)
-                ORDER BY m.created_at ASC
-                LIMIT :limit
+                SELECT role, content, citations, created_at
+                FROM (
+                    SELECT m.id, m.role, m.content, m.citations, m.created_at
+                    FROM messages m
+                    JOIN threads t ON m.thread_id = t.id
+                    WHERE m.thread_id = :thread_id AND t.user_id = CAST(:user_id AS uuid)
+                    ORDER BY m.created_at DESC, m.id DESC
+                    LIMIT :limit
+                ) recentes
+                ORDER BY created_at ASC, id ASC
             """),
             {"thread_id": thread_id, "user_id": user_id, "limit": limit},
         ).mappings().all()
