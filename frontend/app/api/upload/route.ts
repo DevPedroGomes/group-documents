@@ -1,21 +1,9 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest } from 'next/server'
+import { proxyToBackend } from '@/lib/api-proxy'
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
-
+// O multipart passa como stream, sem `formData()` aqui: o backend conta o corpo
+// enquanto le e recusa no teto. O prazo cobre o envio inteiro do arquivo, que
+// numa conexao lenta passa facil do padrao de 30s.
 export async function POST(request: NextRequest) {
-  const authorization = request.headers.get('Authorization') || ''
-
-  // Forward the multipart form data as-is to the backend
-  const formData = await request.formData()
-
-  const response = await fetch(`${API_URL}/upload`, {
-    method: 'POST',
-    headers: {
-      Authorization: authorization,
-    },
-    body: formData,
-  })
-
-  const data = await response.json()
-  return NextResponse.json(data, { status: response.status })
+  return proxyToBackend(request, '/upload', { streamBody: true, timeoutMs: 300_000 })
 }

@@ -1,27 +1,9 @@
 import { NextRequest } from 'next/server'
+import { proxyToBackend } from '@/lib/api-proxy'
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
-
+// O timeout do helper vale ate os headers chegarem; o stream da resposta nunca
+// e cortado. O content-type vem do backend: um 422 ou 429 e JSON, e rotula-lo
+// como `text/event-stream` fazia o erro chegar ao cliente como stream vazio.
 export async function POST(request: NextRequest) {
-  const body = await request.json()
-  const authorization = request.headers.get('Authorization') || ''
-
-  const response = await fetch(`${API_URL}/chat`, {
-    method: 'POST',
-    headers: {
-      'Authorization': authorization,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
-  })
-
-  // Stream the response through
-  return new Response(response.body, {
-    status: response.status,
-    headers: {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
-    },
-  })
+  return proxyToBackend(request, '/chat')
 }
