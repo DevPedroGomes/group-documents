@@ -20,11 +20,23 @@ logger = logging.getLogger(__name__)
 _MENSAGENS_PARA_CONDENSAR = 6
 _MAX_CHARS_POR_MENSAGEM = 600
 
-# Numeracao, marcador de lista e rotulo que o modelo as vezes poe na linha.
-_PREFIXO = re.compile(
-    r"^\s*(?:[-*\u2022]+\s*|\d{1,2}[.)]\s+)?(?:(?:standalone\s+)?(?:question|query)\s*:\s*)?",
+# O que o modelo poe em volta da consulta, e que nao pode virar texto de busca:
+# enfase de markdown ("**Standalone question:** X"), marcador de lista, numero
+# ou titulo no comeco, e rotulo antes de dois-pontos ("Here is the standalone
+# question: X", "Rewritten question: X", "Query 2: X").
+_ENFASE = re.compile(r"\*\*|__|`")
+_MARCADOR = re.compile(r"^\s*(?:#{1,6}\s*|[-*\u2022]+\s*|\d{1,2}[.)]\s+)")
+_ROTULO = re.compile(
+    r"^[^:\n]{0,40}?\b(?:question|query|pergunta|consulta)\b[^:\n]{0,12}:\s*",
     re.IGNORECASE,
 )
+# Linha que e so rotulo, sem dois-pontos: "### Standalone question".
+_SO_ROTULO = re.compile(
+    r"^(?:the\s+)?(?:standalone|rewritten|search|main)?\s*"
+    r"(?:question|query|queries|pergunta|consulta)s?$",
+    re.IGNORECASE,
+)
+_ASPAS = "\"'\u201c\u201d\u2018\u2019"
 
 
 class Recuperacao(NamedTuple):
@@ -39,7 +51,22 @@ class Recuperacao(NamedTuple):
 
 
 def _limpar_linha(linha: str) -> str:
-    return _PREFIXO.sub("", linha).strip().strip("\"'").strip()
+    texto = _MARCADOR.sub("", _ENFASE.sub("", linha))
+    return _ROTULO.sub("", texto, count=1).strip().strip(_ASPAS).strip()
+
+
+def _consultas_da_resposta(texto: str) -> list[str]:
+    """As linhas que sao consulta. Fica de fora o preambulo ("Here are the
+    queries:", qualquer linha terminada em dois-pontos), o rotulo solto e o
+    que fica vazio depois da limpeza."""
+    saida = []
+    for bruta in texto.splitlines():
+        if _ENFASE.sub("", bruta).strip().endswith(":"):
+            continue
+        linha = _limpar_linha(bruta)
+        if linha and not _SO_ROTULO.match(linha):
+            saida.append(linha)
+    return saida
 
 
 def _sem_repeticao(consultas: list[str]) -> list[str]:
@@ -66,10 +93,13 @@ def generate_multi_queries(question: str, history: Optional[list[dict]] = None) 
     """Devolve as consultas a buscar: a principal primeiro, depois as variantes.
 
     Sem historico, a principal e a propria pergunta. Com historico, a PRIMEIRA
-    linha da resposta do modelo e a pergunta reescrita para se sustentar sozinha
-    ("e em marco de 2025?" vira "qual o prazo de entrega em marco de 2025?") e
-    substitui a original na busca; as demais sao variantes. Falha na chamada ou
-    resposta vazia: busca com a pergunta original.
+    linha util da resposta do modelo e a pergunta reescrita para se sustentar
+    sozinha ("e em marco de 2025?" vira "qual o prazo de entrega em marco de
+    2025?") e passa a ser a principal (embedding, palavra-chave, rerank e
+    reescrita corretiva); as demais sao variantes, e a pergunta original entra
+    no fim como variante extra, para uma condensacao errada nao tirar da busca
+    o que a pessoa escreveu. Falha na chamada ou nenhuma linha util: busca so
+    com a pergunta original.
     """
     settings = get_settings()
     recentes = list(history or [])[-_MENSAGENS_PARA_CONDENSAR:]
@@ -112,14 +142,13 @@ def generate_multi_queries(question: str, history: Optional[list[dict]] = None) 
         logger.warning(f"Multi-query generation failed: {e}")
         return [question]
 
-    linhas = [l for l in (_limpar_linha(x) for x in (text or "").splitlines()) if l]
-    if recentes:
-        if not linhas:
-            return [question]
-        principal, variantes = linhas[0], linhas[1:]
-    else:
-        principal, variantes = question, linhas
-    return _sem_repeticao([principal] + variantes)[: n + 1]
+    linhas = _consultas_da_resposta(text or "")
+    if not recentes:
+        return _sem_repeticao([question] + linhas)[: n + 1]
+    if not linhas:
+        return [question]
+    # Os embeddings saem em lote: a original como variante extra custa quase nada.
+    return _sem_repeticao(_sem_repeticao(linhas)[: n + 1] + [question])
 
 
 def _candidatos(

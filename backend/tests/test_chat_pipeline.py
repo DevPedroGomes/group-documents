@@ -53,11 +53,11 @@ def test_seguimento_busca_com_a_pergunta_autocontida(chat):
 
     evs = perguntar(cliente, "e em marco de 2025?")
 
-    # O fragmento sozinho nao vai para a busca: a autocontida o substitui.
-    assert [b["query_text"] for b in cenario.buscas] == [
-        autocontida, "prazo de entrega 2025", "entrega marco 2025",
-    ]
-    assert cenario.embeddings == [[autocontida, "prazo de entrega 2025", "entrega marco 2025"]]
+    # A autocontida vira a consulta principal; o fragmento original so entra
+    # no fim, como variante extra, para uma condensacao errada nao o apagar.
+    esperado = [autocontida, "prazo de entrega 2025", "entrega marco 2025", "e em marco de 2025?"]
+    assert [b["query_text"] for b in cenario.buscas] == esperado
+    assert cenario.embeddings == [esperado]
     # A condensacao viu a conversa.
     assert "qual o prazo de entrega em 2024?" in cenario.prompts_multi_query[0]
     # O gerador recebe a pergunta ORIGINAL e o historico.
@@ -66,7 +66,7 @@ def test_seguimento_busca_com_a_pergunta_autocontida(chat):
     assert [m["content"] for m in geracao["messages"][:-1]] == [m["content"] for m in HISTORICO]
     # A trilha grava as consultas usadas.
     (decisao,) = cenario.decisoes
-    assert decisao["queries"] == [autocontida, "prazo de entrega 2025", "entrega marco 2025"]
+    assert decisao["queries"] == esperado
     assert decisao["question"] == "e em marco de 2025?"
     assert do_tipo(evs, "done")
 

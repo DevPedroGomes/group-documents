@@ -642,7 +642,7 @@ def test_condensacao_so_ve_as_6_ultimas_mensagens_e_corta_as_longas(monkeypatch)
 
     consultas = retriever.generate_multi_queries("e o outro?", historico)
 
-    assert consultas == ["autocontida", "v1", "v2"]
+    assert consultas == ["autocontida", "v1", "v2", "e o outro?"]
     assert "mensagem-3 " not in prompts[0]
     assert all(f"mensagem-{i} " in prompts[0] for i in range(4, 10))
     assert "x" * 700 not in prompts[0], "mensagem longa entrou inteira no prompt"
@@ -656,7 +656,42 @@ def test_condensacao_limpa_rotulo_numeracao_e_repeticao(monkeypatch):
 
     consultas = retriever.generate_multi_queries("e em 2025?", [{"role": "user", "content": "qual o prazo?"}])
 
-    assert consultas == ["qual o prazo em 2025?", "prazo 2025", "3.5% de multa"]
+    assert consultas == ["qual o prazo em 2025?", "prazo 2025", "3.5% de multa", "e em 2025?"]
+
+
+@pytest.mark.parametrize("resposta", [
+    "Here is the standalone question:\nqual o prazo em 2025?\nprazo 2025",
+    "Rewritten question: qual o prazo em 2025?\nprazo 2025",
+    "**Standalone question:** qual o prazo em 2025?\nprazo 2025",
+    "**Standalone question:**\nqual o prazo em 2025?\nprazo 2025",
+    "### Standalone question\nqual o prazo em 2025?\n- prazo 2025",
+    "Sure! Here are the queries:\n\n1. qual o prazo em 2025?\n2. prazo 2025",
+    "Pergunta autocontida: `qual o prazo em 2025?`\nConsulta 1: prazo 2025",
+    "\u201cqual o prazo em 2025?\u201d\nQuery 2: prazo 2025",
+])
+def test_preambulo_e_rotulo_do_modelo_nao_viram_consulta(monkeypatch, resposta):
+    """Com historico a primeira linha manda na busca inteira (embedding,
+    palavra-chave, rerank, reescrita): preambulo ali estragava tudo."""
+    retriever, _ = _multi_query_falso(monkeypatch, resposta)
+
+    consultas = retriever.generate_multi_queries("e em 2025?", [{"role": "user", "content": "qual o prazo?"}])
+
+    assert consultas == ["qual o prazo em 2025?", "prazo 2025", "e em 2025?"]
+
+
+@pytest.mark.parametrize("resposta", ["Here are the queries:", "**Standalone question:**\n\n", "### Query"])
+def test_resposta_so_com_preambulo_busca_com_a_pergunta_original(monkeypatch, resposta):
+    retriever, _ = _multi_query_falso(monkeypatch, resposta)
+
+    assert retriever.generate_multi_queries("e em 2025?", [{"role": "user", "content": "oi"}]) == ["e em 2025?"]
+
+
+def test_original_nao_se_repete_quando_ja_era_autocontida(monkeypatch):
+    retriever, _ = _multi_query_falso(monkeypatch, "Qual o prazo em 2025?\nprazo 2025")
+
+    consultas = retriever.generate_multi_queries("qual o prazo em 2025?", [{"role": "user", "content": "oi"}])
+
+    assert consultas == ["Qual o prazo em 2025?", "prazo 2025"]
 
 
 def test_condensacao_vazia_usa_a_pergunta_original(monkeypatch):
