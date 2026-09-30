@@ -24,6 +24,7 @@ from app.core.rag.transformer import transform_query
 from app.core.rag.retriever import reconsultar, retrieve_documents
 from app.core.rag.grader import grade_documents
 from app.core.rag.conflict import detectar_conflito
+from app.core.rag.web import buscar_na_web
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +164,20 @@ def _resumo_trechos(docs: list[dict]) -> list[dict]:
     ]
 
 
+def _citacao(d: dict) -> dict:
+    """Citacao no contrato do SSE `sources` (e em `messages.citations`)."""
+    web = _e_web(d)
+    return {
+        "kind": "web" if web else "document",
+        "document_id": None if web or not d.get("document_id") else str(d["document_id"]),
+        "document_title": d.get("document_title") or "",
+        "page": None if web else d.get("page"),
+        "snippet": (d.get("snippet") or "")[:300],
+        "document_date": None if web else d.get("document_date"),
+        "url": d.get("url") if web else None,
+    }
+
+
 def save_decision(
     *,
     user_id: str,
@@ -287,6 +302,8 @@ async def chat(request: Request, body: ChatBody):
         usou_web = False
         conflito: dict | None = None
         consultas: list[str] = []
+        resultados_web: list[dict] = []
+        reescrita: str | None = None
 
         # Todo passo caro daqui para baixo e sincrono (LLM, embedding, SQL) e
         # roda em thread, nunca no event loop. Com 1 worker do uvicorn, uma
@@ -396,6 +413,31 @@ async def chat(request: Request, body: ChatBody):
                     }
                     yield _sse("workflow", workflow)
 
+            # Step 4: web, so se o acervo continua sem resposta DEPOIS da
+            # reconsulta, e so com opt-in explicito: a pergunta sai do app para
+            # um terceiro. Com `as_of` nunca: a web de hoje nao diz como era.
+            settings = get_settings()
+            if (
+                baixa_confianca
+                and settings.enable_web_fallback
+                and settings.tavily_api_key
+                and not body.as_of
+            ):
+                workflow.append({"step": "web_search", "status": "in_progress", "details": "Searching the web..."})
+                yield _sse("workflow", workflow)
+
+                try:
+                    resultados_web = await loop.run_in_executor(
+                        None, buscar_na_web, reescrita or consultas[0]
+                    )
+                    usou_web = bool(resultados_web)
+                    detalhe = f"Found {len(resultados_web)} web results"
+                except Exception as e:
+                    logger.warning(f"Web search failed: {e}")
+                    detalhe = "Web search unavailable"
+                workflow[-1] = {"step": "web_search", "status": "completed", "details": detalhe}
+                yield _sse("workflow", workflow)
+
             # Passo: as fontes divergem entre si?
             #
             # Roda depois do grade porque so interessa o que de fato sobrou, e
@@ -418,20 +460,11 @@ async def chat(request: Request, body: ChatBody):
                 if conflito:
                     yield _sse("conflict", conflito)
 
-            # Send sources
-            if filtered_docs:
-                sources = [
-                    {
-                        "document_id": d["document_id"],
-                        "document_title": d["document_title"],
-                        "page": d["page"],
-                        "snippet": d["snippet"][:200],
-                    }
-                    for d in filtered_docs
-                    if d.get("document_id") != "web"
-                ]
-                citations = sources
-                yield _sse("sources", sources)
+            # Fontes: do acervo e da web, cada uma com o seu `kind`. Antes a web
+            # ia para o gerador e ficava fora das citacoes.
+            citations = [_citacao(d) for d in [*filtered_docs, *resultados_web]]
+            if citations:
+                yield _sse("sources", citations)
 
             # Step 3: Generate (streaming)
             workflow.append({"step": "generate", "status": "in_progress", "details": "Generating answer..."})
@@ -443,6 +476,7 @@ async def chat(request: Request, body: ChatBody):
                     documents=filtered_docs,
                     history=history,
                     low_confidence=baixa_confianca,
+                    web_results=resultados_web,
                 )
             ):
                 full_answer += token
@@ -483,7 +517,8 @@ async def chat(request: Request, body: ChatBody):
                 message_id=message_id,
                 question=body.message,
                 retrieved=recuperados,
-                graded=aprovados,
+                # Web entra na trilha junto do que foi aprovado: foi ao gerador.
+                graded=[*aprovados, *resultados_web],
                 web_used=usou_web,
                 low_confidence=baixa_confianca,
                 answered=bool(full_answer),

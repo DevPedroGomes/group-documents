@@ -94,6 +94,11 @@ class Settings(BaseSettings):
 
     # Web Search Fallback (Tavily)
     tavily_api_key: Optional[str] = None
+    # Desligado por padrao: ligar ENVIA A PERGUNTA da pessoa a um terceiro, num
+    # app de perguntas sobre documentos privados. Mesmo ligado so roda quando o
+    # acervo continua sem resposta depois da reconsulta, e nunca com `as_of`
+    # (a web de hoje nao responde "como era em marco de 2025").
+    enable_web_fallback: bool = False
 
     # Multimodal
     #

@@ -278,20 +278,8 @@ def test_deteccao_pode_ser_desligada_por_configuracao(monkeypatch):
     ]) is None
 
 
-def test_o_aviso_nao_filtra_nem_reordena_as_fontes():
-    # O invariante do projeto: o modelo redige, nao decide. A divergencia
-    # aparece ao lado da resposta; nenhuma fonte e descartada por causa dela.
-    fonte = inspect.getsource(chat_route.chat)
-    inicio = fonte.find("# Passo: as fontes divergem")
-    fim = fonte.find("# Send sources")
-    assert inicio != -1 and fim > inicio, "o bloco de divergencia mudou de lugar"
-    trecho = fonte[inicio:fim]
-
-    # Roda fora do event loop, como todo passo caro deste arquivo.
-    assert "conflito = await loop.run_in_executor" in trecho
-    # E nao toca na lista de fontes: nada de reatribuir nem reordenar.
-    assert "filtered_docs =" not in trecho
-    assert "filtered_docs.sort" not in trecho
+# O aviso nao filtra nem reordena as fontes: prendido pela rota em
+# tests/test_chat_pipeline.py (test_divergencia_nao_filtra_nem_reordena_as_fontes).
 
 
 # ---------------------------------------------------------------------------

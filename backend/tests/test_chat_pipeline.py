@@ -153,3 +153,171 @@ def test_reescrita_igual_a_pergunta_nao_repete_a_busca(chat):
 
     assert len(cenario.buscas) == 3
     assert "pergunta reescrita" not in cenario.decisoes[0]["queries"]
+
+
+# ---------------------------------------------------------------------------
+# Web: opt-in, depois da reconsulta, nunca com as_of, citada como web
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def web_ligada(chat, monkeypatch):
+    from app.config.settings import get_settings
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "tavily_api_key", "chave-tavily")
+    monkeypatch.setattr(settings, "enable_web_fallback", True)
+    return chat
+
+
+def test_web_vem_desligada_por_padrao():
+    from app.config.settings import Settings
+
+    assert Settings.model_fields["enable_web_fallback"].default is False
+
+
+def test_com_chave_do_tavily_mas_sem_opt_in_a_pergunta_nao_sai(chat, monkeypatch):
+    from app.config.settings import get_settings
+
+    cliente, cenario = chat
+    monkeypatch.setattr(get_settings(), "tavily_api_key", "chave-tavily")
+
+    evs = perguntar(cliente, "qual o prazo?")  # acervo vazio: baixa confianca
+
+    assert cenario.tavily == []
+    assert "web_search" not in [p["step"] for p in do_tipo(evs, "workflow")[-1]]
+    assert cenario.decisoes[0]["web_used"] is False
+
+
+def test_web_so_roda_depois_de_reconsultar_o_acervo_e_vira_citacao_web(web_ligada):
+    cliente, cenario = web_ligada
+
+    evs = perguntar(cliente, "qual o prazo?")
+
+    assert cenario.log.index("busca:pergunta reescrita") < cenario.log.index("tavily")
+    assert cenario.tavily == ["pergunta reescrita"]
+    (fontes,) = do_tipo(evs, "sources")
+    assert fontes == [{
+        "kind": "web", "document_id": None, "document_title": "Site externo", "page": None,
+        "snippet": "Na web o prazo e de 10 dias.", "document_date": None,
+        "url": "https://exemplo.com/prazo",
+    }]
+    geracao = cenario.geracoes[0]
+    assert "<external_web_results>" in geracao["messages"][-1]["content"]
+    assert "came from the web" in geracao["system"]
+    (decisao,) = cenario.decisoes
+    assert decisao["web_used"] is True
+    assert decisao["graded"][-1]["score_scale"] == "tavily"
+    assert decisao["graded"][-1]["url"] == "https://exemplo.com/prazo"
+    assert do_tipo(evs, "done")[0]["low_confidence"] is True
+    assert cenario.mensagens[-1]["citations"] == fontes
+
+
+def test_web_nunca_roda_com_recorte_no_tempo(web_ligada):
+    cliente, cenario = web_ligada
+
+    perguntar(cliente, "qual era o prazo?", as_of="2025-03-01")
+
+    assert cenario.tavily == []
+    assert {b["as_of"] for b in cenario.buscas} == {"2025-03-01"}
+
+
+def test_web_nao_roda_quando_a_reconsulta_resolveu(web_ligada):
+    cliente, cenario = web_ligada
+    cenario.acervo["pergunta reescrita"] = [trecho("c1", "d1", "Politica"), trecho("c2", "d2", "Manual")]
+
+    perguntar(cliente, "qual o prazo?")
+
+    assert cenario.tavily == []
+
+
+def test_tavily_fora_do_ar_nao_derruba_a_resposta(web_ligada, monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    class Quebrado:
+        def __init__(self, api_key=None):
+            pass
+
+        def search(self, *_a, **_k):
+            raise RuntimeError("429 do Tavily")
+
+    cliente, cenario = web_ligada
+    monkeypatch.setitem(sys.modules, "tavily", SimpleNamespace(TavilyClient=Quebrado))
+
+    evs = perguntar(cliente, "qual o prazo?")
+
+    passos = {p["step"]: p for p in do_tipo(evs, "workflow")[-1]}
+    assert passos["web_search"] == {"step": "web_search", "status": "completed",
+                                    "details": "Web search unavailable"}
+    assert "".join(do_tipo(evs, "chunk")) == "Resposta final."
+    assert cenario.decisoes[0]["web_used"] is False
+
+
+def test_url_que_nao_e_http_e_descartada(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    from app.core.rag.web import buscar_na_web
+
+    class Tavily:
+        def __init__(self, api_key=None):
+            pass
+
+        def search(self, *_a, **_k):
+            return {"results": [
+                {"title": "x", "url": "javascript:alert(1)", "content": "a"},
+                {"title": "y", "url": "https://ok.exemplo.com/p", "content": "b", "score": 0.5},
+                {"title": "z", "url": "https://vazio.exemplo.com", "content": "  "},
+            ]}
+
+    monkeypatch.setitem(sys.modules, "tavily", SimpleNamespace(TavilyClient=Tavily))
+
+    assert [r["url"] for r in buscar_na_web("q")] == ["https://ok.exemplo.com/p"]
+
+
+def test_citacao_de_documento_segue_o_contrato(chat):
+    cliente, cenario = chat
+    cenario.acervo["qual o prazo?"] = [
+        trecho("c1", "d1", "Politica", data="2025-03-01", texto="p" * 500, pagina=4),
+        trecho("c2", "d2", "Manual", data=None),
+    ]
+
+    evs = perguntar(cliente, "qual o prazo?")
+
+    (fontes,) = do_tipo(evs, "sources")
+    assert fontes[0] == {
+        "kind": "document", "document_id": "d1", "document_title": "Politica", "page": 4,
+        "snippet": "p" * 300, "document_date": "2025-03-01", "url": None,
+    }
+    assert fontes[1]["document_date"] is None
+
+
+# ---------------------------------------------------------------------------
+# Divergencia entre fontes
+# ---------------------------------------------------------------------------
+
+DIVERGE = '{"conflict": true, "summary": "O prazo difere.", "sources": ["Contrato", "Aditivo"]}'
+
+
+def _duas_versoes(cenario):
+    cenario.acervo["qual o prazo?"] = [
+        trecho("c1", "d1", "Contrato", data="2023-05-10", texto="prazo de 30 dias"),
+        trecho("c2", "d2", "Aditivo", data="2025-02-01", texto="prazo de 15 dias uteis"),
+        trecho("c3", "d1", "Contrato", data="2023-05-10", texto="entrega em Salvador"),
+    ]
+
+
+def test_divergencia_nao_filtra_nem_reordena_as_fontes(chat):
+    """O invariante do projeto: o modelo redige, nao decide. O aviso aparece
+    ao lado da resposta; nenhuma fonte e descartada por causa dele."""
+    cliente, cenario = chat
+    _duas_versoes(cenario)
+    cenario.resposta_conflito = DIVERGE
+
+    evs = perguntar(cliente, "qual o prazo?")
+
+    assert do_tipo(evs, "conflict")
+    (fontes,) = do_tipo(evs, "sources")
+    assert [f["snippet"] for f in fontes] == ["prazo de 30 dias", "prazo de 15 dias uteis", "entrega em Salvador"]
+    contexto = cenario.geracoes[0]["messages"][-1]["content"]
+    assert contexto.index("prazo de 30 dias") < contexto.index("15 dias uteis") < contexto.index("Salvador")
