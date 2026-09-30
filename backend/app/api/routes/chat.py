@@ -699,6 +699,8 @@ def _listar_decisoes(user_id: str, thread_id: str | None, limit: int):
 async def get_decision(request: Request, message_id: str):
     """Devolve a trilha que produziu uma resposta especifica."""
     user_id = await require_user(request)
+    if not _e_uuid(message_id):
+        raise HTTPException(status_code=404, detail="No decision trail for that message")
     row = await run_in_threadpool(_ler_decisao, message_id, user_id)
 
     if not row:
@@ -713,6 +715,8 @@ async def list_decisions(request: Request, thread_id: str | None = None, limit: 
     """Lista as trilhas do usuario, da mais recente para a mais antiga."""
     user_id = await require_user(request)
     limit = max(1, min(limit, 200))
+    if thread_id and not _e_uuid(thread_id):
+        raise HTTPException(status_code=404, detail="Thread not found")
     rows = await run_in_threadpool(_listar_decisoes, user_id, thread_id, limit)
 
     return {"decisions": [_decision_payload(r) for r in rows]}

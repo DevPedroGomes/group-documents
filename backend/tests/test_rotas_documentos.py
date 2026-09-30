@@ -440,3 +440,39 @@ def test_crawl_resolve_o_dns_fora_do_event_loop(docs, monkeypatch):
 
     assert cliente.post("/crawl", json={"url": "https://exemplo.com/p"}).status_code == 200
     assert no_loop == [False]
+
+
+# ---------------------------------------------------------------------------
+# Id que nao e UUID: 404, sem chegar ao banco
+# ---------------------------------------------------------------------------
+
+def test_preview_de_id_que_nao_e_uuid_responde_404_sem_consultar_o_banco(docs, monkeypatch):
+    from app.api.routes import documents as rotas
+
+    cliente, _ = docs
+
+    def nao_deve_chamar(*a, **k):
+        raise AssertionError("o banco foi consultado com um id invalido")
+
+    monkeypatch.setattr(rotas, "_caminho_do_documento", nao_deve_chamar)
+
+    assert cliente.get("/document/nao-e-uuid/preview").status_code == 404
+
+
+def test_rotas_de_decisao_com_id_que_nao_e_uuid_respondem_404(docs, monkeypatch):
+    from app.api.routes import chat as rotas_chat
+
+    cliente, _ = docs
+
+    async def usuario(_request):
+        return USUARIO
+
+    def nao_deve_chamar(*a, **k):
+        raise AssertionError("o banco foi consultado com um id invalido")
+
+    monkeypatch.setattr(rotas_chat, "require_user", usuario)
+    monkeypatch.setattr(rotas_chat, "_ler_decisao", nao_deve_chamar)
+    monkeypatch.setattr(rotas_chat, "_listar_decisoes", nao_deve_chamar)
+
+    assert cliente.get("/decisions/xyz").status_code == 404
+    assert cliente.get("/decisions", params={"thread_id": "xyz"}).status_code == 404
