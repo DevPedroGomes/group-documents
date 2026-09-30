@@ -5,16 +5,18 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { cn } from '@/lib/utils'
-import { Bot, User, FileText } from 'lucide-react'
-import type { Message, Citation } from '@/lib/types'
+import { AlertTriangle, Bot, User, FileText, Globe, ArrowUpRight, CircleDashed } from 'lucide-react'
+import { tipoDaCitacao, type Message, type Citation, type ConflictEvent } from '@/lib/types'
 
 interface ChatMessageProps {
   message: Message
+  /** Abre o documento citado no preview. So recebe citacoes do acervo. */
   onCitationClick?: (citation: Citation) => void
 }
 
 export function ChatMessage({ message, onCitationClick }: ChatMessageProps) {
   const isUser = message.role === 'user'
+  const citacoes = message.citations ?? []
 
   return (
     <motion.div
@@ -32,7 +34,12 @@ export function ChatMessage({ message, onCitationClick }: ChatMessageProps) {
         </AvatarFallback>
       </Avatar>
 
-      <div className={cn('flex flex-col gap-2 max-w-[80%]', isUser ? 'items-end' : 'items-start')}>
+      <div
+        className={cn(
+          'flex min-w-0 flex-col gap-2',
+          isUser ? 'max-w-[80%] items-end' : 'max-w-[calc(100%-2.75rem)] sm:max-w-[85%] items-start'
+        )}
+      >
         <div
           className={cn(
             'rounded-2xl px-4 py-3 text-sm',
@@ -41,34 +48,184 @@ export function ChatMessage({ message, onCitationClick }: ChatMessageProps) {
               : 'bg-white/5 ring-1 ring-white/10 backdrop-blur rounded-tl-sm text-neutral-100'
           )}
         >
-          <div className={cn('prose prose-sm max-w-none', isUser ? 'prose-zinc' : 'prose-invert')}>
+          <div className={cn('prose prose-sm max-w-none break-words', isUser ? 'prose-zinc' : 'prose-invert')}>
             <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
           </div>
         </div>
 
-        {message.citations && message.citations.length > 0 && (
-          <div className="flex flex-wrap gap-2 mt-1">
-            {message.citations.map((citation, idx) => (
-              <button
-                key={idx}
-                onClick={() => onCitationClick?.(citation)}
-                className="group flex items-center gap-1.5 px-3 py-1 rounded-full bg-blue-400/15 border border-blue-400/30 text-xs text-blue-200 hover:bg-blue-400/25 transition-colors"
-              >
-                <FileText className="h-3 w-3" />
-                <span className="max-w-[150px] truncate">{citation.document_title}</span>
-                <span className="text-[10px] font-semibold uppercase tracking-wider text-blue-300">
-                  p.{citation.page}
-                </span>
-              </button>
-            ))}
+        {!isUser && message.conflict && <AvisoDeDivergencia conflito={message.conflict} />}
+
+        {!isUser && citacoes.length > 0 && (
+          <div className="w-full">
+            <p className="mb-1.5 px-1 text-[10px] font-mono uppercase tracking-widest text-neutral-500">
+              Sources · {citacoes.length}
+            </p>
+            <ul className="grid gap-1.5 sm:grid-cols-2">
+              {citacoes.map((citation, idx) => (
+                <li key={idx} className="min-w-0">
+                  <CartaoDeCitacao citation={citation} onOpen={onCitationClick} />
+                </li>
+              ))}
+            </ul>
           </div>
         )}
 
-        <span className="text-[10px] text-neutral-500 px-1 font-medium">
-          {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-        </span>
+        <div className="flex flex-wrap items-center gap-2 px-1">
+          <span className="text-[10px] text-neutral-500 font-medium">
+            {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+          </span>
+          {!isUser && message.lowConfidence && (
+            <span className="inline-flex items-center gap-1.5 text-[11px] text-neutral-400">
+              <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full border border-amber-400/30 bg-amber-400/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-amber-200">
+                <CircleDashed className="h-3 w-3" aria-hidden />
+                Low confidence
+              </span>
+              nothing retrieved clearly matched the question
+            </span>
+          )}
+        </div>
       </div>
     </motion.div>
+  )
+}
+
+/**
+ * A divergencia entre fontes, na propria resposta. Antes ela so existia como
+ * uma linha no painel de passos, que some quando o stream termina.
+ */
+function AvisoDeDivergencia({ conflito }: { conflito: ConflictEvent }) {
+  const fontes = Array.isArray(conflito.sources) ? conflito.sources : []
+  return (
+    <div role="note" className="w-full rounded-xl border border-amber-400/30 bg-amber-400/[0.07] px-3.5 py-3 text-xs">
+      <p className="flex items-center gap-2 font-semibold text-amber-200">
+        <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden />
+        Your sources disagree
+      </p>
+      <p className="mt-1.5 leading-relaxed text-neutral-200">{conflito.summary}</p>
+      {fontes.length > 0 && (
+        <ul className="mt-2 flex flex-wrap gap-1.5">
+          {fontes.map((f) => (
+            <li
+              key={f}
+              className={cn(
+                'max-w-full truncate rounded-full px-2.5 py-0.5 text-[11px] ring-1',
+                f === conflito.vigente
+                  ? 'bg-emerald-400/10 text-emerald-200 ring-emerald-400/30'
+                  : 'bg-white/5 text-neutral-300 ring-white/10'
+              )}
+            >
+              {f}
+              {f === conflito.vigente && <span className="ml-1.5 font-semibold">· current</span>}
+            </li>
+          ))}
+        </ul>
+      )}
+      {conflito.vigente && (
+        <p className="mt-2 text-[11px] leading-relaxed text-neutral-400">
+          <span className="text-emerald-200">{conflito.vigente}</span> has the most recent document date
+          among the sources that disagree.
+        </p>
+      )}
+    </div>
+  )
+}
+
+/** So http(s): a URL vem de resultado de busca web, e `javascript:` viraria XSS. */
+function urlSegura(url: string | null | undefined): string | null {
+  if (!url) return null
+  try {
+    const u = new URL(url)
+    return u.protocol === 'http:' || u.protocol === 'https:' ? u.toString() : null
+  } catch {
+    return null
+  }
+}
+
+function dominio(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '')
+  } catch {
+    return url
+  }
+}
+
+function CartaoDeCitacao({
+  citation,
+  onOpen,
+}: {
+  citation: Citation
+  onOpen?: (citation: Citation) => void
+}) {
+  const web = tipoDaCitacao(citation) === 'web'
+  const base =
+    'group flex h-full w-full flex-col gap-1 rounded-xl px-3 py-2 text-left ring-1 transition-colors'
+
+  if (web) {
+    const href = urlSegura(citation.url)
+    const corpo = (
+      <>
+        <span className="flex min-w-0 items-center gap-1.5">
+          <Globe className="h-3.5 w-3.5 shrink-0 text-violet-300" aria-hidden />
+          <span className="shrink-0 rounded bg-violet-400/15 px-1.5 py-px text-[9px] font-semibold uppercase tracking-widest text-violet-200">
+            web
+          </span>
+          <span className="min-w-0 truncate text-xs font-medium text-neutral-100">
+            {citation.document_title || (href ? dominio(href) : 'Web result')}
+          </span>
+          {href && <ArrowUpRight className="ml-auto h-3.5 w-3.5 shrink-0 text-neutral-500 group-hover:text-white" aria-hidden />}
+        </span>
+        {href && <span className="truncate text-[10px] font-mono text-neutral-500">{dominio(href)}</span>}
+        {citation.snippet && (
+          <span className="line-clamp-2 text-[11px] leading-snug text-neutral-400">{citation.snippet}</span>
+        )}
+      </>
+    )
+    return href ? (
+      <a
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className={cn(base, 'bg-violet-400/[0.06] ring-violet-400/20 hover:bg-violet-400/[0.12]')}
+        aria-label={`Web source: ${citation.document_title || dominio(href)} (opens in a new tab)`}
+      >
+        {corpo}
+      </a>
+    ) : (
+      <div className={cn(base, 'bg-violet-400/[0.06] ring-violet-400/20')}>{corpo}</div>
+    )
+  }
+
+  const abrivel = Boolean(citation.document_id && onOpen)
+  const corpo = (
+    <>
+      <span className="flex min-w-0 items-center gap-1.5">
+        <FileText className="h-3.5 w-3.5 shrink-0 text-blue-300" aria-hidden />
+        <span className="min-w-0 truncate text-xs font-medium text-neutral-100">{citation.document_title}</span>
+        {citation.page != null && (
+          <span className="ml-auto shrink-0 text-[10px] font-semibold uppercase tracking-wider text-blue-300">
+            p.{citation.page}
+          </span>
+        )}
+      </span>
+      {citation.document_date && (
+        <span className="text-[10px] font-mono text-neutral-500">dated {citation.document_date}</span>
+      )}
+      {citation.snippet && (
+        <span className="line-clamp-2 text-[11px] leading-snug text-neutral-400">{citation.snippet}</span>
+      )}
+    </>
+  )
+  return abrivel ? (
+    <button
+      type="button"
+      onClick={() => onOpen?.(citation)}
+      className={cn(base, 'bg-blue-400/[0.07] ring-blue-400/20 hover:bg-blue-400/[0.14] hover:ring-blue-400/40')}
+      aria-label={`Open ${citation.document_title}${citation.page != null ? ` at page ${citation.page}` : ''}`}
+    >
+      {corpo}
+    </button>
+  ) : (
+    <div className={cn(base, 'bg-blue-400/[0.07] ring-blue-400/20')}>{corpo}</div>
   )
 }
 

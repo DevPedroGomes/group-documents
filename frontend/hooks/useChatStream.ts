@@ -1,67 +1,103 @@
 'use client'
 
-import { useState, useCallback, useRef } from 'react'
-import type { Message, Citation, WorkflowStep, SSEEvent } from '@/lib/types'
+import { useState, useCallback, useEffect, useRef } from 'react'
+import type { Message, Citation, WorkflowStep, SSEEvent, DoneEvent } from '@/lib/types'
 
 interface UseChatStreamOptions {
   getToken: () => Promise<string | undefined>
+  /** Vazio ou ausente: a pergunta vai para o acervo inteiro. */
   documentIds?: string[]
+  /** Recorte no tempo, "YYYY-MM-DD". Vazio responde com o acervo de hoje. */
+  asOf?: string | null
   onError?: (error: string) => void
+  /** Cada `done`, com o escopo que a pergunta usou. */
+  onDone?: (done: DoneEvent, documentIds: string[] | undefined) => void
 }
 
-export function useChatStream({ getToken, documentIds, onError }: UseChatStreamOptions) {
+/** O `detail` do FastAPI e string no HTTPException e lista no 422 de validacao. */
+function mensagemDeErro(corpo: unknown, status: number): string {
+  const detail = (corpo as { detail?: unknown } | null)?.detail
+  if (typeof detail === 'string' && detail) return detail
+  if (status === 422) return 'That request was not valid. Check the date and try again.'
+  if (status === 429) return 'Too many questions right now. Try again in a moment.'
+  return 'Failed to send message'
+}
+
+function lerEvento(json: string): SSEEvent | null {
+  try {
+    return JSON.parse(json) as SSEEvent
+  } catch (parseError) {
+    console.warn('Malformed SSE event:', json, parseError)
+    return null
+  }
+}
+
+export function useChatStream(options: UseChatStreamOptions) {
   const [messages, setMessages] = useState<Message[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [threadId, setThreadId] = useState<string | null>(null)
   const [workflowSteps, setWorkflowSteps] = useState<WorkflowStep[]>([])
-  const [currentCitations, setCurrentCitations] = useState<Citation[]>([])
+  /** Quantos `done` chegaram: a trilha e o historico recarregam quando muda. */
+  const [answerCount, setAnswerCount] = useState(0)
   const abortControllerRef = useRef<AbortController | null>(null)
 
+  // As opcoes vivem num ref para `sendMessage` e `loadThread` serem estaveis:
+  // recria-los a cada render (ou a cada token) disparava os efeitos de quem os
+  // recebe, e o historico era buscado de novo a cada token.
+  const opcoesRef = useRef(options)
+  useEffect(() => {
+    opcoesRef.current = options
+  })
+  const threadIdRef = useRef<string | null>(null)
+  const enviandoRef = useRef(false)
+
+  const definirThread = useCallback((id: string | null) => {
+    threadIdRef.current = id
+    setThreadId(id)
+  }, [])
+
   const sendMessage = useCallback(async (content: string) => {
-    if (!content.trim() || isLoading) return
+    const texto = content.trim()
+    if (!texto || enviandoRef.current) return
+    enviandoRef.current = true
 
-    const userMessage: Message = {
-      id: crypto.randomUUID(),
-      role: 'user',
-      content: content.trim(),
-      timestamp: new Date(),
-    }
+    const { getToken, documentIds, asOf, onError, onDone } = opcoesRef.current
+    const escopo = documentIds && documentIds.length > 0 ? documentIds : undefined
+    const assistantId = crypto.randomUUID()
+    const atualizar = (patch: (m: Message) => Message) =>
+      setMessages(prev => prev.map(m => (m.id === assistantId ? patch(m) : m)))
 
-    setMessages(prev => [...prev, userMessage])
+    setMessages(prev => [
+      ...prev,
+      { id: crypto.randomUUID(), role: 'user', content: texto, timestamp: new Date() },
+      { id: assistantId, role: 'assistant', content: '', timestamp: new Date() },
+    ])
     setIsLoading(true)
     setWorkflowSteps([])
-    setCurrentCitations([])
-
-    // Add placeholder assistant message for streaming
-    const assistantId = crypto.randomUUID()
-    setMessages(prev => [...prev, {
-      id: assistantId,
-      role: 'assistant',
-      content: '',
-      timestamp: new Date(),
-    }])
 
     try {
       const token = await getToken()
-      abortControllerRef.current = new AbortController()
+      const controller = new AbortController()
+      abortControllerRef.current = controller
 
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${token}`,
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          message: content.trim(),
-          document_ids: documentIds,
-          thread_id: threadId,
+          message: texto,
+          document_ids: escopo,
+          thread_id: threadIdRef.current ?? undefined,
+          as_of: asOf || undefined,
         }),
-        signal: abortControllerRef.current.signal,
+        signal: controller.signal,
       })
 
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}))
-        throw new Error(data.detail || 'Failed to send message')
+        const data: unknown = await res.json().catch(() => null)
+        throw new Error(mensagemDeErro(data, res.status))
       }
 
       const reader = res.body?.getReader()
@@ -69,14 +105,12 @@ export function useChatStream({ getToken, documentIds, onError }: UseChatStreamO
 
       const decoder = new TextDecoder()
       let buffer = ''
-      let finalCitations: Citation[] = []
 
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
 
         buffer += decoder.decode(value, { stream: true })
-
         const lines = buffer.split('\n')
         buffer = lines.pop() || ''
 
@@ -85,119 +119,110 @@ export function useChatStream({ getToken, documentIds, onError }: UseChatStreamO
           const jsonStr = line.slice(6)
           if (!jsonStr.trim()) continue
 
-          try {
-            const event: SSEEvent = JSON.parse(jsonStr)
+          const event = lerEvento(jsonStr)
+          if (!event) continue
 
-            switch (event.type) {
-              case 'workflow':
-                setWorkflowSteps(event.data)
-                break
+          switch (event.type) {
+            case 'workflow':
+              setWorkflowSteps(event.data)
+              break
 
-              case 'sources':
-                finalCitations = event.data
-                setCurrentCitations(event.data)
-                break
-
-              case 'chunk':
-                setMessages(prev =>
-                  prev.map(m =>
-                    m.id === assistantId
-                      ? { ...m, content: m.content + event.data }
-                      : m
-                  )
-                )
-                break
-
-              case 'done':
-                if (event.data.thread_id && !threadId) {
-                  setThreadId(event.data.thread_id)
-                }
-                // Attach citations to final message
-                setMessages(prev =>
-                  prev.map(m =>
-                    m.id === assistantId
-                      ? { ...m, citations: finalCitations }
-                      : m
-                  )
-                )
-                break
-
-              case 'error':
-                onError?.(event.data.message || 'An error occurred')
-                break
+            case 'sources': {
+              // As fontes chegam antes do primeiro token: aparecem ja durante a geracao.
+              const citacoes: Citation[] = Array.isArray(event.data) ? event.data : []
+              atualizar(m => ({ ...m, citations: citacoes }))
+              break
             }
-          } catch (parseError) {
-            console.warn('Malformed SSE event:', jsonStr, parseError)
+
+            case 'conflict':
+              // Pode vir antes, entre ou depois dos tokens: fica na mensagem,
+              // e nao no painel de passos, que some quando o stream acaba.
+              atualizar(m => ({ ...m, conflict: event.data }))
+              break
+
+            case 'chunk':
+              atualizar(m => ({ ...m, content: m.content + event.data }))
+              break
+
+            case 'done':
+              if (event.data.thread_id) definirThread(event.data.thread_id)
+              atualizar(m => ({
+                ...m,
+                messageId: event.data.message_id,
+                lowConfidence: Boolean(event.data.low_confidence),
+              }))
+              setAnswerCount(n => n + 1)
+              onDone?.(event.data, escopo)
+              break
+
+            case 'error':
+              onError?.(event.data?.message || 'An error occurred')
+              break
           }
         }
       }
     } catch (error) {
-      if (error instanceof Error && error.name === 'AbortError') {
-        return
+      if (!(error instanceof Error && error.name === 'AbortError')) {
+        onError?.(error instanceof Error ? error.message : 'Something went wrong')
       }
-      const errorMessage = error instanceof Error ? error.message : 'Something went wrong'
-      onError?.(errorMessage)
-      // Remove empty assistant message on error
-      setMessages(prev => prev.filter(m => m.id !== assistantId || m.content))
     } finally {
+      // Resposta sem nenhum texto (erro, parada) nao fica como balao vazio.
+      setMessages(prev => prev.filter(m => m.id !== assistantId || m.content))
       setIsLoading(false)
+      enviandoRef.current = false
       abortControllerRef.current = null
     }
-  }, [getToken, documentIds, threadId, isLoading, onError])
+  }, [definirThread])
 
   const resetChat = useCallback(() => {
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort()
-    }
+    abortControllerRef.current?.abort()
     setMessages([])
-    setThreadId(null)
+    definirThread(null)
     setIsLoading(false)
     setWorkflowSteps([])
-    setCurrentCitations([])
-  }, [])
+  }, [definirThread])
 
   const stopGeneration = useCallback(() => {
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort()
-      setIsLoading(false)
-    }
+    abortControllerRef.current?.abort()
   }, [])
 
-  const loadThread = useCallback(async (
-    targetThreadId: string,
-    getTokenFn: () => Promise<string | undefined>,
-  ) => {
+  /** Carrega uma conversa antiga. Devolve false quando nao conseguiu. */
+  const loadThread = useCallback(async (targetThreadId: string): Promise<boolean> => {
+    abortControllerRef.current?.abort()
     try {
-      const token = await getTokenFn()
-      const res = await fetch(`/api/threads/${targetThreadId}/messages`, {
-        headers: { Authorization: `Bearer ${token}` },
+      const token = await opcoesRef.current.getToken()
+      const res = await fetch(`/api/threads/${encodeURIComponent(targetThreadId)}/messages`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
       })
-      if (!res.ok) return
+      if (!res.ok) return false
 
-      const data = await res.json()
-      const loadedMessages: Message[] = (data.messages || []).map((m: { role: string; content: string; citations?: Citation[] }, i: number) => ({
-        id: `loaded-${i}`,
-        role: m.role as 'user' | 'assistant',
+      const data = (await res.json()) as {
+        messages?: { role: string; content: string; citations?: Citation[] | null }[]
+      }
+      const loadedMessages: Message[] = (data.messages || []).map((m, i) => ({
+        id: `loaded-${targetThreadId}-${i}`,
+        role: m.role === 'user' ? 'user' : 'assistant',
         content: m.content,
-        citations: m.citations,
+        citations: m.citations ?? undefined,
         timestamp: new Date(),
       }))
 
       setMessages(loadedMessages)
-      setThreadId(targetThreadId)
+      definirThread(targetThreadId)
       setWorkflowSteps([])
-      setCurrentCitations([])
+      return true
     } catch (err) {
       console.error('Failed to load thread:', err)
+      return false
     }
-  }, [])
+  }, [definirThread])
 
   return {
     messages,
     isLoading,
     threadId,
     workflowSteps,
-    currentCitations,
+    answerCount,
     sendMessage,
     resetChat,
     stopGeneration,
