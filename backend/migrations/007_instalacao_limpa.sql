@@ -6,8 +6,14 @@
 -- quebravam com UndefinedColumn. Tudo aqui e idempotente: em producao vira
 -- no-op, em banco novo completa o schema.
 
+-- Producao ja tem a coluna, nullable (veio do init.sql): o ADD abaixo e no-op
+-- la, entao o backfill e o NOT NULL vem em passos separados. `require_user`
+-- trata NULL como inativo, por isso nenhum NULL pode sobrar.
 ALTER TABLE users
-    ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT true;
+    ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true;
+UPDATE users SET is_active = true WHERE is_active IS NULL;
+ALTER TABLE users ALTER COLUMN is_active SET DEFAULT true;
+ALTER TABLE users ALTER COLUMN is_active SET NOT NULL;
 
 -- Adicionada nullable, preenchida e so entao travada em NOT NULL, para nao
 -- depender de o default cobrir linhas antigas em qualquer versao do Postgres.

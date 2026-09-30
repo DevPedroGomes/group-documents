@@ -7,6 +7,8 @@ Redis: com `TEST_REDIS_URL` o limiter usa Redis real (o conftest exporta
 `REDIS_URL` antes do import). Sem ela, o limiter e desligado no teste — nenhuma
 das rotas exercitadas aqui usa o metering, entao nao ha double dele.
 """
+import os
+
 import jwt
 import pytest
 from fastapi.testclient import TestClient
@@ -22,7 +24,7 @@ def cliente(banco_limpo):
     from app.api.rate_limit import limiter
     from app.main import create_app
 
-    if not __import__("os").environ.get("TEST_REDIS_URL"):
+    if not os.environ.get("TEST_REDIS_URL"):
         limiter.enabled = False
     else:
         limiter.reset()
@@ -81,6 +83,42 @@ def test_backfill_da_data_efetiva_ignora_lixo(banco_limpo):
         datas = dict(conn.execute(sqltext("SELECT title, effective_date::text FROM documents")).all())
 
     assert datas == {"d0": "2024-03-15", "d1": None, "d2": None, "d3": None, "sem": None}
+
+
+def test_007_normaliza_banco_legado_com_colunas_anulaveis(banco_limpo):
+    """Forma de producao (init.sql): is_active/updated_at nullable e com NULLs."""
+    from app.db.engine import engine
+    from app.db.migrate import MIGRATIONS_DIR
+
+    with engine.begin() as conn:
+        conn.execute(sqltext("ALTER TABLE users ALTER COLUMN is_active DROP NOT NULL"))
+        conn.execute(sqltext("ALTER TABLE users ALTER COLUMN is_active DROP DEFAULT"))
+        conn.execute(sqltext("ALTER TABLE threads ALTER COLUMN updated_at DROP NOT NULL"))
+        conn.execute(sqltext("ALTER TABLE threads ALTER COLUMN updated_at DROP DEFAULT"))
+        conn.execute(sqltext("INSERT INTO users (email, password_hash, is_active) VALUES ('n@x.com', 'h', NULL)"))
+        uid = conn.execute(sqltext("SELECT id FROM users")).scalar()
+        conn.execute(
+            sqltext("INSERT INTO threads (user_id, created_at, updated_at) "
+                    "VALUES (:u, '2024-01-02 03:04:05+00', NULL)"),
+            {"u": uid},
+        )
+        conn.execute(sqltext((MIGRATIONS_DIR / "007_instalacao_limpa.sql").read_text("utf-8")))
+
+    with engine.connect() as conn:
+        assert conn.execute(sqltext("SELECT is_active FROM users")).scalar() is True
+        assert conn.execute(
+            sqltext("SELECT updated_at = created_at FROM threads")
+        ).scalar() is True
+        nulos = dict(conn.execute(sqltext(
+            "SELECT table_name || '.' || column_name, is_nullable FROM information_schema.columns "
+            "WHERE (table_name, column_name) IN (('users','is_active'),('threads','updated_at'))"
+        )).all())
+        assert nulos == {"users.is_active": "NO", "threads.updated_at": "NO"}
+    with engine.begin() as conn:  # defaults de volta: INSERT sem as colunas funciona
+        conn.execute(sqltext("INSERT INTO users (email, password_hash) VALUES ('d@x.com', 'h')"))
+        conn.execute(sqltext("INSERT INTO threads (user_id) SELECT id FROM users LIMIT 1"))
+        assert conn.execute(sqltext("SELECT is_active FROM users WHERE email='d@x.com'")).scalar() is True
+        assert conn.execute(sqltext("SELECT count(*) FROM threads WHERE updated_at IS NULL")).scalar() == 0
 
 
 def test_register_login_me_e_threads_em_banco_limpo(cliente):
