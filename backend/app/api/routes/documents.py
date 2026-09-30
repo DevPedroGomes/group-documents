@@ -12,10 +12,11 @@ import asyncio
 from datetime import date
 from typing import Optional
 
-from fastapi import APIRouter, Request, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Request, HTTPException
 from pydantic import BaseModel, ConfigDict, field_validator
 from sqlalchemy import insert, text as sqltext
 from starlette.concurrency import run_in_threadpool
+from starlette.datastructures import UploadFile
 
 from app.config.settings import get_settings
 from app.db.engine import engine
@@ -104,44 +105,89 @@ def _inserir_documento(**valores) -> str:
         ).scalar_one()
 
 
-async def _recusar_e_desfazer(doc_id, storage_path: str, exc: FilaCheia) -> None:
-    """Desfaz os efeitos ja aplicados quando a fila RECUSA o trabalho, e vira HTTP.
+async def _consumir_cota_de_ingestao() -> None:
+    """Teto diario global de ingestoes, consumido ANTES de gravar arquivo ou linha.
 
-    A ordem das rotas e: grava o arquivo -> consome a cota -> cria a linha
-    `pending` -> enfileira. Se o enfileiramento recusa, os TRES primeiros ja
-    aconteceram, e nada os desfazia: a cota do dia era gasta por um trabalho que
-    nunca rodou, o arquivo ficava orfao no volume, e a linha ficava `pending`
-    para sempre — com o frontend consultando aquele documento a cada 3s, para
-    sempre. O comentario acima do `consumir` ja prometia que uma recusa nao
-    deixaria documento fantasma; e este passo que cumpre a promessa.
-
-    Nunca levanta pelo desfazimento em si: o que o chamador precisa receber e o
-    erro da FILA (429/503). Cada passo e melhor-esforco e registrado no log —
-    uma devolucao de cota perdida custa um pouco de folga, e trocar o 429 por um
-    500 esconderia do cliente o unico fato acionavel, que e "tente de novo".
-
-    `FilaIndisponivel` (Redis ilegivel) vira 503 e `FilaCheia` vira 429: a fila
-    cheia tem prazo para voltar, a queda de infra nao tem.
-
-    NAO cobre o outro caminho que tambem gasta cota sem enfileirar: o INSERT do
-    documento falhando (500 logo acima de cada chamada). La nao ha linha para
-    apagar, so cota e arquivo, e o tratamento continua como estava.
+    A ingestao e o caminho MAIS caro do app: o enriquecimento contextual chama o
+    LLM uma vez por chunk. Consumir antes de gravar faz a recusa nao deixar nada
+    para tras: nem documento fantasma no banco, nem arquivo orfao no volume.
     """
-    # Cota primeiro: e o unico dos tres que custa dinheiro ao proximo visitante.
+    try:
+        await metering.consumir("ingest", get_settings().daily_ingest_limit)
+    except metering.TetoIndisponivel as exc:
+        # Backend de cota ilegivel: e indisponibilidade, nao limite atingido.
+        # Sem `Retry-After`, porque ninguem sabe quando o Redis volta.
+        raise HTTPException(status_code=503, detail=exc.mensagem) from exc
+    except metering.TetoAtingido as exc:
+        raise HTTPException(
+            status_code=429,
+            detail=exc.mensagem,
+            headers={"Retry-After": str(metering.segundos_ate_meia_noite_utc())},
+        ) from exc
+
+
+async def _desfazer(storage_path: str | None, doc_id=None) -> None:
+    """Devolve a cota e apaga o que ja foi gravado: a linha, se houver, e o arquivo.
+
+    Nunca levanta: cada passo e melhor-esforco e registrado no log. Uma
+    devolucao de cota perdida custa um pouco de folga; trocar o erro original
+    por um erro do desfazimento esconderia do cliente o que aconteceu.
+    """
+    # Cota primeiro: e o unico que custa dinheiro ao proximo visitante.
     try:
         await metering.devolver("ingest")
     except Exception:
         logger.exception("ingest.devolucao_de_cota_falhou doc_id=%s", doc_id)
 
-    try:
-        await run_in_threadpool(_apagar_linha, doc_id)
-    except Exception:
-        logger.exception("ingest.remocao_do_documento_falhou doc_id=%s", doc_id)
+    if doc_id is not None:
+        try:
+            await run_in_threadpool(_apagar_linha, doc_id)
+        except Exception:
+            logger.exception("ingest.remocao_do_documento_falhou doc_id=%s", doc_id)
 
+    if storage_path:
+        try:
+            await run_in_threadpool(delete_file, storage_path)
+        except Exception:
+            logger.warning(f"File deletion failed for {storage_path}", exc_info=True)
+
+
+async def _gravar_e_registrar(user_id: str, mime: str, dados: bytes, **linha) -> tuple[str, str]:
+    """Grava o arquivo e cria a linha `pending`, com a cota JA consumida.
+
+    Devolve `(doc_id, storage_path)`. Se gravar ou registrar falhar, desfaz o
+    que ja aconteceu (cota e arquivo) antes do 500.
+    """
+    storage_path = None
     try:
-        await run_in_threadpool(delete_file, storage_path)
-    except Exception:
-        logger.warning(f"File deletion failed for {storage_path}", exc_info=True)
+        storage_path = await run_in_threadpool(save_file, user_id, mime, dados)
+        doc_id = await run_in_threadpool(
+            _inserir_documento,
+            user_id=user_id, mime=mime, storage_path=storage_path, status="pending", **linha,
+        )
+    except Exception as e:
+        logger.error(f"Error storing document: {e}")
+        await _desfazer(storage_path)
+        raise HTTPException(500, "Error creating document record")
+    return doc_id, storage_path
+
+
+async def _recusar_e_desfazer(doc_id, storage_path: str, exc: FilaCheia) -> None:
+    """Desfaz os efeitos ja aplicados quando a fila RECUSA o trabalho, e vira HTTP.
+
+    A ordem das rotas e: consome a cota -> grava o arquivo -> cria a linha
+    `pending` -> enfileira. Se o enfileiramento recusa, os TRES primeiros ja
+    aconteceram, e nada os desfazia: a cota do dia era gasta por um trabalho que
+    nunca rodou, o arquivo ficava orfao no volume, e a linha ficava `pending`
+    para sempre — com o frontend consultando aquele documento a cada 3s, para
+    sempre.
+
+    O que o chamador recebe e o erro da FILA: trocar o 429 por um 500 esconderia
+    o unico fato acionavel, que e "tente de novo". `FilaIndisponivel` (Redis
+    ilegivel) vira 503 e `FilaCheia` vira 429: a fila cheia tem prazo para
+    voltar, a queda de infra nao tem.
+    """
+    await _desfazer(storage_path, doc_id)
 
     if isinstance(exc, FilaIndisponivel):
         raise HTTPException(status_code=503, detail=exc.mensagem) from exc
@@ -160,32 +206,72 @@ class IngestBody(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
 
+# Folga para o envelope multipart em volta do arquivo: boundaries, titulo, data.
+_FOLGA_MULTIPART = 64 * 1024
+_BLOCO_DE_LEITURA = 1024 * 1024
+
+
+def _grande_demais(limite: int) -> HTTPException:
+    return HTTPException(413, f"File too large (max {limite // (1024 * 1024)}MB)")
+
+
+async def _ler_ate_o_limite(arquivo: UploadFile, limite: int) -> bytes:
+    """Le em blocos e desiste em `limite + 1` bytes, com 413.
+
+    `await file.read()` trazia o arquivo inteiro para a memoria antes de olhar o
+    tamanho, entao um upload sem Content-Length (ou com folga dentro dele)
+    ocupava a RAM que o limite existia para proteger.
+    """
+    partes: list[bytes] = []
+    lidos = 0
+    while True:
+        bloco = await arquivo.read(min(_BLOCO_DE_LEITURA, limite + 1 - lidos))
+        if not bloco:
+            return b"".join(partes)
+        partes.append(bloco)
+        lidos += len(bloco)
+        if lidos > limite:
+            raise _grande_demais(limite)
+
+
 @router.post("/upload")
 @limiter.limit("30/minute")
-async def upload_file(
-    request: Request,
-    file: UploadFile = File(...),
-    title: str = Form(...),
-    effective_date: Optional[str] = Form(None),
-):
-    """Upload a file and trigger ingestion."""
+async def upload_file(request: Request):
+    """Upload a file and trigger ingestion.
+
+    Multipart com `file`, `title` e `effective_date` (opcional). O corpo e lido
+    AQUI, e nao declarado como `File(...)`/`Form(...)`: o FastAPI leria e
+    gravaria o multipart inteiro antes de chamar a rota, e nem o JWT nem o
+    Content-Length conseguiriam barrar um upload gigante antes de ele chegar.
+    """
     user_id = await require_user(request)
-    settings = get_settings()
+    limite = get_settings().max_file_size
 
-    if not title or len(title) > 500:
-        raise HTTPException(400, "Invalid title (max 500 characters)")
-    # Antes de gravar arquivo ou gastar cota: data invalida nao deixa rastro.
-    try:
-        data_efetiva = _data_efetiva(effective_date)
-    except ValueError as e:
-        raise HTTPException(422, str(e))
+    declarado = request.headers.get("content-length", "")
+    if declarado.isdigit() and int(declarado) > limite + _FOLGA_MULTIPART:
+        raise _grande_demais(limite)
 
-    # Read file data
-    data = await file.read()
+    async with request.form(max_files=1, max_fields=10) as form:
+        file, title, effective_date = form.get("file"), form.get("title"), form.get("effective_date")
+        if not isinstance(file, UploadFile):
+            raise HTTPException(422, "Field 'file' is required")
+        if not isinstance(title, str):
+            raise HTTPException(422, "Field 'title' is required")
+        if not title or len(title) > 500:
+            raise HTTPException(400, "Invalid title (max 500 characters)")
+        if effective_date is not None and not isinstance(effective_date, str):
+            raise HTTPException(422, "effective_date precisa ser uma data YYYY-MM-DD")
+        # Antes de gravar arquivo ou gastar cota: data invalida nao deixa rastro.
+        try:
+            data_efetiva = _data_efetiva(effective_date)
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+
+        data = await _ler_ate_o_limite(file, limite)
+        declared = (file.content_type or "").lower()
+
     if not data:
         raise HTTPException(400, "Empty file")
-    if len(data) > settings.max_file_size:
-        raise HTTPException(400, f"File too large (max {settings.max_file_size // (1024*1024)}MB)")
 
     # MIME allowlist + magic-byte sniffing. The client-declared content-type is
     # advisory only — we trust libmagic.
@@ -199,44 +285,15 @@ async def upload_file(
 
     # If the client declared a content-type, it must agree with sniffed mime
     # (or at least be in ALLOWED_MIMES with a compatible extension set).
-    declared = (file.content_type or "").lower()
     if declared and declared in ALLOWED_MIMES:
         if ALLOWED_MIMES[declared] != ALLOWED_MIMES[sniffed_mime]:
             raise HTTPException(415, "Declared content-type does not match file contents")
 
-    # Save to local storage with UUID-based filename derived from sniffed mime
-    storage_path = await run_in_threadpool(save_file, user_id, sniffed_mime, data)
-
-    # Create document record
-    # Teto diario global de ingestoes. A ingestao e o caminho MAIS caro do app:
-    # enriquecimento contextual chama o LLM uma vez por chunk. Consumido antes
-    # de criar a linha, para uma recusa nao deixar documento fantasma no banco.
-    try:
-        await metering.consumir("ingest", get_settings().daily_ingest_limit)
-    except metering.TetoIndisponivel as exc:
-        # Backend de cota ilegivel: e indisponibilidade, nao limite atingido.
-        # Sem `Retry-After`, porque ninguem sabe quando o Redis volta.
-        raise HTTPException(status_code=503, detail=exc.mensagem) from exc
-    except metering.TetoAtingido as exc:
-        raise HTTPException(
-            status_code=429,
-            detail=exc.mensagem,
-            headers={"Retry-After": str(metering.segundos_ate_meia_noite_utc())},
-        ) from exc
-
-    try:
-        doc_id = await run_in_threadpool(
-            _inserir_documento,
-            user_id=user_id,
-            title=title,
-            mime=sniffed_mime,
-            storage_path=storage_path,
-            status="pending",
-            effective_date=data_efetiva,
-        )
-    except Exception as e:
-        logger.error(f"DB error creating document: {e}")
-        raise HTTPException(500, "Error creating document record")
+    await _consumir_cota_de_ingestao()
+    # Arquivo gravado com nome UUID e extensao do mime detectado.
+    doc_id, storage_path = await _gravar_e_registrar(
+        user_id, sniffed_mime, data, title=title, effective_date=data_efetiva,
+    )
 
     # O digest identifica ESTA ingestao (a linha criada + o arquivo gravado),
     # nao o CONTEUDO do arquivo: `doc_id` e `storage_path` sao novos a cada
@@ -316,38 +373,11 @@ async def crawl_url(request: Request, body: CrawlBody):
 
     title = (body.title or page_title or body.url)[:500]
 
-    storage_path = await run_in_threadpool(save_file, user_id, "text/plain", text.encode("utf-8"))
-
-    # Teto diario global de ingestoes. A ingestao e o caminho MAIS caro do app:
-    # enriquecimento contextual chama o LLM uma vez por chunk. Consumido antes
-    # de criar a linha, para uma recusa nao deixar documento fantasma no banco.
-    try:
-        await metering.consumir("ingest", get_settings().daily_ingest_limit)
-    except metering.TetoIndisponivel as exc:
-        # Backend de cota ilegivel: e indisponibilidade, nao limite atingido.
-        # Sem `Retry-After`, porque ninguem sabe quando o Redis volta.
-        raise HTTPException(status_code=503, detail=exc.mensagem) from exc
-    except metering.TetoAtingido as exc:
-        raise HTTPException(
-            status_code=429,
-            detail=exc.mensagem,
-            headers={"Retry-After": str(metering.segundos_ate_meia_noite_utc())},
-        ) from exc
-
-    try:
-        doc_id = await run_in_threadpool(
-            _inserir_documento,
-            user_id=user_id,
-            title=title,
-            mime="text/plain",
-            storage_path=storage_path,
-            status="pending",
-            meta={"source_url": body.url},
-            effective_date=body.effective_date,
-        )
-    except Exception as e:
-        logger.error(f"DB error creating document: {e}")
-        raise HTTPException(500, "Error creating document record")
+    await _consumir_cota_de_ingestao()
+    doc_id, storage_path = await _gravar_e_registrar(
+        user_id, "text/plain", text.encode("utf-8"),
+        title=title, meta={"source_url": body.url}, effective_date=body.effective_date,
+    )
 
     # O digest identifica ESTA ingestao (a linha criada + o arquivo gravado),
     # nao o CONTEUDO do arquivo: `doc_id` e `storage_path` sao novos a cada
@@ -394,22 +424,7 @@ async def ingest(request: Request, body: IngestBody):
     if mime_lower == "text/plain" or mime_lower not in ALLOWED_MIMES:
         raise HTTPException(415, f"Unsupported file type: {body.mime}")
 
-    # Teto diario global de ingestoes. A ingestao e o caminho MAIS caro do app:
-    # enriquecimento contextual chama o LLM uma vez por chunk. Consumido antes
-    # de criar a linha, para uma recusa nao deixar documento fantasma no banco.
-    try:
-        await metering.consumir("ingest", get_settings().daily_ingest_limit)
-    except metering.TetoIndisponivel as exc:
-        # Backend de cota ilegivel: e indisponibilidade, nao limite atingido.
-        # Sem `Retry-After`, porque ninguem sabe quando o Redis volta.
-        raise HTTPException(status_code=503, detail=exc.mensagem) from exc
-    except metering.TetoAtingido as exc:
-        raise HTTPException(
-            status_code=429,
-            detail=exc.mensagem,
-            headers={"Retry-After": str(metering.segundos_ate_meia_noite_utc())},
-        ) from exc
-
+    await _consumir_cota_de_ingestao()
     try:
         doc_id = await run_in_threadpool(
             _inserir_documento,
@@ -421,6 +436,8 @@ async def ingest(request: Request, body: IngestBody):
         )
     except Exception as e:
         logger.error(f"DB error creating document: {e}")
+        # O arquivo e da pessoa e ja existia antes desta rota: so a cota volta.
+        await _desfazer(None)
         raise HTTPException(500, "Error creating document record")
 
     # O digest identifica ESTA ingestao (a linha criada + o arquivo gravado),
