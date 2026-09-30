@@ -214,10 +214,12 @@ async def semear(user_id: str, docs: list[Documento], destino_pdf: Path, rpm: fl
                     mime=MIME_PDF,
                     storage_path=storage_path,
                     status="pending",
-                    # A data de emissão vive em `meta` porque é ela que dá sentido
-                    # ao recorte no tempo: sem isto, `as_of` não teria em que se
-                    # apoiar para este acervo.
+                    # A data de emissao e o que da sentido ao recorte no tempo:
+                    # `as_of` corta por `effective_date`. O acervo inteiro sobe no
+                    # mesmo dia, entao sem ela "e em marco de 2025?" nao acharia
+                    # nada. `meta.emitido_em` fica como registro de origem.
                     meta={"emitido_em": doc.emitido_em.isoformat(), "categoria": doc.categoria},
+                    effective_date=doc.emitido_em,
                 )
                 .returning(documents.c.id)
             ).scalar_one()

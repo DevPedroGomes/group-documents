@@ -4,10 +4,11 @@ import os
 import re
 import logging
 import asyncio
+from datetime import date
 from typing import Optional
 
 from fastapi import APIRouter, Request, HTTPException, UploadFile, File, Form
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 from sqlalchemy import insert, text as sqltext
 
 from app.config.settings import get_settings
@@ -58,6 +59,21 @@ def _sniff_mime(data: bytes) -> str:
     except Exception as e:
         logger.warning(f"libmagic sniff failed: {e}")
         return "application/octet-stream"
+
+
+def _data_efetiva(valor: Optional[str]) -> Optional[date]:
+    """`effective_date` opcional: a data em que o documento vale (emissao), que
+    o recorte `as_of` usa no lugar da data de upload. So aceita YYYY-MM-DD e
+    dia que existe; vazio vira None. Invalido levanta ValueError."""
+    if valor is None or not valor.strip():
+        return None
+    valor = valor.strip()
+    try:
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", valor):
+            raise ValueError
+        return date.fromisoformat(valor)
+    except ValueError:
+        raise ValueError(f"effective_date precisa ser uma data YYYY-MM-DD valida, recebido {valor!r}") from None
 
 
 def validate_storage_path(path: str) -> bool:
@@ -134,6 +150,7 @@ async def upload_file(
     request: Request,
     file: UploadFile = File(...),
     title: str = Form(...),
+    effective_date: Optional[str] = Form(None),
 ):
     """Upload a file and trigger ingestion."""
     user_id = await require_user(request)
@@ -141,6 +158,11 @@ async def upload_file(
 
     if not title or len(title) > 500:
         raise HTTPException(400, "Invalid title (max 500 characters)")
+    # Antes de gravar arquivo ou gastar cota: data invalida nao deixa rastro.
+    try:
+        data_efetiva = _data_efetiva(effective_date)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
 
     # Read file data
     data = await file.read()
@@ -195,6 +217,7 @@ async def upload_file(
                     mime=sniffed_mime,
                     storage_path=storage_path,
                     status="pending",
+                    effective_date=data_efetiva,
                 ).returning(documents.c.id)
             ).scalar_one()
     except Exception as e:
@@ -230,8 +253,18 @@ async def upload_file(
 class CrawlBody(BaseModel):
     url: str
     title: Optional[str] = None
+    effective_date: Optional[date] = None
 
     model_config = ConfigDict(str_strip_whitespace=True)
+
+    @field_validator("effective_date", mode="before")
+    @classmethod
+    def _valida_effective_date(cls, v):
+        # O `date` do pydantic aceita mais formatos (numero, data e hora); o
+        # contrato e so YYYY-MM-DD, igual ao upload.
+        if v is None or isinstance(v, str):
+            return _data_efetiva(v)
+        raise ValueError("effective_date precisa ser uma data YYYY-MM-DD")
 
 
 @router.post("/crawl")
@@ -297,6 +330,7 @@ async def crawl_url(request: Request, body: CrawlBody):
                     storage_path=storage_path,
                     status="pending",
                     meta={"source_url": body.url},
+                    effective_date=body.effective_date,
                 ).returning(documents.c.id)
             ).scalar_one()
     except Exception as e:

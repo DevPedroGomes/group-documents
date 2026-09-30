@@ -5,6 +5,7 @@ with Reciprocal Rank Fusion (RRF).
 
 import logging
 import uuid as uuid_mod
+from datetime import date
 from typing import Optional
 
 from sqlalchemy import insert, text as sqltext
@@ -79,6 +80,17 @@ _TSQUERY_POR_CONFIG = " || ".join(
 TSQUERY_SQL = f"CAST(replace(CAST(({_TSQUERY_POR_CONFIG}) AS text), ' & ', ' | ') AS tsquery)"
 
 
+# Data em que o documento vale: a de emissao, e na falta dela o dia (UTC) do
+# upload. E por ela que o recorte `as_of` corta e que `document_date` sai.
+DATA_EFETIVA_SQL = "COALESCE(d.effective_date, CAST(d.uploaded_at AT TIME ZONE 'UTC' AS date))"
+
+
+def _data_de_corte(as_of: str) -> date:
+    """`as_of` chega como data ISO ou data e hora ISO; o recorte usa so a DATA,
+    e inclusivo no dia. Formato invalido levanta ValueError."""
+    return date.fromisoformat(as_of[:10])
+
+
 def hybrid_search(
     query_embedding: list[float],
     query_text: str,
@@ -93,11 +105,12 @@ def hybrid_search(
 
     `user_id` is REQUIRED — every chunk read is filtered by ownership.
 
-    `as_of` responde com o acervo COMO ELE ESTAVA numa data: so entram
-    documentos ingeridos ate ali. E o que separa consulta de auditoria, e sai
-    barato porque a ingestao ja registra `created_at` em `documents`. Filtra
-    pelo documento, nao pelo chunk: reprocessar um documento nao deve fazer ele
-    aparecer num recorte anterior a existencia dele.
+    `as_of` responde com o acervo como ele VALIA numa data: so entram
+    documentos cuja data efetiva (`DATA_EFETIVA_SQL`) e ate aquele dia,
+    inclusive. Antes o corte era `uploaded_at`, e um acervo inteiro subido
+    num mes so devolvia ZERO trechos para "e em marco de 2025?". Filtra pelo
+    documento, nao pelo chunk: reprocessar um documento nao deve fazer ele
+    aparecer num recorte anterior a data dele.
 
     Sobre o campo `snippet`, que e o texto que chega ao gerador:
 
@@ -132,8 +145,8 @@ def hybrid_search(
 
     data_filter = ""
     if as_of:
-        params["as_of"] = as_of
-        data_filter = "AND d.uploaded_at <= CAST(:as_of AS timestamptz)"
+        params["as_of"] = _data_de_corte(as_of)
+        data_filter = f"AND {DATA_EFETIVA_SQL} <= CAST(:as_of AS date)"
 
     if document_ids:
         valid_ids = []
@@ -151,6 +164,7 @@ def hybrid_search(
     semantic_sql = sqltext(f"""
         SELECT c.id, c.document_id, d.title as document_title, c.page,
                left(c.content, 4000) as snippet,
+               {DATA_EFETIVA_SQL} as document_date,
                1 - (c.embedding <=> CAST(:qvec AS vector)) as score
         FROM chunks c
         JOIN documents d ON c.document_id = d.id
@@ -166,6 +180,7 @@ def hybrid_search(
     keyword_sql = sqltext(f"""
         SELECT c.id, c.document_id, d.title as document_title, c.page,
                left(c.content, 4000) as snippet,
+               {DATA_EFETIVA_SQL} as document_date,
                ts_rank(c.search_vector, {TSQUERY_SQL}) as score
         FROM chunks c
         JOIN documents d ON c.document_id = d.id
@@ -211,6 +226,7 @@ def hybrid_search(
             "document_title": data["document_title"],
             "page": data["page"],
             "snippet": data["snippet"],
+            "document_date": data["document_date"].isoformat() if data["document_date"] else None,
             "relevance_score": item["score"],
             # A escala viaja junto com o numero. Sem isto o grader compara um
             # score de RRF (maximo 2/(k+1), ~0,033 com k=60) contra um limiar

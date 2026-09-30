@@ -444,3 +444,34 @@ def test_texto_normal_continua_saindo_inteiro():
 
     texto = "Primeira frase. Segunda frase aqui. Terceira e ultima."
     assert chunk_text(texto, max_tokens=500) == [texto]
+
+
+# ---------------------------------------------------------------------------
+# A data do documento atravessa o pipeline
+#
+# `hybrid_search` devolve `document_date`; o recorte no tempo e o aviso de
+# divergencia dependem dela chegar ate a citacao, passando pelo retriever e
+# pelo reranker.
+# ---------------------------------------------------------------------------
+
+def _trechos_com_data(n: int) -> list[dict]:
+    return [
+        {"id": f"c{i}", "document_id": f"d{i}", "document_title": f"t{i}", "page": 1,
+         "snippet": f"trecho {i}", "document_date": f"2025-0{i + 1}-01",
+         "relevance_score": 0.03 - i * 0.001, "score_scale": "rrf"}
+        for i in range(n)
+    ]
+
+
+def test_document_date_sobrevive_ao_retriever_sem_reranker(monkeypatch):
+    from app.config.settings import get_settings
+    from app.core.rag import retriever
+
+    monkeypatch.setattr(get_settings(), "cohere_api_key", None)
+    monkeypatch.setattr(retriever, "generate_multi_queries", lambda q: [])
+    monkeypatch.setattr(retriever, "get_query_embeddings", lambda qs: [[0.0] * 1024 for _ in qs])
+    monkeypatch.setattr(retriever, "hybrid_search", lambda **kw: _trechos_com_data(3))
+
+    saida = retriever.retrieve_documents("pergunta", user_id="u", top_k=2)
+
+    assert [t["document_date"] for t in saida] == ["2025-01-01", "2025-02-01"]

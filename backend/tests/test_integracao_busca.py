@@ -185,3 +185,125 @@ def test_snippet_e_o_trecho_cru_inteiro(banco_limpo):
     [resultado] = _buscar(u, "frete", eixo=1)
 
     assert resultado["snippet"] == texto
+
+
+# ---------------------------------------------------------------------------
+# Recorte no tempo pela data do documento
+# ---------------------------------------------------------------------------
+
+SO_SEMANTICA = dict(pergunta="xyz", eixo=1)
+SO_TEXTUAL = dict(pergunta="frete gratis", eixo=EIXO_SEM_TRECHO)
+
+
+def test_as_of_corta_pela_data_do_documento_nas_duas_pernas(banco_limpo):
+    """Os trechos sao gravados hoje e os documentos valem em 2025: cortar por
+    `uploaded_at` (ou pelo chunk) devolveria vazio. O proprio dia entra."""
+    u = _usuario()
+    vigente = _documento(u, "v1", effective_date=date(2025, 3, 10))
+    posterior = _documento(u, "v2", effective_date=date(2025, 3, 11))
+    _trecho(u, vigente, "O frete é grátis acima de 120 reais.", eixo=1)
+    _trecho(u, posterior, "O frete é grátis acima de 150 reais.", eixo=1)
+
+    for consulta in (SO_SEMANTICA, SO_TEXTUAL):
+        resultados = _buscar(u, **consulta, as_of="2025-03-10")
+        assert _docs(resultados) == [vigente], consulta
+        assert resultados[0]["document_date"] == "2025-03-10"
+
+    # Data e hora completas: vale a DATA, entao o dia 10 continua inteiro.
+    assert _docs(_buscar(u, **SO_TEXTUAL, as_of="2025-03-10T00:00:00+00:00")) == [vigente]
+    assert set(_docs(_buscar(u, **SO_TEXTUAL, as_of="2025-03-11"))) == {vigente, posterior}
+
+
+def test_sem_data_efetiva_vale_o_dia_do_upload_em_utc(banco_limpo):
+    u = _usuario()
+    # 23h30 em Brasilia ja e dia 6 em UTC.
+    doc = _documento(u, "sem data", uploaded_at=datetime.fromisoformat("2025-01-05T23:30:00-03:00"))
+    _trecho(u, doc, "O frete é grátis acima de 120 reais.", eixo=1)
+
+    assert _buscar(u, **SO_TEXTUAL, as_of="2025-01-05") == []
+    [resultado] = _buscar(u, **SO_TEXTUAL, as_of="2025-01-06")
+    assert resultado["document_date"] == "2025-01-06"
+    [sem_corte] = _buscar(u, **SO_TEXTUAL)
+    assert sem_corte["document_date"] == "2025-01-06"
+
+
+# ---------------------------------------------------------------------------
+# `effective_date` na entrada (upload e crawl)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def cliente_docs(banco_limpo, monkeypatch):
+    """App real sobre o banco temporario. Cota, fila, disco e rede viram dubles:
+    o que se testa e a validacao da data e o que chega na linha do documento."""
+    from fastapi.testclient import TestClient
+
+    from app.api.rate_limit import limiter
+    from app.api.routes import documents as rotas
+    from app.core.ingestion import url_crawler
+    from app.main import create_app
+
+    cota: list[str] = []
+
+    async def consumir(tipo, *_a, **_k):
+        cota.append(tipo)
+
+    async def enfileirar(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(rotas.metering, "consumir", consumir)
+    monkeypatch.setattr(rotas, "enfileirar", enfileirar)
+    monkeypatch.setattr(rotas, "save_file", lambda uid, mime, dados: f"{uid}/docs/arquivo.pdf")
+    monkeypatch.setattr(url_crawler, "is_safe_url", lambda url: (True, None))
+    monkeypatch.setattr(url_crawler, "fetch_and_extract", lambda url: ("Texto da pagina.", "Pagina"))
+
+    limiter.enabled = False
+    try:
+        app = create_app()
+        app.state.fila = None
+        cliente = TestClient(app)
+        r = cliente.post("/auth/register", json={"email": "d@exemplo.com.br", "password": "uma-senha-longa-123"})
+        assert r.status_code == 200, r.text
+        cliente.headers["Authorization"] = f"Bearer {r.json()['access_token']}"
+        cliente.cota = cota
+        yield cliente
+    finally:
+        limiter.enabled = True
+
+
+def _datas_gravadas() -> list:
+    from app.db.engine import engine
+
+    with engine.begin() as conn:
+        return [r[0] for r in conn.execute(sqltext("SELECT effective_date FROM documents ORDER BY uploaded_at"))]
+
+
+def _upload(cliente, **campos):
+    pdf = (BACKEND.parent / "frontend" / "public" / "samples" / "aurora-coffee-handbook.pdf").read_bytes()
+    return cliente.post("/upload", files={"file": ("manual.pdf", pdf, "application/pdf")},
+                        data={"title": "Manual", **campos})
+
+
+def test_upload_grava_a_data_efetiva(cliente_docs):
+    assert _upload(cliente_docs, effective_date="2025-03-10").status_code == 200
+    assert _upload(cliente_docs).status_code == 200
+    assert _datas_gravadas() == [date(2025, 3, 10), None]
+
+
+@pytest.mark.parametrize("invalida", ["2025-02-30", "10/03/2025", "2025-3-1", "ontem"])
+def test_upload_recusa_data_invalida_sem_gastar_cota(cliente_docs, invalida):
+    r = _upload(cliente_docs, effective_date=invalida)
+    assert r.status_code == 422, r.text
+    assert cliente_docs.cota == [] and _datas_gravadas() == []
+
+
+def test_crawl_grava_a_data_efetiva(cliente_docs):
+    r = cliente_docs.post("/crawl", json={"url": "https://exemplo.com.br/p", "effective_date": "2024-09-01"})
+    assert r.status_code == 200, r.text
+    assert _datas_gravadas() == [date(2024, 9, 1)]
+
+
+@pytest.mark.parametrize("invalida", ["2024-13-01", "2024-09-01T10:00:00", 20240901])
+def test_crawl_recusa_data_invalida(cliente_docs, invalida):
+    r = cliente_docs.post("/crawl", json={"url": "https://exemplo.com.br/p", "effective_date": invalida})
+    assert r.status_code == 422, r.text
+    assert _datas_gravadas() == []
