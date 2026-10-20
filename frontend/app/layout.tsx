@@ -8,14 +8,14 @@ export const metadata: Metadata = {
   title: "BrainHub: multimodal RAG that grades its own retrieval",
   description:
     "Upload documents and ask. A corrective-RAG pipeline retrieves, reranks, grades what it found and searches again when nothing fits, flags sources that disagree, answers as of a date, and keeps the trail of every answer.",
-  authors: [{ name: "Pedro Gomes", url: "https://gomio.com.br" }],
+  authors: [{ name: "Pedro Gomes", url: "https://portfolio.pgdev.com.br" }],
   creator: "Pedro Gomes",
   // Sem openGraph/twitter o link vira URL crua no LinkedIn, no WhatsApp e no
   // Upwork — que e onde estas demos de facto circulam.
   openGraph: {
     type: "website",
     url: "https://group-documents.pgdev.com.br",
-    siteName: "Gomio",
+    siteName: "BrainHub",
     locale: "en_US",
     title: "BrainHub: multimodal RAG that grades its own retrieval",
     description:
@@ -44,13 +44,14 @@ export default function RootLayout({
         <AuthProvider>{children}</AuthProvider>
         {/* Sem isto a demo termina em si mesma: quem gostou do que viu nao tem
             para onde ir. E o unico rodape: a landing tinha um segundo, logo
-            acima deste. */}
+            acima deste. O BrainHub e projeto pessoal de portfolio, entao o
+            autor aponta para o portfolio, e nao para o site de uma empresa. */}
         <footer className="border-t border-white/10 py-6 text-xs text-neutral-400">
           <div className="max-w-7xl mx-auto px-4 sm:px-8 flex flex-col sm:flex-row items-center justify-between gap-3">
             <p>
               Built by{' '}
               <a
-                href="https://gomio.com.br"
+                href="https://portfolio.pgdev.com.br"
                 target="_blank"
                 rel="noopener"
                 className="font-medium text-neutral-200 underline decoration-white/20 underline-offset-2 hover:text-white"
@@ -68,7 +69,7 @@ export default function RootLayout({
                 <Github className="h-3.5 w-3.5" aria-hidden /> GitHub
               </a>
               <a
-                href="https://www.linkedin.com/in/devpgomes"
+                href="https://www.linkedin.com/in/devpedrogomes"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="hover:text-white transition-colors"

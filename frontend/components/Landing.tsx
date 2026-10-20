@@ -1,9 +1,10 @@
 // Componente de SERVIDOR de proposito. A landing inteira era um componente de
 // cliente que, enquanto a sessao era checada, renderizava so "checking
 // session": o HTML que chegava a um crawler (e a quem abria o link no
-// LinkedIn) nao tinha nenhuma linha do conteudo. Agora so tres ilhas rodam no
-// cliente: o idioma, o formulario de login e o redirecionamento de quem ja
-// tem sessao para /library.
+// LinkedIn) nao tinha nenhuma linha do conteudo. Agora so quatro ilhas rodam
+// no cliente: os textos do dicionario, o indice lateral (que precisa saber a
+// secao na tela), o formulario de login e o redirecionamento de quem ja tem
+// sessao para /library.
 //
 // Cada afirmacao tecnica daqui foi conferida contra o backend. Numero que o
 // codigo nao produz (latencia P95, por exemplo) nao entra.
@@ -18,9 +19,8 @@ import { buttonVariants } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import RedirectIfAuthenticated from '@/components/RedirectIfAuthenticated'
 import AuthForm from '@/components/landing/AuthForm'
-import { LandingLocaleProvider, LocaleToggle, T } from '@/components/landing/LandingLocale'
-
-const SECTION_IDS = ['index', 'different', 'pipeline', 'features', 'stack'] as const
+import { LandingLocaleProvider, T } from '@/components/landing/LandingLocale'
+import SectionIndex from '@/components/landing/SectionIndex'
 
 const PIPELINE = [
   {
@@ -171,7 +171,6 @@ export default function Landing() {
               <span className="hidden sm:inline-block text-[11px] font-mono text-neutral-400 ml-1">/ rag</span>
             </div>
             <div className="flex items-center gap-2">
-              <LocaleToggle />
               <a
                 href="#auth"
                 className="text-sm font-medium text-neutral-900 bg-white hover:bg-neutral-100 transition-colors px-4 py-1.5 rounded-full"
@@ -182,25 +181,8 @@ export default function Landing() {
           </div>
         </header>
 
-        {/* ─── Sticky section index (lg+) ─────────────────────────────── */}
-        <nav
-          className="hidden lg:flex flex-col gap-3 fixed left-6 top-1/2 -translate-y-1/2 z-30"
-          aria-label="Section index"
-        >
-          {SECTION_IDS.map((id, i) => (
-            <a
-              key={id}
-              href={`#${id}`}
-              className="group flex items-center gap-3 text-[10px] font-mono uppercase tracking-widest text-neutral-400 hover:text-white transition-colors"
-            >
-              <span className="w-6 text-right">{`0${i + 1}`}</span>
-              <span className="h-px w-6 bg-white/10 group-hover:w-10 group-hover:bg-blue-300 transition-all" />
-              <span className="opacity-0 group-hover:opacity-100 transition-opacity">
-                <T k={`sections.${id}`} />
-              </span>
-            </a>
-          ))}
-        </nav>
+        {/* ─── Sticky section index (2xl+) ────────────────────────────── */}
+        <SectionIndex />
 
         {/* ─── 01 · Asymmetric hero with chat preview ─────────────────── */}
         <section
