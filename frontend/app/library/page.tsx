@@ -6,6 +6,8 @@ import { FileStack } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import Topbar from '@/components/Topbar'
 import KnowledgeHub from '@/components/KnowledgeHub'
+import GuestBanner from '@/components/GuestBanner'
+import { isGuest } from '@/lib/auth'
 
 // A biblioteca era renderizada dentro da landing, em `/`, depois de checar a
 // sessao no navegador: o HTML de `/` saia vazio para todo mundo. Agora `/` e
@@ -53,7 +55,9 @@ export default function LibraryPage() {
   return (
     <main className="h-dvh flex flex-col">
       <div className="flex flex-col h-full xl:max-w-[1400px] xl:mx-auto xl:my-4 glass-panel xl:rounded-[2rem] xl:ring-1 xl:ring-white/10 xl:shadow-2xl xl:shadow-black/40 overflow-hidden">
-        <Topbar email={user.email} onSignOut={logout} />
+        {/* O e-mail do convidado e tecnico (`convidado-<uuid>@convidado.invalid`). */}
+        <Topbar email={isGuest(user) ? 'Guest session' : user.email} onSignOut={logout} />
+        <GuestBanner />
         <KnowledgeHub getToken={getTokenAsync} />
       </div>
     </main>

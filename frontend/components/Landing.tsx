@@ -82,7 +82,7 @@ const DIFFERENTIATORS = [
     icon: CalendarClock,
     label: 'B / Time',
     title: 'Answer as of a date',
-    desc: 'Pick a date and only documents dated on or before it are searched: the date set at upload, or the upload day when none was set. Ask what the policy said in March 2025 and the 2026 revision stays out of the answer.',
+    desc: 'Pick a date and only documents dated on or before it are searched: the date set at upload, or the upload day when none was set. Ask what the policy said in March 2025 and the November 2025 revision stays out of the answer.',
   },
   {
     icon: Route,
@@ -239,7 +239,10 @@ export default function Landing() {
               </div>
             </div>
 
-            {/* Right column: an example answer, with what the chat really shows */}
+            {/* Right column: an example answer, with what the chat really shows.
+                O par e o do acervo de demonstracao (backend/scripts/gerar_acervo_demo.py):
+                as duas versoes da Politica Comercial, que divergem no frete gratis.
+                E o que o convidado encontra ao perguntar. */}
             <div className="lg:col-span-5 lg:pl-4">
               <div
                 className="relative rounded-3xl bg-white/[0.04] ring-1 ring-white/10 border-gradient backdrop-blur p-5 sm:p-6 fade-slide-in"
@@ -259,7 +262,7 @@ export default function Landing() {
                       <User className="h-3.5 w-3.5 text-neutral-900" />
                     </div>
                     <div className="rounded-2xl rounded-tr-sm bg-white text-neutral-900 px-3.5 py-2 text-sm">
-                      How long do customers have to ask for a refund?
+                      From what order value is national shipping free?
                     </div>
                   </div>
                 </div>
@@ -270,8 +273,9 @@ export default function Landing() {
                   </div>
                   <div className="flex-1 min-w-0 max-w-[88%]">
                     <div className="rounded-2xl rounded-tl-sm bg-white/5 ring-1 ring-white/10 px-3.5 py-2.5 text-sm text-neutral-100 leading-relaxed">
-                      <span className="text-blue-300">30 days</span> under the 2026 pricing policy (p. 3).
-                      The 2025 policy allowed 14 days, so older receipts may follow the old rule.
+                      <span className="text-blue-300">Above 150 reais</span> under version 2 of the
+                      commercial policy (p. 1). Version 1 said 120 reais, and older support tickets still
+                      quote that number.
                     </div>
 
                     <div className="mt-2.5 rounded-xl border border-amber-400/30 bg-amber-400/[0.07] px-3 py-2 text-[11px]">
@@ -279,21 +283,21 @@ export default function Landing() {
                         <AlertTriangle className="h-3 w-3" aria-hidden /> Your sources disagree
                       </p>
                       <p className="mt-1 text-neutral-300">
-                        <span className="text-emerald-200">Pricing-2026.pdf</span> is current: it has the
-                        most recent document date.
+                        <span className="text-emerald-200">Política Comercial da Aurora, versão 2</span> is
+                        current: it has the most recent document date.
                       </p>
                     </div>
 
                     <div className="flex flex-wrap gap-1.5 mt-2.5">
                       <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-blue-400/15 border border-blue-400/30 text-[10px] text-blue-200">
                         <FileText className="h-3 w-3" />
-                        <span className="max-w-[120px] truncate">Pricing-2026.pdf</span>
-                        <span className="text-blue-300/80 font-mono">p.3</span>
+                        <span className="max-w-[200px] truncate">Política Comercial, versão 2</span>
+                        <span className="text-blue-300/80 font-mono">p.1</span>
                       </span>
                       <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-blue-400/15 border border-blue-400/30 text-[10px] text-blue-200">
                         <FileText className="h-3 w-3" />
-                        <span className="max-w-[120px] truncate">Pricing-2025.pdf</span>
-                        <span className="text-blue-300/80 font-mono">p.2</span>
+                        <span className="max-w-[200px] truncate">Política Comercial, versão 1</span>
+                        <span className="text-blue-300/80 font-mono">p.1</span>
                       </span>
                     </div>
                   </div>
@@ -568,7 +572,9 @@ export default function Landing() {
 }
 
 // Amostras estaticas do que o chat mostra: mesma cor e forma dos componentes
-// reais (ChatMessage, ChatInput, DecisionTrail), com dados de exemplo.
+// reais (ChatMessage, ChatInput, DecisionTrail), com os documentos do acervo de
+// demonstracao: Politica Comercial v1 (emitida em 2023-03-01, frete gratis
+// acima de 120 reais) e v2 (2025-11-01, acima de 150).
 
 function AmostraDivergencia() {
   return (
@@ -576,13 +582,13 @@ function AmostraDivergencia() {
       <p className="flex items-center gap-1.5 font-semibold text-amber-200">
         <AlertTriangle className="h-3 w-3" aria-hidden /> Your sources disagree
       </p>
-      <p className="mt-1 text-neutral-300">Refund window: 14 days in 2025, 30 days in 2026.</p>
+      <p className="mt-1 text-neutral-300">Free shipping: above 120 reais in version 1, above 150 reais in version 2.</p>
       <div className="mt-2 flex flex-wrap gap-1.5">
         <span className="rounded-full bg-white/5 px-2 py-0.5 text-neutral-300 ring-1 ring-white/10">
-          Pricing-2025.pdf
+          Política Comercial, versão 1
         </span>
         <span className="rounded-full bg-emerald-400/10 px-2 py-0.5 text-emerald-200 ring-1 ring-emerald-400/30">
-          Pricing-2026.pdf · current
+          Política Comercial, versão 2 · current
         </span>
       </div>
     </div>
@@ -602,12 +608,12 @@ function AmostraRecorte() {
       </div>
       <ul className="space-y-1 font-mono text-[10px]">
         <li className="flex items-center justify-between gap-2 text-neutral-300">
-          <span className="truncate">Pricing-2025.pdf</span>
-          <span className="text-emerald-300">dated 2025-01-15 · in</span>
+          <span className="truncate">Política Comercial, versão 1</span>
+          <span className="text-emerald-300">dated 2023-03-01 · in</span>
         </li>
         <li className="flex items-center justify-between gap-2 text-neutral-400">
-          <span className="truncate line-through decoration-neutral-600">Pricing-2026.pdf</span>
-          <span>dated 2026-02-01 · out</span>
+          <span className="truncate line-through decoration-neutral-600">Política Comercial, versão 2</span>
+          <span>dated 2025-11-01 · out</span>
         </li>
       </ul>
     </div>
@@ -625,15 +631,15 @@ function AmostraTrilha() {
       </p>
       <ul className="divide-y divide-white/5 rounded-md font-mono text-[10px] ring-1 ring-white/5">
         <li className="flex items-center justify-between gap-2 px-2 py-1 text-neutral-300">
-          <span className="truncate">Pricing-2026.pdf p.3</span>
+          <span className="truncate">Política Comercial, versão 2 p.1</span>
           <span>0.91 · <span className="text-emerald-300">kept</span></span>
         </li>
         <li className="flex items-center justify-between gap-2 px-2 py-1 text-neutral-300">
-          <span className="truncate">Pricing-2025.pdf p.2</span>
+          <span className="truncate">Política Comercial, versão 1 p.1</span>
           <span>0.84 · <span className="text-emerald-300">kept</span></span>
         </li>
         <li className="flex items-center justify-between gap-2 px-2 py-1 text-neutral-400">
-          <span className="truncate">Handbook.pdf p.7</span>
+          <span className="truncate">Chamado 2006 p.1</span>
           <span>0.31 · dropped</span>
         </li>
       </ul>

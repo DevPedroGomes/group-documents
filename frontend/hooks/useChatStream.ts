@@ -12,6 +12,8 @@ interface UseChatStreamOptions {
   onError?: (error: string) => void
   /** Cada `done`, com o escopo que a pergunta usou. */
   onDone?: (done: DoneEvent, documentIds: string[] | undefined) => void
+  /** 401 ao perguntar: a sessao acabou (o convidado volta para a landing). */
+  onUnauthorized?: () => void
 }
 
 /** O `detail` do FastAPI e string no HTTPException e lista no 422 de validacao. */
@@ -67,7 +69,7 @@ export function useChatStream(options: UseChatStreamOptions) {
     if (!texto || enviandoRef.current || carregandoThreadRef.current) return
     enviandoRef.current = true
 
-    const { getToken, documentIds, asOf, onError, onDone } = opcoesRef.current
+    const { getToken, documentIds, asOf, onError, onDone, onUnauthorized } = opcoesRef.current
     const escopo = documentIds && documentIds.length > 0 ? documentIds : undefined
     const assistantId = crypto.randomUUID()
     const atualizar = (patch: (m: Message) => Message) =>
@@ -103,6 +105,10 @@ export function useChatStream(options: UseChatStreamOptions) {
         signal: controller.signal,
       })
 
+      if (res.status === 401 && onUnauthorized) {
+        onUnauthorized()
+        return
+      }
       if (!res.ok) {
         const data: unknown = await res.json().catch(() => null)
         throw new Error(mensagemDeErro(data, res.status))

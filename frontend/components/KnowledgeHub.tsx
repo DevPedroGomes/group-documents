@@ -10,6 +10,8 @@ import { Badge } from '@/components/ui/badge'
 import { Card } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { DocumentPreview } from '@/components/DocumentPreview'
+import { useAuth } from '@/contexts/AuthContext'
+import { GUEST_READ_ONLY_TITLE, isGuest } from '@/lib/auth'
 import type { LibraryDocument } from '@/lib/types'
 import {
   Tooltip,
@@ -64,6 +66,10 @@ interface KnowledgeHubProps {
 
 export default function KnowledgeHub({ getToken }: KnowledgeHubProps) {
   const router = useRouter()
+  // Convidado le o acervo de demonstracao: upload, URL e o exemplo ficam
+  // desabilitados, porque o backend recusa toda escrita dele com 403.
+  const { user, endGuestSession } = useAuth()
+  const convidado = isGuest(user)
   const [docs, setDocs] = useState<Document[]>([])
   const [query, setQuery] = useState('')
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
@@ -100,6 +106,11 @@ export default function KnowledgeHub({ getToken }: KnowledgeHubProps) {
         headers: { Authorization: `Bearer ${token}` },
       })
 
+      // Sessao de convidado vencida: volta para a landing com o aviso.
+      if (res.status === 401 && convidado) {
+        endGuestSession()
+        return
+      }
       if (!res.ok) {
         throw new Error('Failed to fetch documents')
       }
@@ -112,7 +123,7 @@ export default function KnowledgeHub({ getToken }: KnowledgeHubProps) {
       setIsLoading(false)
       setIsSearching(false)
     }
-  }, [getToken])
+  }, [getToken, convidado, endGuestSession])
 
   // Initial load
   useEffect(() => {
@@ -493,7 +504,9 @@ export default function KnowledgeHub({ getToken }: KnowledgeHubProps) {
         )}
       </AnimatePresence>
 
-      <div className="flex flex-col h-[calc(100dvh-57px)] p-6 lg:p-10 max-w-7xl w-full mx-auto">
+      {/* Ocupa o que sobra abaixo do topo (e da faixa do convidado, quando ha):
+          uma altura fixa de 100dvh menos o topo cortava o fim da lista. */}
+      <div className="flex flex-col flex-1 min-h-0 p-6 lg:p-10 max-w-7xl w-full mx-auto">
         {/* ─── Header ──────────────────────────────────────────────── */}
         <div className="mb-7">
           <div className="flex items-center gap-3 mb-3">
@@ -512,7 +525,9 @@ export default function KnowledgeHub({ getToken }: KnowledgeHubProps) {
                 Library
               </h1>
               <p className="mt-2 text-neutral-400 text-sm max-w-md leading-relaxed">
-                Search your corpus. Select documents to scope a chat, or ask the whole library.
+                {convidado
+                  ? 'Search the sample library: the policies and support tickets of a fictional coffee roaster, in Portuguese. Select documents to scope a chat, or ask the whole library.'
+                  : 'Search your corpus. Select documents to scope a chat, or ask the whole library.'}
               </p>
             </div>
 
@@ -585,7 +600,8 @@ export default function KnowledgeHub({ getToken }: KnowledgeHubProps) {
             <Button
               variant="outline"
               onClick={() => fileRef.current?.click()}
-              disabled={uploadingCount > 0}
+              disabled={uploadingCount > 0 || convidado}
+              title={convidado ? GUEST_READ_ONLY_TITLE : undefined}
               className="gap-2 h-11"
             >
               {uploadingCount > 0 ? (
@@ -599,6 +615,8 @@ export default function KnowledgeHub({ getToken }: KnowledgeHubProps) {
             <Button
               variant="outline"
               onClick={() => { setShowUrlModal(true); setUrlError(null) }}
+              disabled={convidado}
+              title={convidado ? GUEST_READ_ONLY_TITLE : undefined}
               className="gap-2 h-11"
             >
               <Link2 className="h-4 w-4" />
@@ -683,6 +701,7 @@ export default function KnowledgeHub({ getToken }: KnowledgeHubProps) {
               onUpload={() => fileRef.current?.click()}
               onSample={loadSampleDoc}
               sampleLoading={sampleLoading}
+              somenteLeitura={convidado}
             />
           ) : (
             <motion.div
@@ -898,12 +917,16 @@ function EmptyState({
   onUpload,
   onSample,
   sampleLoading,
+  somenteLeitura,
 }: {
   query: string
   onUpload: () => void
   onSample: () => void
   sampleLoading: boolean
+  /** Sessao de convidado: os botoes que gravam ficam desabilitados. */
+  somenteLeitura: boolean
 }) {
+  const dica = somenteLeitura ? GUEST_READ_ONLY_TITLE : undefined
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
@@ -927,7 +950,7 @@ function EmptyState({
             Try a different search term, or drop in what is missing.
           </p>
           <div className="flex flex-wrap items-center gap-4">
-            <Button onClick={onUpload} className="gap-2">
+            <Button onClick={onUpload} disabled={somenteLeitura} title={dica} className="gap-2">
               <Upload className="h-4 w-4" />
               Upload
             </Button>
@@ -947,7 +970,7 @@ function EmptyState({
             PDFs, images, audio, video. libmagic sniffs MIME from bytes; embeddings flow on the way through.
           </p>
           <div className="flex flex-wrap items-center gap-4">
-            <Button onClick={onUpload} className="gap-2">
+            <Button onClick={onUpload} disabled={somenteLeitura} title={dica} className="gap-2">
               <Upload className="h-4 w-4" />
               Upload first document
             </Button>
@@ -957,7 +980,8 @@ function EmptyState({
             <Button
               variant="ghost"
               onClick={onSample}
-              disabled={sampleLoading}
+              disabled={sampleLoading || somenteLeitura}
+              title={dica}
               className="gap-2 text-neutral-300"
             >
               {sampleLoading ? (

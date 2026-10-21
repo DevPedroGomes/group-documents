@@ -11,18 +11,22 @@ import { ChatInput } from '@/components/chat/ChatInput'
 import { LiveVoice } from '@/components/chat/LiveVoice'
 import { DecisionTrail } from '@/components/chat/DecisionTrail'
 import { DocumentPreview } from '@/components/DocumentPreview'
+import GuestBanner from '@/components/GuestBanner'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Skeleton } from '@/components/ui/skeleton'
 import { AnimatePresence, motion } from 'framer-motion'
 import { Loader2, ArrowRight } from 'lucide-react'
 import { lerEscopo, salvarEscopo } from '@/lib/thread-scope'
+import { isGuest } from '@/lib/auth'
 import type { Citation, DoneEvent, LibraryDocument } from '@/lib/types'
 
 function ChatPageContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const scrollRef = useRef<HTMLDivElement>(null)
-  const { user, loading, getToken } = useAuth()
+  const { user, loading, getToken, endGuestSession, setQuestionsLeft } = useAuth()
+  // Convidado: acervo de demonstracao, so leitura, com cota de perguntas propria.
+  const convidado = isGuest(user)
   const [error, setError] = useState<string | null>(null)
   const [asOf, setAsOf] = useState('')
   const [historicoAberto, setHistoricoAberto] = useState(false)
@@ -56,6 +60,10 @@ function ChatPageContent() {
         const res = await fetch('/api/documents', {
           headers: token ? { Authorization: `Bearer ${token}` } : {},
         })
+        if (res.status === 401 && convidado) {
+          endGuestSession()
+          return
+        }
         if (!res.ok) return
         const data = (await res.json()) as { items?: LibraryDocument[] }
         if (!cancelado) setAcervo(data.items ?? [])
@@ -66,11 +74,12 @@ function ChatPageContent() {
     return () => {
       cancelado = true
     }
-  }, [user, getTokenAsync])
+  }, [user, getTokenAsync, convidado, endGuestSession])
 
   const aoTerminarResposta = useCallback((done: DoneEvent, escopo: string[] | undefined) => {
     if (done.thread_id) salvarEscopo(done.thread_id, escopo ?? [])
-  }, [])
+    if (typeof done.questions_left === 'number') setQuestionsLeft(done.questions_left)
+  }, [setQuestionsLeft])
 
   const {
     messages,
@@ -89,6 +98,7 @@ function ChatPageContent() {
     asOf,
     onError: setError,
     onDone: aoTerminarResposta,
+    onUnauthorized: convidado ? endGuestSession : undefined,
   })
 
   // Reabrir uma conversa restaura o escopo dela. Sem registro neste navegador,
@@ -143,6 +153,7 @@ function ChatPageContent() {
   if (!user) return null
 
   const acervoSemDocumentoPronto = acervo !== null && !acervo.some((d) => d.status === 'completed')
+  const semPerguntas = convidado && user.questions_left === 0
   // A resposta em andamento so aparece quando chega o primeiro token; ate la
   // quem ocupa o lugar dela e o "Thinking".
   const visiveis = messages.filter((m) => m.role === 'user' || m.content)
@@ -178,6 +189,7 @@ function ChatPageContent() {
           onNewChat={resetChat}
         />
         <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
+          <GuestBanner />
           <ChatHeader
             documentCount={documentIds.length}
             onReset={resetChat}
@@ -192,7 +204,8 @@ function ChatPageContent() {
                 <EmptyState
                   onSuggestionClick={sendMessage}
                   selecionados={documentIds.length}
-                  desabilitado={acervoSemDocumentoPronto || isLoadingThread}
+                  desabilitado={acervoSemDocumentoPronto || isLoadingThread || semPerguntas}
+                  convidado={convidado}
                 />
               ) : (
                 <AnimatePresence mode="popLayout">
@@ -258,19 +271,21 @@ function ChatPageContent() {
             {/* A conversa por voz fica ACIMA do campo de texto, e nao numa pagina
                 propria, porque ela nao e outro produto: e outro jeito de perguntar
                 ao mesmo acervo. A trilha que ela mostra e a mesma que o chat grava. */}
-            <LiveVoice pronto={!acervoSemDocumentoPronto} documentIds={documentIds} />
+            <LiveVoice pronto={!acervoSemDocumentoPronto} documentIds={documentIds} somenteLeitura={convidado} />
           </div>
 
           <ChatInput
             onSend={sendMessage}
             isLoading={isSending}
             onStop={stopGeneration}
-            disabled={acervoSemDocumentoPronto || isLoadingThread}
+            disabled={acervoSemDocumentoPronto || isLoadingThread || semPerguntas}
             asOf={asOf}
             onAsOfChange={setAsOf}
             placeholder={
               isLoadingThread
                 ? 'Opening the conversation...'
+                : semPerguntas
+                ? 'No questions left in this sample session. Create an account to keep going.'
                 : acervoSemDocumentoPronto
                   ? 'Your library has no ready documents yet. Upload one first.'
                   : documentIds.length === 0
@@ -284,21 +299,36 @@ function ChatPageContent() {
   )
 }
 
+// O acervo de demonstracao (backend/scripts/gerar_acervo_demo.py) e de uma
+// torrefacao ficticia, em portugues: as duas versoes da Politica Comercial e
+// chamados de suporte. Cada pergunta tem resposta nele, e a primeira cai nas
+// duas versoes da politica, que divergem no frete gratis (120 e 150 reais).
+// Ficam em portugues porque e a lingua dos documentos.
+const SUGESTOES_DO_ACERVO_DEMO = [
+  { label: 'conflict',   text: 'A partir de quanto o frete nacional é grátis?' },
+  { label: 'one ticket', text: 'O que o atendimento respondeu no Chamado 2003?' },
+  { label: 'summary',    text: 'Resuma a Política Comercial da Aurora, versão 2.' },
+]
+
+const SUGESTOES = [
+  { label: 'summarize',  text: 'Summarize the main points of these documents' },
+  { label: 'findings',   text: 'What are the key findings?' },
+  { label: 'actions',    text: 'Are there any action items mentioned?' },
+  { label: 'compare',    text: 'Compare the information across documents' },
+]
+
 function EmptyState({
   onSuggestionClick,
   selecionados,
   desabilitado,
+  convidado,
 }: {
   onSuggestionClick: (msg: string) => void
   selecionados: number
   desabilitado: boolean
+  convidado: boolean
 }) {
-  const suggestions = [
-    { label: 'summarize',  text: 'Summarize the main points of these documents' },
-    { label: 'findings',   text: 'What are the key findings?' },
-    { label: 'actions',    text: 'Are there any action items mentioned?' },
-    { label: 'compare',    text: 'Compare the information across documents' },
-  ]
+  const suggestions = convidado ? SUGESTOES_DO_ACERVO_DEMO : SUGESTOES
 
   return (
     <motion.div
@@ -324,6 +354,12 @@ function EmptyState({
         question is rewritten and searched once more; if that fails too, the best passages still go
         through and the answer is marked low confidence.
       </p>
+      {convidado && (
+        <p className="text-sm text-neutral-400 max-w-md -mt-4 mb-8 leading-relaxed">
+          Sample library: a fictional coffee roaster&apos;s commercial policy, in two versions, and
+          its support tickets, all in Portuguese. Ask in English or Portuguese.
+        </p>
+      )}
 
       <div className="flex flex-col gap-2.5">
         <span className="text-[10px] font-mono uppercase tracking-widest text-neutral-400 mb-1">
@@ -332,6 +368,7 @@ function EmptyState({
         {suggestions.map((s, idx) => (
           <button
             key={idx}
+            data-sugestao
             onClick={() => onSuggestionClick(s.text)}
             disabled={desabilitado}
             className="group flex items-center gap-4 text-left rounded-xl bg-white/[0.03] hover:bg-white/[0.06] ring-1 ring-white/10 hover:ring-blue-400/30 transition-all px-4 py-3 disabled:pointer-events-none disabled:opacity-50"
