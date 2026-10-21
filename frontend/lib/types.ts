@@ -34,6 +34,8 @@ export interface DoneEvent {
   thread_id: string
   message_id: string | null
   low_confidence: boolean
+  /** So na sessao de convidado: perguntas que restam nela. */
+  questions_left?: number
 }
 
 export interface WorkflowStep {

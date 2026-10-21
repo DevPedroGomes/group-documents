@@ -4,7 +4,7 @@
 
 BrainHub answers questions over a private document library (PDF, images, audio, video, web pages) and cites the document, page and date behind each answer. It also warns when the retrieved sources contradict each other and names the one with the most recent document date, answers "as of" a past date using each document's effective date, and stores a decision trail for every answer. A voice mode runs the same retrieval as a tool call and writes the same trail.
 
-Demo: https://group-documents.pgdev.com.br. Visitors register with an email and a 12+ character password; a new account starts empty, and the library offers a one-click sample PDF.
+Demo: https://group-documents.pgdev.com.br. Visitors can try it without an account: guest mode opens a read-only sample library for 60 minutes, with its own daily caps; uploads, crawl and voice need an account. To use your own files, register with an email and a 12+ character password; a new account starts empty, and the library offers a one-click sample PDF.
 
 Stack: FastAPI (Python 3.12), Postgres with pgvector, Redis, an arq worker for ingestion, Next.js 16 with React 19.
 
@@ -111,6 +111,7 @@ cd backend
 
 - Every chunk query (both search legs and the library's semantic search) filters by `user_id`. Decisions, threads, previews and deletes are scoped to the owner, and a preview of someone else's document answers 404.
 - Local JWT (HS256, 60 minutes), bcrypt, 12-character minimum password, and an `is_active` lookup on every authenticated request.
+- Guest sessions (`POST /auth/guest`, off unless `GUEST_ENABLED=true`) are temporary users whose token and row expire together. A guest reads the documents and chunks of the `DEMO_CORPUS_EMAIL` account; its threads, messages and decision trails stay under its own id, so two guests never see each other's conversations. Upload, crawl, ingest, both deletes and both voice routes answer 403 to a guest before reading the body or spending quota. An expired guest, or any guest once the mode is switched off, gets 401, and a worker cron deletes expired guests with their conversations every 15 minutes.
 - Crawler SSRF guard: http(s) only, deny-listed hosts, private, reserved and cloud-metadata IP ranges and sensitive ports blocked, the connection pinned to the validated IP, every redirect revalidated (at most 5), a 5 MB body cap.
 - Document passages and web results are delimited as data in the prompts, and tag names inside their content are stripped. The regex input filter only adds friction.
 - The API and worker run as a non-root user with `cap_drop: ALL` and `no-new-privileges`; the frontend image runs as a non-root user. Traefik adds HSTS, frame-deny, nosniff and referrer-policy headers to both hosts, plus a CSP on the frontend. `/docs` and `/openapi.json` exist only with `DEBUG=true`.
@@ -125,8 +126,10 @@ Daily caps are global (all users together), counted in Redis per UTC day, and an
 | `DAILY_INGEST_LIMIT` | 100 | upload, crawl, ingest |
 | `DAILY_REALTIME_LIMIT` | 40 | voice sessions opened |
 | `DAILY_REALTIME_TOOL_LIMIT` | 400 | voice searches, across all sessions |
+| `DAILY_GUEST_CHAT_LIMIT` | 150 | each guest chat answer and guest semantic search, across all guests; guests never consume `DAILY_CHAT_LIMIT` |
 
-- Per-IP rate limits (slowapi on Redis): chat and upload 30/min, crawl 10/min, library semantic search 20/min, voice session 10/min, voice search 60/min, register and login 5/min.
+- Guest caps that are not global: `GUEST_CHAT_LIMIT` (15) questions per guest session, `GUEST_SESSIONS_PER_IP_DAILY` (3) new sessions per IP per day, and answers capped at `GUEST_MAX_TOKENS` (800) tokens. The chat's `done` event tells a guest how many questions are left.
+- Per-IP rate limits (slowapi on Redis): chat and upload 30/min, crawl 10/min, library semantic search 20/min, voice session 10/min, voice search 60/min, register and login 5/min, guest session 3/hour.
 - New ingestions get 429 while the queue holds `AGENT_OPS_PROFUNDIDADE_MAXIMA` jobs or more (50 in the compose file). A quota unit is given back when a request fails before its main paid work: a chat answer before the first generated token, a voice search when no provider was called, an upload when storing or queueing fails. `AGENT_OPS_KILL_SWITCH=true` refuses every quota-consuming call.
 - Paid calls per chat answer: one fast-model call for the query variants, one Voyage call (none if every query is cached), one Cohere rerank if configured, the disagreement check (fast model, at most 220 output tokens) when two or more documents remain, and the generation. Low confidence adds a rewrite, one embedding call and one rerank.
 
@@ -187,8 +190,9 @@ Backend variables come from `backend/.env` (see `backend/.env.example`, which a 
 | App and auth | `APP_NAME`, `DEBUG` (false), `CORS_ORIGINS` (`http://localhost:3000`), `JWT_ALGORITHM` (`HS256`), `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` (60), `AUTH_RATE_LIMIT` (`5/minute`) | |
 | Redis and quotas | `REDIS_URL` (`redis://localhost:6379`), `DAILY_CHAT_LIMIT`, `DAILY_INGEST_LIMIT`, `DAILY_REALTIME_LIMIT`, `DAILY_REALTIME_TOOL_LIMIT` | Quota defaults in the table above. |
 | Queue and metering | `AGENT_OPS_REDIS_URL` (`redis://localhost:6379`), `AGENT_OPS_PROJETO` (`default`), `AGENT_OPS_PROFUNDIDADE_MAXIMA` (500), `AGENT_OPS_KILL_SWITCH` (false) | Process environment only. Metering fails closed (503) when this Redis is unreachable. |
+| Guest mode | `GUEST_ENABLED` (false), `DEMO_CORPUS_EMAIL` (`demo@gomio.com.br`), `GUEST_TTL_MINUTES` (60), `GUEST_CHAT_LIMIT` (15), `GUEST_SESSIONS_PER_IP_DAILY` (3), `DAILY_GUEST_CHAT_LIMIT` (150), `GUEST_MAX_TOKENS` (800) | Turn it on only after seeding the sample library into `DEMO_CORPUS_EMAIL`; without that account `POST /auth/guest` answers 503. |
 | Seed script | `ACERVO_DEMO_SENHA` | Password for `scripts/semear_acervo_demo.py`, at least 16 characters; there is no default. |
-| Frontend | `NEXT_PUBLIC_API_URL` (build time), `API_INTERNAL_URL` | The browser calls the public URL for login, register and `/auth/me`. The `/api/*` handlers use `API_INTERNAL_URL`, then `NEXT_PUBLIC_API_URL`, then `http://localhost:8000`. |
+| Frontend | `NEXT_PUBLIC_API_URL` (build time), `API_INTERNAL_URL` | The browser calls the public URL for login, register, guest and `/auth/me`. The `/api/*` handlers use `API_INTERNAL_URL`, then `NEXT_PUBLIC_API_URL`, then `http://localhost:8000`. |
 | Tests | `TEST_DATABASE_URL`, `TEST_REDIS_URL` | |
 
 ## Deployment
@@ -203,7 +207,7 @@ Backend variables come from `backend/.env` (see `backend/.env.example`, which a 
 - There is no end-to-end evaluation of answers: faithfulness, citation correctness, hybrid retrieval and the reranker are not measured. The only numbers are the keyword-leg evaluation above, on a synthetic corpus.
 - The disagreement check is one fast-model call over at most 6 passages. It can miss a disagreement or report one that is not there; it is shown as a warning and changes nothing else.
 - "Current" is decided by document date only. A document uploaded without `effective_date` is dated by its upload day, so "most recent" can mean "uploaded last".
-- No guest or demo mode: visitors must register before trying anything.
+- Guest mode: a read-only sample library for 60 minutes, with its own daily caps; uploads, crawl and voice need an account.
 - The web fallback is off by default. When enabled, it sends the rewritten question to Tavily.
 - The list of function words removed from keyword queries is kept by hand. It covers the unaccented forms of Postgres's Portuguese stopwords and a few informal words, not every colloquialism.
 - Without `unaccent`, keyword search does not fold accents, and installing the extension later needs a manual `ALTER TEXT SEARCH CONFIGURATION` and a reindex.

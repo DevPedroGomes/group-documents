@@ -17,6 +17,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { AlertTriangle, CalendarClock, Mic, Search, Square } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
+import { GUEST_READ_ONLY_TITLE } from '@/lib/auth'
 import { cn } from '@/lib/utils'
 import {
   RealtimeSession,
@@ -39,11 +40,14 @@ const ROTULO: Record<EstadoRealtime, string> = {
 export function LiveVoice({
   pronto,
   documentIds,
+  somenteLeitura = false,
 }: {
   /** O acervo tem ao menos um documento pronto. */
   pronto: boolean
   /** Selecao atual; vazia = acervo inteiro, como no chat de texto. */
   documentIds: string[]
+  /** Sessao de convidado: a voz exige conta (o backend responde 403). */
+  somenteLeitura?: boolean
 }) {
   const [estado, setEstado] = useState<EstadoRealtime>('parado')
   const [itens, setItens] = useState<Item[]>([])
@@ -100,7 +104,8 @@ export function LiveVoice({
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <Button
           onClick={ativo ? parar : comecar}
-          disabled={!pronto && !ativo}
+          disabled={(!pronto || somenteLeitura) && !ativo}
+          title={somenteLeitura ? GUEST_READ_ONLY_TITLE : undefined}
           variant={ativo ? 'destructive' : 'default'}
           className="gap-2"
         >
@@ -124,7 +129,9 @@ export function LiveVoice({
 
       {!ativo && (
         <p className="text-xs text-neutral-400">
-          {!pronto
+          {somenteLeitura
+            ? 'Voice needs an account. In the sample library you can ask by text.'
+            : !pronto
             ? 'Your library has no ready documents yet. Upload one first: the agent only answers from your library.'
             : documentIds.length > 0
               ? `Voice searches only the ${documentIds.length} selected ${documentIds.length === 1 ? 'document' : 'documents'}.`
