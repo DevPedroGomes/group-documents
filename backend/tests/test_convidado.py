@@ -591,6 +591,44 @@ def test_dois_convidados_nao_veem_threads_um_do_outro(com_acervo):
 
 
 @pytest.mark.integration
+def test_convidado_de_verdade_nao_escreve_e_vence(com_acervo, cotas, modo_convidado):
+    """Com o token que `/auth/guest` emitiu e o banco real: as rotas de escrita e
+    de voz dao 403 sem gravar nada nem gastar cota, e a sessao vencida (ou com o
+    modo desligado) da 401 em leitura tambem."""
+    from sqlalchemy import text as sqltext
+
+    from app.db.engine import engine
+
+    cliente, acervo, doc, _ = com_acervo
+    convidado, cab = _entrar_como_convidado(cliente)
+
+    def contagem() -> tuple:
+        with engine.begin() as conn:
+            return tuple(conn.execute(sqltext(q)).scalar_one() for q in (
+                "SELECT count(*) FROM documents", "SELECT count(*) FROM chunks",
+                "SELECT count(*) FROM threads", "SELECT count(*) FROM messages",
+                "SELECT count(*) FROM decisions",
+            ))
+
+    antes, consumidos_antes = contagem(), list(cotas.consumidos)
+    for metodo, caminho, kw in ROTAS_DE_ESCRITA + [("DELETE", f"/documents/{doc}", {})]:
+        r = cliente.request(metodo, caminho.replace(CONVIDADO, convidado), headers=cab, **kw)
+        assert (r.status_code, r.json()) == (403, {"detail": "guest_read_only"}), f"{metodo} {caminho}"
+    assert contagem() == antes
+    assert cotas.consumidos == consumidos_antes
+
+    assert cliente.get("/documents", headers=cab).status_code == 200
+    modo_convidado.guest_enabled = False
+    assert cliente.get("/documents", headers=cab).status_code == 401
+    modo_convidado.guest_enabled = True
+    with engine.begin() as conn:
+        conn.execute(sqltext("UPDATE users SET expires_at = now() - interval '1 second' WHERE id = :i"),
+                     {"i": convidado})
+    assert cliente.get("/documents", headers=cab).status_code == 401
+    assert cliente.get("/auth/me", headers=cab).status_code == 401
+
+
+@pytest.mark.integration
 def test_login_nao_abre_conta_de_convidado(com_acervo):
     from sqlalchemy import text as sqltext
 
