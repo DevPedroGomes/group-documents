@@ -12,6 +12,9 @@ logger = logging.getLogger(__name__)
 # Pagina da web tem tamanho livre; acima disto so encarece o prompt.
 _MAX_CHARS_WEB = 1500
 
+# Teto da resposta para conta normal. O convidado usa `guest_max_tokens`.
+MAX_TOKENS_RESPOSTA = 2000
+
 _SYSTEM_PROMPT = (
     "You are a BrainHub Assistant that answers questions about the user's own documents. "
     "Answer ONLY from the document excerpts in the <documents> block. "
@@ -98,12 +101,13 @@ def generate_answer(
     history: Optional[list[dict]] = None,
     low_confidence: bool = False,
     web_results: Optional[list[dict]] = None,
+    max_tokens: int = MAX_TOKENS_RESPOSTA,
 ) -> str:
     """Generate a complete answer (non-streaming)."""
     settings = get_settings()
     return chat_complete(
         model=settings.generation_model,
-        max_tokens=2000,
+        max_tokens=max_tokens,
         system=_system_prompt(low_confidence, bool(web_results)),
         messages=_build_messages(question, documents, history, web_results),
     )
@@ -115,12 +119,13 @@ def stream_answer(
     history: Optional[list[dict]] = None,
     low_confidence: bool = False,
     web_results: Optional[list[dict]] = None,
+    max_tokens: int = MAX_TOKENS_RESPOSTA,
 ) -> Generator[str, None, None]:
     """Stream answer tokens through the configured LLM provider."""
     settings = get_settings()
     yield from chat_stream(
         model=settings.generation_model,
-        max_tokens=2000,
+        max_tokens=max_tokens,
         system=_system_prompt(low_confidence, bool(web_results)),
         messages=_build_messages(question, documents, history, web_results),
     )

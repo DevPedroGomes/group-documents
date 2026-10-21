@@ -47,7 +47,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import insert
 
 from agent_ops import metering
-from app.api.dependencies import consumir_cota, require_user
+from app.api.dependencies import consumir_cota, require_writer
 from app.api.rate_limit import limiter
 from app.api.routes.chat import (
     MAX_DOCUMENTOS_SELECIONADOS,
@@ -220,7 +220,9 @@ def _criar_thread_de_voz(user_id: str) -> str:
 @router.post("/session", response_model=SessaoResposta)
 @limiter.limit("10/minute")
 async def criar_sessao(request: Request) -> SessaoResposta:
-    user_id = await require_user(request)
+    # Convidado nao abre voz (403): a sessao de voz e o gasto mais caro do app
+    # e fica para quem tem conta.
+    user_id = await require_writer(request)
     settings = get_settings()
 
     if not settings.enable_realtime:
@@ -314,8 +316,11 @@ async def executar_busca(request: Request, body: BuscaPedido) -> BuscaResposta:
     que decide o que é relevante: quem filtra é o grader, aqui dentro, com o
     `user_id` do JWT. Um cliente que mentisse sobre o que recuperou não
     conseguiria ver documento de outra pessoa.
+
+    Convidado recebe 403, como na abertura da sessao: sem sessao de voz, a tool
+    nao tem a quem servir.
     """
-    user_id = await require_user(request)
+    user_id = await require_writer(request)
     settings = get_settings()
 
     if not settings.enable_realtime:

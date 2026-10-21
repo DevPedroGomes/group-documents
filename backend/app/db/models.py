@@ -27,6 +27,10 @@ users = Table(
     Column("full_name", String(255), nullable=True),
     Column("is_active", Boolean, default=True),
     Column("created_at", TIMESTAMP(timezone=True), server_default=func.now()),
+    # Sessao de convidado (migration 009): usuario temporario, so leitura do
+    # acervo de demonstracao, apagado pelo cron depois de `expires_at`.
+    Column("is_guest", Boolean, nullable=False, default=False, server_default="false"),
+    Column("expires_at", TIMESTAMP(timezone=True), nullable=True),
 )
 
 documents = Table(

@@ -17,11 +17,17 @@ from starlette.concurrency import iterate_in_threadpool, run_in_threadpool
 from app.config.settings import get_settings
 from app.db.engine import engine
 from app.db.models import threads, messages
-from app.api.dependencies import require_user
+from app.api.dependencies import (
+    acervo_de,
+    consumir_cota_de_chat,
+    devolver_cota_de_chat,
+    e_convidado,
+    require_user,
+    require_writer,
+)
 from app.api.rate_limit import limiter
-from agent_ops import metering
 from app.core.guardrails.input_validator import validate_input
-from app.core.rag.generator import stream_answer
+from app.core.rag.generator import MAX_TOKENS_RESPOSTA, stream_answer
 from app.core.rag.transformer import transform_query
 from app.core.rag.retriever import reconsultar, retrieve_documents
 from app.core.rag.grader import grade_documents
@@ -305,31 +311,29 @@ def save_decision(
 @limiter.limit("30/minute")
 async def chat(request: Request, body: ChatBody):
     user_id = await require_user(request)
+    convidado = e_convidado(request)
 
     # Input validation
     is_valid, reason = validate_input(body.message)
     if not is_valid:
         raise HTTPException(400, reason)
 
+    # De quem e o acervo buscado: o convidado le o de demonstracao. A conversa
+    # e a trilha continuam no `user_id` de quem pergunta. Antes de abrir a
+    # conversa: sem acervo (503), nenhuma thread vazia fica para tras.
+    acervo = await acervo_de(request, user_id)
+
     # SQL sincrono vai para thread, como todo o resto desta rota: no event loop
     # (um worker so do uvicorn) seguraria todos os outros requests do app.
     thread_id, history = await run_in_threadpool(_abrir_conversa, body.thread_id, user_id)
 
-    # Teto diario global, consumido ANTES de qualquer chamada paga. Vem depois
-    # da validacao e da checagem de posse da thread, que sao gratis: pergunta
-    # invalida nao deve gastar a cota do proximo visitante.
-    try:
-        await metering.consumir("chat", get_settings().daily_chat_limit)
-    except metering.TetoIndisponivel as exc:
-        # Backend de cota ilegivel: e indisponibilidade, nao limite atingido.
-        # Sem `Retry-After`, porque ninguem sabe quando o Redis volta.
-        raise HTTPException(status_code=503, detail=exc.mensagem) from exc
-    except metering.TetoAtingido as exc:
-        raise HTTPException(
-            status_code=429,
-            detail=exc.mensagem,
-            headers={"Retry-After": str(metering.segundos_ate_meia_noite_utc())},
-        ) from exc
+    # Teto diario, consumido ANTES de qualquer chamada paga. Vem depois da
+    # validacao e da checagem de posse da thread, que sao gratis: pergunta
+    # invalida nao deve gastar a cota do proximo visitante. Convidado consome
+    # a cota de convidado, nunca a de quem tem conta. Redis ilegivel e 503 sem
+    # `Retry-After`; teto atingido e 429 ate a meia-noite UTC.
+    await consumir_cota_de_chat(user_id, convidado)
+    teto_de_tokens = get_settings().guest_max_tokens if convidado else MAX_TOKENS_RESPOSTA
 
     await run_in_threadpool(save_message, thread_id, "user", body.message)
 
@@ -426,7 +430,7 @@ async def chat(request: Request, body: ChatBody):
                 None,
                 lambda: retrieve_documents(
                     question=body.message,
-                    user_id=user_id,
+                    user_id=acervo,
                     document_ids=body.document_ids,
                     as_of=body.as_of,
                     top_k=5,
@@ -489,7 +493,7 @@ async def chat(request: Request, body: ChatBody):
                             consulta=reescrita,
                             pergunta=consultas[0],
                             anteriores=recuperados,
-                            user_id=user_id,
+                            user_id=acervo,
                             document_ids=body.document_ids,
                             as_of=body.as_of,
                             top_k=5,
@@ -573,6 +577,7 @@ async def chat(request: Request, body: ChatBody):
                     history=history,
                     low_confidence=baixa_confianca,
                     web_results=resultados_web,
+                    max_tokens=teto_de_tokens,
                 )
             ):
                 full_answer += token
@@ -625,7 +630,7 @@ async def chat(request: Request, body: ChatBody):
             # devolve a cota em vez de cobra-la do proximo visitante. Se ja
             # havia texto, o modelo rodou e o gasto foi real — nao devolve.
             if not full_answer:
-                await metering.devolver("chat")
+                await devolver_cota_de_chat(user_id, convidado)
 
         finally:
             # Checagem que terminou mas nao chegou a ser lida (o cliente caiu
@@ -931,8 +936,10 @@ async def get_messages(request: Request, thread_id: str):
     """Get messages for a thread."""
     user_id = await require_user(request)
 
+    # 404, e nao 403, para thread de outra pessoa: igual a de um id que nao
+    # existe, entao a resposta nao confirma que a conversa existe.
     if not await run_in_threadpool(validate_thread_ownership, thread_id, user_id):
-        raise HTTPException(403, "Thread does not belong to this user")
+        raise HTTPException(404, "Thread not found")
 
     history = await run_in_threadpool(get_thread_history, thread_id, user_id, 100)
     return {"messages": history, "thread_id": thread_id}
@@ -940,8 +947,11 @@ async def get_messages(request: Request, thread_id: str):
 
 @router.delete("/threads/{thread_id}")
 async def delete_thread(request: Request, thread_id: str):
-    """Delete a thread and its messages (LGPD compliance). Ownership enforced."""
-    user_id = await require_user(request)
+    """Delete a thread and its messages (LGPD compliance). Ownership enforced.
+
+    Convidado nao apaga (403): a conversa dele some inteira quando a sessao vence.
+    """
+    user_id = await require_writer(request)
 
     if not await run_in_threadpool(_apagar_thread, thread_id, user_id):
         raise HTTPException(404, "Thread not found")
