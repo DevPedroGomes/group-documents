@@ -87,6 +87,8 @@ def create_app() -> FastAPI:
                 "ingest": s.daily_ingest_limit,
                 "realtime": s.daily_realtime_limit,
                 "realtime_busca": s.daily_realtime_tool_limit,
+                # Perguntas de todos os convidados: teto separado do `chat`.
+                "chat_convidado": s.daily_guest_chat_limit,
             }
         )
 

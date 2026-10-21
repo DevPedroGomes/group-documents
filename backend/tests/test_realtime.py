@@ -54,7 +54,7 @@ def voz(monkeypatch):
     async def usuario(_request):
         return USUARIO
 
-    monkeypatch.setattr(rt, "require_user", usuario)
+    monkeypatch.setattr(rt, "require_writer", usuario)
     monkeypatch.setattr(rt, "save_decision", lambda **kw: cenario.decisoes.append(kw))
     limiter.enabled = False
     try:
@@ -126,7 +126,7 @@ def test_a_busca_devolve_a_divergencia_com_a_fonte_vigente(voz):
     "assinado-com-outro-segredo",
 ])
 def test_as_duas_rotas_recusam_quem_nao_esta_autenticado(monkeypatch, rota, corpo, cabecalho):
-    """Pela rota, com o `require_user` de verdade: sem token, token malformado
+    """Pela rota, com o `require_writer` de verdade: sem token, token malformado
     ou assinado com outro segredo e 401, antes de qualquer busca ou credencial."""
     import jwt
     from fastapi.testclient import TestClient
@@ -252,7 +252,7 @@ def sessao(monkeypatch):
             return httpx.Response(200, json={"value": "ek_teste", "expires_at": 1234},
                                   request=httpx.Request("POST", url))
 
-    monkeypatch.setattr(rt, "require_user", usuario)
+    monkeypatch.setattr(rt, "require_writer", usuario)
     monkeypatch.setattr(metering, "consumir", consumir)
     monkeypatch.setattr(metering, "devolver", devolver)
     monkeypatch.setattr(rt, "_criar_thread_de_voz", criar_thread)

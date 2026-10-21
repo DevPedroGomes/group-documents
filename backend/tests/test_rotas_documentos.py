@@ -65,6 +65,7 @@ def docs(monkeypatch):
             raise r.erro_da_fila
 
     monkeypatch.setattr(rotas, "require_user", usuario)
+    monkeypatch.setattr(rotas, "require_writer", usuario)
     monkeypatch.setattr(metering, "consumir", consumir)
     monkeypatch.setattr(metering, "devolver", devolver)
     monkeypatch.setattr(rotas, "save_file", gravar)

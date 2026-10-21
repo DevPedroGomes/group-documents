@@ -17,6 +17,7 @@ import logging
 
 from agent_ops import queue
 from agent_ops.config import get_config
+from arq import cron
 from arq.connections import RedisSettings
 from sqlalchemy import text as sqltext
 
@@ -169,8 +170,54 @@ async def _ao_subir(ctx) -> None:
             conn.commit()
 
 
+def _apagar_convidados_vencidos() -> int:
+    """Apaga os convidados vencidos com as conversas e trilhas deles; devolve quantos.
+
+    Apaga explicitamente, numa transacao, em vez de confiar no CASCADE: em
+    `decisions` o `user_id` nao tem chave estrangeira, e o banco de producao
+    nasceu de um `init.sql` anterior as migrations. Convidado nao grava
+    documento, entao nao ha arquivo nem chunk a remover.
+    """
+    with engine.begin() as conn:
+        ids = [str(r[0]) for r in conn.execute(
+            sqltext("SELECT id FROM users WHERE is_guest AND expires_at < now()")
+        )]
+        if not ids:
+            return 0
+        parametros = {"ids": ids}
+        conn.execute(
+            sqltext("DELETE FROM decisions WHERE user_id = ANY(CAST(:ids AS uuid[]))"), parametros
+        )
+        conn.execute(
+            sqltext("DELETE FROM messages WHERE thread_id IN "
+                    "(SELECT id FROM threads WHERE user_id = ANY(CAST(:ids AS uuid[])))"),
+            parametros,
+        )
+        conn.execute(
+            sqltext("DELETE FROM threads WHERE user_id = ANY(CAST(:ids AS uuid[]))"), parametros
+        )
+        conn.execute(
+            sqltext("DELETE FROM users WHERE id = ANY(CAST(:ids AS uuid[])) AND is_guest"), parametros
+        )
+    return len(ids)
+
+
+async def limpar_convidados(ctx) -> int:
+    """Cron: a sessao de convidado vence em `guest_ttl_minutes` e a linha some aqui.
+
+    A API ja recusa o token vencido; esta faxina tira do banco o usuario
+    temporario e o que ele escreveu, para a tabela nao crescer com visitantes.
+    """
+    apagados = await asyncio.to_thread(_apagar_convidados_vencidos)
+    if apagados:
+        logger.info("convidados.limpeza apagados=%d", apagados)
+    return apagados
+
+
 class WorkerSettings:
     functions = [ingerir]
+    # A cada 15 minutos: uma sessao vencida fica no maximo isso no banco.
+    cron_jobs = [cron(limpar_convidados, minute={0, 15, 30, 45}, run_at_startup=False)]
     on_startup = _ao_subir
     # A MESMA resolucao que o lado que enfileira usa (`queue.criar_pool` tambem
     # le `get_config().redis_url`). Ler a env na mao aqui criava defaults

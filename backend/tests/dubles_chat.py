@@ -83,6 +83,8 @@ def _no_event_loop() -> bool:
 
 def instalar(monkeypatch, cenario: Cenario) -> None:
     """Troca os pontos de saida do pipeline pelos dubles do cenario."""
+    from agent_ops import metering
+
     from app.api.routes import chat as chat_route
     from app.config.settings import get_settings
     from app.core import chamadas_pagas
@@ -129,8 +131,10 @@ def instalar(monkeypatch, cenario: Cenario) -> None:
         return sse_original(tipo, dados)
 
     monkeypatch.setattr(chat_route, "require_user", usuario)
-    monkeypatch.setattr(chat_route.metering, "consumir", consumir)
-    monkeypatch.setattr(chat_route.metering, "devolver", devolver)
+    # O modulo do nucleo, e nao um atributo da rota: a cota do chat e consumida
+    # por `app.api.dependencies`, que importa o mesmo modulo.
+    monkeypatch.setattr(metering, "consumir", consumir)
+    monkeypatch.setattr(metering, "devolver", devolver)
     monkeypatch.setattr(chat_route, "create_thread", lambda _u: THREAD)
     monkeypatch.setattr(chat_route, "validate_thread_ownership", lambda _t, _u: True)
     monkeypatch.setattr(chat_route, "get_thread_history", lambda *_a, **_k: list(cenario.historico))

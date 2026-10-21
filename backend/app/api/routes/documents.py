@@ -1,8 +1,12 @@
 """Document management routes: upload, ingest, list, preview, delete.
 
-Toda rota aqui espera `require_user`, entao e `async def`; o SQL, o disco e o
-embedding sao sincronos e vao por `run_in_threadpool`. No event loop (o uvicorn
-roda um worker so) cada um deles congelaria todos os outros requests do app.
+Toda rota aqui espera `require_user` (ou `require_writer`, nas que gravam),
+entao e `async def`; o SQL, o disco e o embedding sao sincronos e vao por
+`run_in_threadpool`. No event loop (o uvicorn roda um worker so) cada um deles
+congelaria todos os outros requests do app.
+
+Convidado le o acervo de demonstracao (`acervo_de`) e nao grava nada: upload,
+crawl, ingest e apagar respondem 403 para ele.
 """
 
 import os
@@ -26,7 +30,15 @@ from starlette.formparsers import MultiPartException, MultiPartParser, parse_opt
 from app.config.settings import get_settings
 from app.db.engine import engine
 from app.db.models import documents
-from app.api.dependencies import consumir_cota, require_user
+from app.api.dependencies import (
+    acervo_de,
+    consumir_cota,
+    consumir_cota_de_chat,
+    devolver_cota_de_chat,
+    e_convidado,
+    require_user,
+    require_writer,
+)
 from app.services.file_storage import save_file, get_file_abspath, delete_file
 from app.api.rate_limit import limiter
 from agent_ops import metering
@@ -300,7 +312,7 @@ async def upload_file(request: Request):
     tamanho conseguiriam barrar um upload gigante antes de ele chegar. O
     Content-Length recusa cedo; o corpo contado recusa quem nao o manda.
     """
-    user_id = await require_user(request)
+    user_id = await require_writer(request)
     limite = get_settings().max_file_size
 
     declarado = request.headers.get("content-length", "")
@@ -386,7 +398,7 @@ async def crawl_url(request: Request, body: CrawlBody):
     """
     from app.core.ingestion.url_crawler import fetch_and_extract, is_safe_url
 
-    user_id = await require_user(request)
+    user_id = await require_writer(request)
 
     if not body.url:
         raise HTTPException(400, "URL is required")
@@ -426,7 +438,7 @@ async def crawl_url(request: Request, body: CrawlBody):
 @router.post("/ingest")
 @limiter.limit("30/minute")
 async def ingest(request: Request, body: IngestBody):
-    user_id = await require_user(request)
+    user_id = await require_writer(request)
 
     if not body.title or len(body.title) > 500:
         raise HTTPException(400, "Invalid title (max 500 characters)")
@@ -506,23 +518,23 @@ def _listar_documentos(user_id: str, relevant_ids: list[str] | None):
         return conn.execute(sqltext(base_sql), params).mappings().all()
 
 
-async def _busca_semantica(consulta: str, user_id: str) -> list[str]:
-    """Ids dos documentos parecidos com a consulta.
+async def _busca_semantica(consulta: str, user_id: str, acervo: str, convidado: bool) -> list[str]:
+    """Ids dos documentos de `acervo` parecidos com a consulta.
 
     Cada consulta e uma chamada paga ao Voyage, entao passa pelo teto diario do
-    chat (o mesmo orcamento de busca do app); se o embedding falhar, nada foi
-    cobrado e a cota volta.
+    chat (o mesmo orcamento de busca do app; para convidado, o de convidado);
+    se o embedding falhar, nada foi cobrado e a cota volta.
     """
     from app.services.embedding_cache import get_query_embedding
 
-    await consumir_cota("chat", get_settings().daily_chat_limit)
+    await consumir_cota_de_chat(user_id, convidado)
     try:
         qvec = await run_in_threadpool(get_query_embedding, consulta)
     except Exception as exc:
-        await metering.devolver("chat")
+        await devolver_cota_de_chat(user_id, convidado)
         logger.warning("busca semantica da lista falhou: %s", exc)
         raise HTTPException(503, "Semantic search is temporarily unavailable") from exc
-    return await run_in_threadpool(_documentos_parecidos, qvec, user_id)
+    return await run_in_threadpool(_documentos_parecidos, qvec, acervo)
 
 
 def _sem_busca_semantica(request: Request) -> bool:
@@ -539,14 +551,15 @@ async def list_documents(
     semantic_query: Optional[str] = Query(None, max_length=500),
 ):
     user_id = await require_user(request)
+    acervo = await acervo_de(request, user_id)
 
     relevant_ids = None
     if semantic_query and semantic_query.strip():
-        relevant_ids = await _busca_semantica(semantic_query.strip(), user_id)
+        relevant_ids = await _busca_semantica(semantic_query.strip(), user_id, acervo, e_convidado(request))
         if not relevant_ids:
             return {"items": []}
 
-    rows = await run_in_threadpool(_listar_documentos, user_id, relevant_ids)
+    rows = await run_in_threadpool(_listar_documentos, acervo, relevant_ids)
 
     # O SELECT ja trazia `erro` e `preso` e o dict os descartava: o badge
     # "Failed"/"Stalled" da tela nunca tinha o que mostrar.
@@ -599,7 +612,8 @@ async def preview(request: Request, doc_id: str):
     if not _e_uuid(doc_id):
         raise HTTPException(404, "Document not found")
 
-    storage_path = await run_in_threadpool(_caminho_do_documento, doc_id, user_id)
+    acervo = await acervo_de(request, user_id)
+    storage_path = await run_in_threadpool(_caminho_do_documento, doc_id, acervo)
     if not storage_path:
         # Hide existence — same response whether the doc doesn't exist or
         # belongs to someone else.
@@ -631,7 +645,7 @@ async def delete_document(request: Request, doc_id: str):
 
     Enforces ownership; returns 404 if the document doesn't belong to the caller.
     """
-    user_id = await require_user(request)
+    user_id = await require_writer(request)
 
     storage_path = await run_in_threadpool(_apagar_documento, doc_id, user_id)
     if not storage_path:

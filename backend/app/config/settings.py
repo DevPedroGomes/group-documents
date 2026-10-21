@@ -145,6 +145,24 @@ class Settings(BaseSettings):
     # limita quantas uma sessao aberta dispara.
     daily_realtime_tool_limit: int = 400
 
+    # --- Sessao de convidado ---
+    # Um usuario temporario, sem cadastro, que le o acervo de demonstracao da
+    # conta `demo_corpus_email` (so leitura) e conversa com ele. Desligado por
+    # padrao: so faz sentido depois de semear o acervo. Desligar com sessoes
+    # abertas derruba todas na proxima requisicao.
+    guest_enabled: bool = False
+    demo_corpus_email: str = "demo@gomio.com.br"
+    guest_ttl_minutes: int = 60
+    # Perguntas por sessao de convidado.
+    guest_chat_limit: int = 15
+    # Sessoes novas por IP por dia (alem do rate limit de 3 por hora na rota).
+    guest_sessions_per_ip_daily: int = 3
+    # Perguntas de TODOS os convidados no dia. Teto separado do
+    # `daily_chat_limit`: convidado nao gasta a cota de quem tem conta.
+    daily_guest_chat_limit: int = 150
+    # Teto de tokens da resposta do convidado (a conta normal usa 2000).
+    guest_max_tokens: int = 800
+
     # --- Conversa por voz (WebRTC contra a Realtime API da OpenAI) ---
     # Este e o UNICO lugar do app que fala com a OpenAI: o resto e Anthropic ou
     # OpenRouter para geracao, Voyage para embedding e Cohere para rerank. Sem
