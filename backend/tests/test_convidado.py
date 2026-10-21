@@ -185,6 +185,7 @@ def test_guest_devolve_token_de_convidado(app_sem_limiter, cotas, modo_convidado
     assert claims["sub"] == corpo["user"]["id"] == criados[0][0]
     assert claims["exp"] <= expira.timestamp()
     assert criados[0][1] == expira
+    assert corpo["questions_left"] == corpo["user"]["questions_left"] == 15
     assert cotas.consumidos == [("convidado_ip", "testclient")]
 
 
@@ -415,6 +416,20 @@ def test_convidado_busca_no_acervo_e_grava_a_trilha_no_proprio_id(chat_de_convid
     fontes = do_tipo(eventos(r.text), "sources")
     assert fontes and fontes[0][0]["document_id"] == "doc-1"
     assert [d["user_id"] for d in cenario.decisoes] == [CONVIDADO]
+
+
+def test_o_done_diz_quantas_perguntas_restam_ao_convidado(chat_de_convidado):
+    from tests.dubles_chat import do_tipo, eventos
+
+    cliente, _, quem = chat_de_convidado
+
+    primeiro = do_tipo(eventos(cliente.post("/chat", json={"message": "frete gratis?"}).text), "done")
+    segundo = do_tipo(eventos(cliente.post("/chat", json={"message": "frete gratis?"}).text), "done")
+    quem.update(id=COMUM, convidado=False)
+    comum = do_tipo(eventos(cliente.post("/chat", json={"message": "frete gratis?"}).text), "done")
+
+    assert [primeiro[0]["questions_left"], segundo[0]["questions_left"]] == [14, 13]
+    assert "questions_left" not in comum[0]
 
 
 def test_cota_por_convidado(chat_de_convidado, cotas, modo_convidado, monkeypatch):

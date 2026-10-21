@@ -332,7 +332,7 @@ async def chat(request: Request, body: ChatBody):
     # invalida nao deve gastar a cota do proximo visitante. Convidado consome
     # a cota de convidado, nunca a de quem tem conta. Redis ilegivel e 503 sem
     # `Retry-After`; teto atingido e 429 ate a meia-noite UTC.
-    await consumir_cota_de_chat(user_id, convidado)
+    perguntas_restantes = await consumir_cota_de_chat(user_id, convidado)
     teto_de_tokens = get_settings().guest_max_tokens if convidado else MAX_TOKENS_RESPOSTA
 
     await run_in_threadpool(save_message, thread_id, "user", body.message)
@@ -600,11 +600,15 @@ async def chat(request: Request, body: ChatBody):
             # busca a trilha logo em seguida precisa encontra-la gravada. Em
             # thread, como todo SQL daqui: no loop seguraria os outros requests.
             await loop.run_in_executor(None, registrar)
-            yield _sse("done", {
+            fim = {
                 "thread_id": thread_id,
                 "message_id": message_id,
                 "low_confidence": baixa_confianca,
-            })
+            }
+            if convidado:
+                # A faixa do convidado mostra quantas perguntas restam na sessao.
+                fim["questions_left"] = perguntas_restantes
+            yield _sse("done", fim)
 
         except Exception as e:
             # A checagem que ja terminou entra na trilha; a que ainda roda e

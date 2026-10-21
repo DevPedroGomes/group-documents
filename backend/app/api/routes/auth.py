@@ -197,19 +197,17 @@ async def guest(request: Request):
         await metering.devolver("convidado_ip", escopo=ip)
         raise HTTPException(500, "Error creating guest session")
 
-    expira_iso = expira_em.isoformat()
+    sessao = {
+        "is_guest": True,
+        "expires_at": expira_em.isoformat(),
+        # Sessao nova: a cota inteira. Depois disso o `done` do chat atualiza.
+        "questions_left": settings.guest_chat_limit,
+    }
     return {
         "access_token": _create_token(user_id, email, expira_em),
         "token_type": "bearer",
-        "is_guest": True,
-        "expires_at": expira_iso,
-        "user": {
-            "id": user_id,
-            "email": email,
-            "full_name": "Guest",
-            "is_guest": True,
-            "expires_at": expira_iso,
-        },
+        **sessao,
+        "user": {"id": user_id, "email": email, "full_name": "Guest", **sessao},
     }
 
 

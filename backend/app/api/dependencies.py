@@ -144,8 +144,9 @@ async def acervo_de(request: Request, user_id: str) -> str:
     return await run_in_threadpool(corpus_owner, user_id, convidado=True)
 
 
-async def consumir_cota(tipo: str, limite: int, escopo: str | None = None) -> None:
-    """Consome uma unidade do teto diario `tipo`, ou responde o motivo da recusa.
+async def consumir_cota(tipo: str, limite: int, escopo: str | None = None) -> int | None:
+    """Consome uma unidade do teto diario `tipo` e devolve quanto sobrou, ou
+    responde o motivo da recusa.
 
     `escopo` separa contadores do mesmo tipo (por IP, por sessao). O metering
     recusa `:` dentro de `tipo`, entao o recorte vai sempre por aqui.
@@ -156,7 +157,7 @@ async def consumir_cota(tipo: str, limite: int, escopo: str | None = None) -> No
     """
     recorte = {} if escopo is None else {"escopo": escopo}
     try:
-        await metering.consumir(tipo, limite, **recorte)
+        return await metering.consumir(tipo, limite, **recorte)
     except metering.TetoIndisponivel as exc:
         raise HTTPException(status_code=503, detail=exc.mensagem) from exc
     except metering.TetoAtingido as exc:
@@ -167,24 +168,26 @@ async def consumir_cota(tipo: str, limite: int, escopo: str | None = None) -> No
         ) from exc
 
 
-async def consumir_cota_de_chat(user_id: str, convidado: bool) -> None:
+async def consumir_cota_de_chat(user_id: str, convidado: bool) -> int | None:
     """Uma pergunta: o teto `chat` para conta normal, os de convidado para convidado.
 
     Convidado nunca toca o `chat`: um visitante sem cadastro esgotaria o dia de
     quem tem conta. Ele consome a cota da propria sessao (`chat_convidado` com
     escopo no id) e a de todos os convidados no dia (`chat_convidado`); se a
-    segunda recusar, a primeira volta.
+    segunda recusar, a primeira volta. Para convidado devolve quantas perguntas
+    restam na sessao; para conta normal, None.
     """
     s = get_settings()
     if not convidado:
         await consumir_cota("chat", s.daily_chat_limit)
-        return
-    await consumir_cota("chat_convidado", s.guest_chat_limit, escopo=user_id)
+        return None
+    restantes = await consumir_cota("chat_convidado", s.guest_chat_limit, escopo=user_id)
     try:
         await consumir_cota("chat_convidado", s.daily_guest_chat_limit)
     except HTTPException:
         await metering.devolver("chat_convidado", escopo=user_id)
         raise
+    return restantes
 
 
 async def devolver_cota_de_chat(user_id: str, convidado: bool) -> None:
