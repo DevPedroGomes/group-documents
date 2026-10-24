@@ -206,7 +206,7 @@ def _resumo_trechos(docs: list[dict]) -> list[dict]:
             "page": d.get("page"),
             "score": round(float(d.get("relevance_score", 0) or 0), 6),
             "score_scale": d.get("score_scale", "rrf"),
-            "document_date": d.get("document_date"),
+            "document_date": d.get("declared_document_date", d.get("document_date")),
             "url": d.get("url"),
         }
         for d in docs
@@ -231,7 +231,7 @@ def _citacao(d: dict) -> dict:
         "document_title": d.get("document_title") or "",
         "page": None if web else d.get("page"),
         "snippet": (d.get("snippet") or "")[:300],
-        "document_date": None if web else d.get("document_date"),
+        "document_date": None if web else d.get("declared_document_date", d.get("document_date")),
         "url": d.get("url") if web else None,
     }
 

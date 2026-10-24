@@ -115,7 +115,7 @@ function AvisoDeDivergencia({ conflito }: { conflito: ConflictEvent }) {
               )}
             >
               {f}
-              {f === conflito.vigente && <span className="ml-1.5 font-semibold">· current</span>}
+              {f === conflito.vigente && <span className="ml-1.5 font-semibold">· most recent dated source</span>}
             </li>
           ))}
         </ul>

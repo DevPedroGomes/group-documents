@@ -264,6 +264,28 @@ def test_vigente_e_a_fonte_de_data_mais_recente(monkeypatch):
     assert aviso == {"summary": "O prazo difere.", "sources": ["Contrato", "Aditivo"], "vigente": "Aditivo"}
 
 
+def test_data_do_upload_nao_estabelece_recencia_do_documento(monkeypatch):
+    _modelo_aponta(monkeypatch)
+    aviso = conflict_mod.detectar_conflito([
+        {**_datado("d1", "Contrato", "prazo de 30 dias", "2026-10-24"),
+         "declared_document_date": None},
+        {**_datado("d2", "Aditivo", "prazo de 15 dias", "2025-02-01"),
+         "declared_document_date": "2025-02-01"},
+    ])
+    assert aviso["vigente"] is None
+
+
+def test_data_declarada_prevalece_sobre_fallback_de_upload(monkeypatch):
+    _modelo_aponta(monkeypatch)
+    aviso = conflict_mod.detectar_conflito([
+        {**_datado("d1", "Contrato", "prazo de 30 dias", "2026-10-24"),
+         "declared_document_date": "2023-05-10"},
+        {**_datado("d2", "Aditivo", "prazo de 15 dias", "2025-02-01"),
+         "declared_document_date": "2025-02-01"},
+    ])
+    assert aviso["vigente"] == "Aditivo"
+
+
 @pytest.mark.parametrize("data_contrato,data_aditivo", [
     ("2025-02-01", "2025-02-01"),  # empate no topo
     (None, "2025-02-01"),          # uma fonte sem data

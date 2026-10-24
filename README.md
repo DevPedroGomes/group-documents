@@ -10,7 +10,7 @@ Stack: FastAPI (Python 3.12), Postgres with pgvector, Redis, an arq worker for i
 
 ## What it does beyond citing
 
-- **Disagreement warning.** When the passages kept for an answer come from two or more documents, a fast-model check runs in parallel with generation and reports whether they disagree on a fact. The result is a warning next to the answer; nothing is filtered or reordered. The "current" source (`vigente`) is chosen in code, not by the model: among the sources the check cites, the one with the latest document date. On a tie or a missing date there is none.
+- **Disagreement warning.** When the passages kept for an answer come from two or more documents, a fast-model check runs in parallel with generation and reports whether they disagree on a fact. The result is a warning next to the answer; nothing is filtered or reordered. The most recent dated source (the API field remains `vigente`) is selected in code from explicitly supplied document dates. Upload timestamps do not establish recency for this comparison. On a tie or a missing date there is none; a newer date does not establish which document governs.
 - **Answer as of a date.** `as_of` (YYYY-MM-DD, inclusive) limits both search legs to documents dated on or before that day. A document's date is its `effective_date`, entered at upload or crawl, or else the UTC day it was uploaded. The web fallback never runs with `as_of`.
 - **Decision trail.** Every answer writes a `decisions` row with the queries actually searched (condensed follow-up and corrective rewrite included), each retrieved and kept passage with title, page, score, score scale and document date, whether the reranker ran, low confidence, web use, the disagreement result, `as_of` and latency. The row is written before the `done` event, and also when the stream fails or the client disconnects. The chat panel reloads it after each answer.
 - **Voice.** The browser talks to OpenAI Realtime over WebRTC with a short-lived key minted by the backend, so the real key stays on the server. Retrieval is a function call that the browser forwards to `POST /realtime/tool/buscar`. That route runs retrieval, grading and the disagreement check with the user id from the JWT, honours the chat's document selection, and writes the same trail.
@@ -104,7 +104,7 @@ cd backend
 
 - `POST /upload` takes multipart `file`, `title` and an optional `effective_date`. The body is counted while it is read and rejected with 413 above 20 MB. The type is sniffed with libmagic against an allowlist (PDF; PNG, JPEG, GIF, WebP; MP3, WAV, WebM audio; MP4, WebM video), and a declared type from the allowlist must agree with it. `POST /crawl` fetches a web page as text.
 - The daily ingest quota is consumed before anything is written and returned if saving, the database insert or queueing fails. Files are stored as `{user_id}/docs/{uuid4}{ext}`; the client file name is discarded.
-- In the worker, PDFs are read page by page with pypdf. Pages with under 120 characters of text are rendered with PyMuPDF at 150 DPI, described by the fast model and embedded as images. PDFs over 300 pages fail before any paid call. Text becomes 500-token chunks with 100 tokens of overlap, and the fast model writes a short context for each chunk, with the document prompt-cached per 50,000-character window. Images and video are embedded directly by the multimodal model; audio is transcribed by Deepgram.
+- In the worker, PDFs are read page by page with pypdf. Pages with under 120 characters of text are rendered with PyMuPDF at 150 DPI, described by the fast model and embedded as images. PDFs over 300 pages fail before any paid call. Text becomes 500-token chunks with 100 tokens of overlap, and the fast model writes a short context for each chunk, with the document prompt-cached per 50,000-character window. Images and video are embedded directly by the multimodal model. Six video frames are also sampled with FFmpeg and described by the vision model so keyword retrieval and answer generation can use visible content. Audio files are transcribed by Deepgram.
 - Failures are classified. Our own limits, provider 4xx responses and unreadable files are permanent and not retried. Network errors, 408, 429, 5xx and unclassified errors are retried, up to 5 attempts. The document list shows a short error category, never the raw provider error.
 
 ## Security and isolation
@@ -206,13 +206,13 @@ Backend variables come from `backend/.env` (see `backend/.env.example`, which a 
 
 - There is no end-to-end evaluation of answers: faithfulness, citation correctness, hybrid retrieval and the reranker are not measured. The only numbers are the keyword-leg evaluation above, on a synthetic corpus.
 - The disagreement check is one fast-model call over at most 6 passages. It can miss a disagreement or report one that is not there; it is shown as a warning and changes nothing else.
-- "Current" is decided by document date only. A document uploaded without `effective_date` is dated by its upload day, so "most recent" can mean "uploaded last".
+- The most recent dated source uses declared document dates and does not determine validity or precedence. The separate `as_of` search filter still uses the upload date when no document date was supplied.
 - Guest mode: a read-only sample library for 60 minutes, with its own daily caps; uploads, crawl and voice need an account.
 - The web fallback is off by default. When enabled, it sends the rewritten question to Tavily.
 - The list of function words removed from keyword queries is kept by hand. It covers the unaccented forms of Postgres's Portuguese stopwords and a few informal words, not every colloquialism.
 - Without `unaccent`, keyword search does not fold accents, and installing the extension later needs a manual `ALTER TEXT SEARCH CONFIGURATION` and a reindex.
 - The API is one uvicorn process; blocking work moves to threads, not to more processes.
 - No iterative index scan: in a large shared table, a small tenant can still get fewer semantic candidates than the `LIMIT`.
-- Video is indexed by its embedding only; its text is the stored file name (a UUID), so the keyword leg and the generator get nothing from it, and there is no transcript. Voice searches skip the corrective step and the web.
+- Video answers rely on descriptions of six sampled visual frames; unsampled scenes and the video's audio are not covered. Voice searches skip the corrective step and the web.
 - `GET /graph` (documents, questions, and edges between documents that disagreed) has no UI yet.
 - A thread's document selection is remembered per browser (localStorage), not on the server.

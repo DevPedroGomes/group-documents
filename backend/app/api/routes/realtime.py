@@ -118,10 +118,10 @@ the search.
 
 WHEN SOURCES DISAGREE: the search may come back with a `divergencia` field. When \
 it does, say out loud that the documents disagree, name both, and give the value \
-from the one that is currently in force: `divergencia.vigente` names it (the source \
-with the most recent document date). If `vigente` is empty, say you cannot tell \
-which one is current. Do not silently pick one — that a client would never find \
-out is exactly the failure this archive exists to prevent.
+from each source. `divergencia.vigente` identifies the source with the most recent \
+explicit document date, not proof that it is currently in force. If it is empty, \
+say the dates do not establish which source is more recent. Never infer that a \
+newer date overrides another document.
 
 WHEN THE QUESTION IS ABOUT A DATE: pass `data_de_referencia` and say which cutoff \
 you used, so the person knows the answer is about that date and not about today.

@@ -48,5 +48,9 @@ def trecho_do_acervo(indice: int, trecho: dict, max_chars: int | None = None) ->
         index=indice,
         title=trecho.get("document_title") or "document",
         page=trecho.get("page"),
-        date=trecho.get("document_date"),
+        date=(
+            trecho.get("declared_document_date")
+            if "declared_document_date" in trecho
+            else trecho.get("document_date")
+        ),
     )

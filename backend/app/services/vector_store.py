@@ -115,8 +115,9 @@ _TSQUERY_POR_CONFIG = " || ".join(
 TSQUERY_SQL = f"CAST(replace(CAST(({_TSQUERY_POR_CONFIG}) AS text), ' & ', ' | ') AS tsquery)"
 
 
-# Data em que o documento vale: a de emissao, e na falta dela o dia (UTC) do
-# upload. E por ela que o recorte `as_of` corta e que `document_date` sai.
+# Data usada no filtro temporal: a declarada, e na falta dela o dia (UTC) do
+# upload. O recorte `as_of` usa esse fallback; a comparação de conflitos recebe
+# `declared_document_date`, que só existe quando a data foi informada no documento.
 DATA_EFETIVA_SQL = "COALESCE(d.effective_date, CAST(d.uploaded_at AT TIME ZONE 'UTC' AS date))"
 
 
@@ -212,6 +213,7 @@ def hybrid_search(
         SELECT c.id, c.document_id, d.title as document_title, c.page,
                left(c.content, 4000) as snippet,
                {DATA_EFETIVA_SQL} as document_date,
+               d.effective_date as declared_document_date,
                1 - (c.embedding <=> CAST(:qvec AS vector)) as score
         FROM chunks c
         JOIN documents d ON c.document_id = d.id
@@ -228,6 +230,7 @@ def hybrid_search(
         SELECT c.id, c.document_id, d.title as document_title, c.page,
                left(c.content, 4000) as snippet,
                {DATA_EFETIVA_SQL} as document_date,
+               d.effective_date as declared_document_date,
                ts_rank(c.search_vector, {TSQUERY_SQL}) as score
         FROM chunks c
         JOIN documents d ON c.document_id = d.id
@@ -280,6 +283,10 @@ def hybrid_search(
             "page": data["page"],
             "snippet": data["snippet"],
             "document_date": data["document_date"].isoformat() if data["document_date"] else None,
+            "declared_document_date": (
+                data["declared_document_date"].isoformat()
+                if data["declared_document_date"] else None
+            ),
             "relevance_score": item["score"],
             # A escala viaja junto com o numero. Sem isto o grader compara um
             # score de RRF (maximo 2/(k+1), ~0,033 com k=60) contra um limiar

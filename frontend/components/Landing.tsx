@@ -26,7 +26,7 @@ const PIPELINE = [
   {
     icon: FileText,
     title: 'Multi-modal ingest',
-    desc: 'PDF text is read with pypdf; pages with no text layer are rendered as images and embedded as such. Images and video are embedded directly by Voyage, audio is transcribed by Deepgram. libmagic sniffs MIME from the bytes, not the extension.',
+    desc: 'PDF text is read with pypdf; pages with no text layer are rendered as images and embedded as such. Images and video are embedded directly by Voyage. Answers about video use descriptions of six sampled frames, without audio transcription or full scene coverage. Audio files are transcribed by Deepgram. libmagic sniffs MIME from the bytes, not the extension.',
     trace: 'libmagic · pypdf + PyMuPDF · max 20MB',
   },
   {
@@ -75,8 +75,8 @@ const DIFFERENTIATORS = [
   {
     icon: AlertTriangle,
     label: 'A / Disagreement',
-    title: 'Sources that disagree, and which one is current',
-    desc: 'When the passages behind an answer come from two or more documents, a second model call checks whether they conflict. If they do, the answer carries the warning and names the documents; when their dates differ, the one with the most recent document date is marked current. That date comparison is plain code, not the model.',
+    title: 'Conflicting excerpts and their document dates',
+    desc: 'When retrieved passages include two or more documents, a model checks up to six excerpts for conflicting claims. A detected conflict adds a warning; the check can miss disagreements or fail. Code compares explicitly supplied document dates and marks the most recent source when dates are complete and distinct. Recency does not establish which document governs.',
   },
   {
     icon: CalendarClock,
@@ -283,8 +283,8 @@ export default function Landing() {
                         <AlertTriangle className="h-3 w-3" aria-hidden /> Your sources disagree
                       </p>
                       <p className="mt-1 text-neutral-300">
-                        <span className="text-emerald-200">Política Comercial da Aurora, versão 2</span> is
-                        current: it has the most recent document date.
+                        <span className="text-emerald-200">Política Comercial da Aurora, versão 2</span> has the
+                        most recent document date.
                       </p>
                     </div>
 
@@ -588,7 +588,7 @@ function AmostraDivergencia() {
           Política Comercial, versão 1
         </span>
         <span className="rounded-full bg-emerald-400/10 px-2 py-0.5 text-emerald-200 ring-1 ring-emerald-400/30">
-          Política Comercial, versão 2 · current
+          Política Comercial, versão 2 · most recent dated source
         </span>
       </div>
     </div>

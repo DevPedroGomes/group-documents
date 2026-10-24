@@ -16,11 +16,10 @@ COMO A DECISAO E TOMADA, e onde o modelo entra:
   perceba que "prazo de 30 dias" contradiz "prazo de 15 dias uteis".
 - O RESULTADO e AVISO, nunca decisao. Nada e filtrado, nenhuma fonte e
   descartada e a resposta nao muda. A divergencia aparece ao lado dela para a
-  pessoa decidir. Isso mantem o invariante do projeto: o modelo nao decide,
-  redige.
-- QUAL ESTA EM VIGOR tambem nao e do modelo: `vigente` e, entre as fontes que
-  ele apontou, a de data de documento mais recente. Sem data ou com empate,
-  fica nulo. O modelo recebe a data de cada trecho so para ler o contexto.
+  revisao das fontes. A deteccao de conflito usa o modelo e pode falhar.
+- RECENCIA usa datas declaradas: `vigente` e o nome legado do campo que
+  identifica a fonte de data mais recente. Nao estabelece vigencia ou
+  precedencia. Sem data ou com empate, fica nulo.
 - Resultado web nao entra: nao e documento da pessoa, e "a web diz outra
   coisa" nao e divergencia do acervo.
 
@@ -84,16 +83,21 @@ def _chave(titulo: str) -> str:
 
 
 def _vigente(fontes: list[str], trechos: list[dict]) -> str | None:
-    """Entre as fontes citadas, a de `document_date` mais recente.
+    """Entre as fontes citadas, a de data declarada mais recente.
 
     Deterministico, nao do modelo: a data vem do documento. Nulo quando nao
     da para decidir: menos de duas fontes reconhecidas, alguma sem data, ou
-    empate no topo.
+    empate no topo. Resultados antigos sem `declared_document_date` mantêm
+    compatibilidade usando `document_date`.
     """
     datas: dict[str, str | None] = {}
     for t in trechos:
         chave = _chave(t.get("document_title") or "")
-        data = t.get("document_date")
+        data = (
+            t.get("declared_document_date")
+            if "declared_document_date" in t
+            else t.get("document_date")
+        )
         if chave not in datas or (data and (datas[chave] is None or data > datas[chave])):
             datas[chave] = data
 

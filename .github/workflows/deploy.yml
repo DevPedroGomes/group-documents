@@ -50,6 +50,8 @@ jobs:
       - name: Instalar dependencias
         working-directory: backend
         run: pip install -q -r requirements-dev.txt
+      - name: Instalar decodificador de video para os testes de ingestao
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - name: pytest
         working-directory: backend
         env:
