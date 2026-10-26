@@ -103,7 +103,7 @@ export default function Landing() {
     <LandingLocaleProvider>
       <RedirectIfAuthenticated to="/library" />
       <main className="relative text-white">
-        <header className="sticky top-0 z-50 border-b border-white/10 glass-panel">
+        <header className="sticky top-0 z-50 border-b border-white/10 bg-neutral-950/95 backdrop-blur">
           <div className="max-w-7xl mx-auto flex h-14 items-center justify-between px-4 sm:px-8">
             <a href="#index" className="flex items-center gap-2.5 font-semibold tracking-tight rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-300">
               <FileStack className="h-5 w-5" aria-hidden /> BrainHub
