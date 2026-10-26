@@ -9,8 +9,8 @@
  * e a ativa. Com o formulario de acesso na faixa, nenhum item fica ativo: ele
  * nao esta no indice.
  *
- * So aparece a partir de 2xl (1536 px). Abaixo disso o container `max-w-7xl`
- * comeca a 32 px da borda e o indice cobria os titulos.
+ * So aparece a partir de 1700 px, com margem para os rotulos ao lado do
+ * container principal sem cobrir os titulos.
  */
 
 import { useEffect, useState } from 'react'
@@ -57,7 +57,7 @@ export default function SectionIndex() {
 
   return (
     <nav
-      className="hidden 2xl:flex flex-col gap-3 fixed left-4 top-1/2 -translate-y-1/2 z-30"
+      className="hidden min-[1700px]:flex flex-col gap-3 fixed left-4 top-1/2 -translate-y-1/2 z-30"
       aria-label="Section index"
     >
       {SECTION_IDS.map((id, i) => {

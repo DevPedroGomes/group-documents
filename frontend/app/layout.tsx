@@ -5,9 +5,9 @@ import { AuthProvider } from '@/contexts/AuthContext'
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://group-documents.pgdev.com.br"),
-  title: "BrainHub: multimodal RAG that grades its own retrieval",
+  title: "BrainHub: ask across your files, with sources",
   description:
-    "Upload documents and ask. A corrective-RAG pipeline retrieves, reranks, grades what it found and searches again when nothing fits, flags sources that disagree, answers as of a date, and keeps the trail of every answer.",
+    "Ask questions across PDFs, images, audio, video and web pages. Inspect source passages, compare document dates and review conflicting information. Try the fictional sample library without an account.",
   authors: [{ name: "Pedro Gomes", url: "https://portfolio.pgdev.com.br" }],
   creator: "Pedro Gomes",
   // Sem openGraph/twitter o link vira URL crua no LinkedIn, no WhatsApp e no
@@ -17,16 +17,16 @@ export const metadata: Metadata = {
     url: "https://group-documents.pgdev.com.br",
     siteName: "BrainHub",
     locale: "en_US",
-    title: "BrainHub: multimodal RAG that grades its own retrieval",
+    title: "BrainHub: ask across your files, with sources",
     description:
-      "Upload documents and ask. A corrective-RAG pipeline retrieves, reranks, grades what it found and searches again when nothing fits, flags sources that disagree, answers as of a date, and keeps the trail of every answer.",
-    images: [{ url: "/og.png", width: 1200, height: 630, alt: "BrainHub: multimodal RAG over your own documents" }],
+      "Ask questions across PDFs, images, audio, video and web pages. Inspect source passages, compare document dates and review conflicting information. Try the fictional sample library without an account.",
+    images: [{ url: "/og.png", width: 1200, height: 630, alt: "BrainHub: answers across your files with source references" }],
   },
   twitter: {
     card: "summary_large_image",
-    title: "BrainHub: multimodal RAG that grades its own retrieval",
+    title: "BrainHub: ask across your files, with sources",
     description:
-      "Upload documents and ask. A corrective-RAG pipeline retrieves, reranks, grades what it found and searches again when nothing fits, flags sources that disagree, answers as of a date, and keeps the trail of every answer.",
+      "Ask questions across PDFs, images, audio, video and web pages. Inspect source passages, compare document dates and review conflicting information. Try the fictional sample library without an account.",
     images: ["/og.png"],
   },
 };

@@ -1,569 +1,223 @@
-// Componente de SERVIDOR de proposito. A landing inteira era um componente de
-// cliente que, enquanto a sessao era checada, renderizava so "checking
-// session": o HTML que chegava a um crawler (e a quem abria o link no
-// LinkedIn) nao tinha nenhuma linha do conteudo. Agora so quatro ilhas rodam
-// no cliente: os textos do dicionario, o indice lateral (que precisa saber a
-// secao na tela), o formulario de login e o redirecionamento de quem ja tem
-// sessao para /library.
-//
-// Cada afirmacao tecnica daqui foi conferida contra o backend. Numero que o
-// codigo nao produz (latencia P95, por exemplo) nao entra.
-
 import {
-  FileStack, FileText, Cpu, Search, ShieldCheck, MessageSquare,
-  Globe, ArrowRight, Users, Lock, FileImage, Mic, Video,
-  Sparkles, CheckCircle2, Bot, User, ArrowDown, AlertTriangle,
-  CalendarClock, Route, X,
+  FileStack, FileText, FileImage, Mic, Video, Globe, ArrowDown,
+  Search, ShieldCheck, MessageSquare, AlertTriangle, CalendarClock,
+  Route, Lock, ListChecks, Upload, Layers,
 } from 'lucide-react'
-import { buttonVariants } from '@/components/ui/button'
-import { cn } from '@/lib/utils'
 import RedirectIfAuthenticated from '@/components/RedirectIfAuthenticated'
 import AuthForm from '@/components/landing/AuthForm'
-import { LandingLocaleProvider, T } from '@/components/landing/LandingLocale'
+import GuestEntry from '@/components/landing/GuestEntry'
+import { LandingLocaleProvider } from '@/components/landing/LandingLocale'
 import SectionIndex from '@/components/landing/SectionIndex'
 
-const PIPELINE = [
-  {
-    icon: FileText,
-    title: 'Multi-modal ingest',
-    desc: 'PDF text is read with pypdf; pages with no text layer are rendered as images and embedded as such. Images and video are embedded directly by Voyage. Answers about video use descriptions of six sampled frames, without audio transcription or full scene coverage. Audio files are transcribed by Deepgram. libmagic sniffs MIME from the bytes, not the extension.',
-    trace: 'libmagic · pypdf + PyMuPDF · max 20MB',
-  },
-  {
-    icon: Cpu,
-    title: 'Embed & index',
-    desc: 'One multimodal Voyage model embeds documents and queries, so text, images and video share a single vector space. A Postgres tsvector index is kept alongside for keyword search.',
-    trace: 'voyage-multimodal-3.5 · 1024d · pgvector HNSW',
-  },
-  {
-    icon: Search,
-    title: 'Hybrid retrieval',
-    desc: 'Each question becomes a few search queries. For each one, a pgvector search and a Postgres full-text search are fused with Reciprocal Rank Fusion; a Cohere reranker then orders the pool and keeps the top five.',
-    trace: 'rrf_k=60 · top_k=5 · rerank=5',
-  },
-  {
-    icon: ShieldCheck,
-    title: 'Relevance gate',
-    desc: 'The Cohere reranker scores each passage from 0 to 1; passages at 0.7 or above go to the answer. If none clears the bar, the question is rewritten and the library searched once more. If it still fails, the two best passages go through anyway and the answer is marked low confidence. Without the reranker, the fused top results pass as they are, and fewer than two counts as low confidence.',
-    trace: 'cohere ≥ 0.7 · rewrite + search again',
-  },
-  {
-    icon: MessageSquare,
-    title: 'Grounded synthesis',
-    desc: 'Claude Sonnet is instructed to answer only from the retrieved passages, cite document and page, and say when they do not contain the answer instead of filling the gap from general knowledge. Tokens stream as they are generated.',
-    trace: 'claude-sonnet-5 · stream=true',
-  },
-]
-
-const MODALITIES = [
-  { icon: FileText,  name: 'PDFs' },
+const SOURCES = [
+  { icon: FileText, name: 'PDFs' },
   { icon: FileImage, name: 'Images' },
-  { icon: Mic,       name: 'Audio' },
-  { icon: Video,     name: 'Video' },
+  { icon: Mic, name: 'Audio' },
+  { icon: Video, name: 'Video' },
+  { icon: Globe, name: 'Web pages' },
 ]
 
-// So numeros que saem da configuracao do codigo. O "<2s P95" que estava aqui
-// nunca foi medido.
-const STATS = [
-  { value: '5',     label: 'Pipeline stages' },
-  { value: '4',     label: 'Modalities' },
-  { value: '1024',  label: 'Vector dimensions' },
-  { value: '3',     label: 'Query variants per question' },
-]
-
-const DIFFERENTIATORS = [
+const CAPABILITIES = [
   {
     icon: AlertTriangle,
-    label: 'A / Disagreement',
-    title: 'Conflicting excerpts and their document dates',
-    desc: 'When retrieved passages include two or more documents, a model checks up to six excerpts for conflicting claims. A detected conflict adds a warning; the check can miss disagreements or fail. Code compares explicitly supplied document dates and marks the most recent source when dates are complete and distinct. Recency does not establish which document governs.',
+    title: 'See when sources disagree',
+    description: 'Older support tickets may quote a policy that has since changed. BrainHub can flag conflicting passages and show their document dates so you can review the evidence. A newer date identifies a more recent source; it does not establish which document governs.',
   },
   {
     icon: CalendarClock,
-    label: 'B / Time',
-    title: 'Answer as of a date',
-    desc: 'Pick a date and only documents dated on or before it are searched: the date set at upload, or the upload day when none was set. Ask what the policy said in March 2025 and the November 2025 revision stays out of the answer.',
+    title: 'Look back at an earlier date',
+    description: 'Use “Answer as of” to search documents dated on or before a chosen day. This helps investigate what information was available before a revision. The filter uses the supplied document date, or the upload date when none was supplied.',
   },
   {
     icon: Route,
-    label: 'C / Trail',
-    title: 'The decision trail',
-    desc: 'Every answer is saved with the path that produced it. “Why these answers?” shows the queries actually searched, each passage retrieved with its score and scale, which ones were kept, and whether the answer was flagged low confidence.',
+    title: 'Understand where an answer came from',
+    description: 'Open the citations to inspect the source passages. The decision trail also shows what was searched, which passages were selected and whether the evidence was marked low confidence. You can review the retrieval behind a response instead of relying on its wording alone.',
   },
 ]
 
-const FEATURES = [
+const PIPELINE = [
   {
-    icon: Lock,
-    label: '01 / Isolation',
-    title: 'Tenant-isolated retrieval',
-    desc: 'Every chunk row carries a user_id; vector and keyword queries WHERE-filter on it before fusion or rerank. No cross-tenant path exists at the SQL layer.',
+    icon: Upload,
+    title: 'Bring different sources together',
+    description: 'PDFs, images, audio files, videos and imported web pages become searchable material in one workspace. Audio files are transcribed. Video answers use descriptions of six sampled visual frames; they do not cover every scene or transcribe the video’s soundtrack.',
+    reason: 'One question can draw on more than one source format.',
   },
   {
-    icon: Sparkles,
-    label: '02 / LLM',
-    title: 'Multi-provider routing',
-    desc: 'Anthropic native or any OpenRouter model, chosen by env var. Query generation, the disagreement check and the answer all go through that one client; embeddings and reranking stay on Voyage and Cohere.',
+    icon: Layers,
+    title: 'Index meaning alongside keywords',
+    description: 'Multimodal embeddings place text, images and video in a shared search space. A keyword index runs alongside the semantic index, helping retrieve exact terms as well as related concepts.',
+    reason: 'Find relevant evidence even when the question uses different words.',
   },
   {
-    icon: Globe,
-    label: '03 / Fallback',
-    title: 'Web search is opt-in',
-    desc: 'Sending a question to a third party is off by default. When enabled, a Tavily search runs only after the rewritten query still finds nothing, never with a date cut-off, and web results are marked as web wherever they appear.',
-  },
-  {
-    icon: CheckCircle2,
-    label: '04 / Citations',
-    title: 'Answers show their passages',
-    desc: 'Each answer lists the passages it was generated from, with document, page, date and a snippet; a click opens the file at that page. The prompt instructs the model to answer only from those passages and to say so when they do not contain the answer.',
-  },
-  {
-    icon: Users,
-    label: '05 / Workspace',
-    title: 'Private workspace per account',
-    desc: 'Documents, retrieval, chat threads and decision trails are scoped to the account that created them.',
+    icon: Search,
+    title: 'Search and rank the evidence',
+    description: 'The system searches variations of the question, combines semantic and keyword results, then reranks the candidate passages when the reranking service is available.',
+    reason: 'Select passages for the question before asking the model to answer.',
   },
   {
     icon: ShieldCheck,
-    label: '06 / Upload',
-    title: 'libmagic byte sniffing',
-    desc: 'MIME is read from bytes, not file extension. Allowlist enforced server-side; renamed payloads are rejected before they touch storage, and the size limit is counted while the upload streams in.',
+    title: 'Recognize weak evidence',
+    description: 'If no passage clears the relevance check, the workflow rewrites the question and searches again. If evidence remains weak, the response is marked low confidence. Conflict detection can also miss disagreements; the source passages remain available for review.',
+    reason: 'Make uncertainty visible when the library does not support a clear answer.',
+  },
+  {
+    icon: MessageSquare,
+    title: 'Answer with the supporting passages',
+    description: 'The model receives the selected evidence with instructions to cite its sources and say when they do not contain an answer. The response streams into the conversation together with citations and the retrieval trail.',
+    reason: 'Keep the answer connected to evidence you can inspect.',
   },
 ]
 
-const STACK = [
-  'Claude Sonnet',
-  'Voyage multimodal-3.5',
-  'Cohere Rerank',
-  'pgvector HNSW',
-  'PostgreSQL',
-  'Redis 7',
-  'arq',
-  'FastAPI',
-  'Next.js 16',
-  'React 19',
-  'Turbopack',
-  'OpenAI Realtime',
-  'Deepgram Nova-3',
-  'PyMuPDF',
-  'libmagic',
+const SAFEGUARDS = [
+  {
+    icon: Lock,
+    title: 'Account boundaries apply to retrieval',
+    description: 'Document access, searches, conversations and decision trails are scoped to the account. Guest sessions can read the fictional sample library and ask questions; they cannot upload or change its documents.',
+  },
+  {
+    icon: ListChecks,
+    title: 'Ingestion continues in the background',
+    description: 'A queue separates document processing from the browser request. The workspace shows processing status while workers prepare the sources for search, so a larger file does not depend on keeping an upload request open.',
+  },
+  {
+    icon: Upload,
+    title: 'Uploads are checked before processing',
+    description: 'The server checks file content rather than trusting the filename, restricts supported formats and enforces the upload size limit while receiving the file.',
+  },
+  {
+    icon: Globe,
+    title: 'External search is an explicit choice',
+    description: 'Web search is disabled by default. When enabled, it can provide a fallback after the library search finds weak evidence. External results are identified as web sources, and this fallback is not used with a historical date filter.',
+  },
+]
+
+const ARCHITECTURE = [
+  { title: 'Next.js and FastAPI', description: 'The web interface handles the library and conversation; the API coordinates ingestion, retrieval and streamed responses.' },
+  { title: 'PostgreSQL and pgvector', description: 'Documents, conversations, keyword search and vector retrieval share a persistence layer with explicit account scoping.' },
+  { title: 'Specialized retrieval and language models', description: 'Voyage embeds the source material, Cohere reranks passages, and the configured language model generates answers from the selected evidence.' },
+  { title: 'Redis and background workers', description: 'Queued ingestion, operational limits and scheduled guest cleanup run outside the browser interaction.' },
 ]
 
 export default function Landing() {
   return (
     <LandingLocaleProvider>
-      {/* Quem ja tem sessao vai para a biblioteca. E a unica parte que precisa
-          do navegador: a sessao vive no localStorage. */}
       <RedirectIfAuthenticated to="/library" />
-
       <main className="relative text-white">
-        {/* ─── Top bar ─────────────────────────────────────────────────── */}
-        <header className="sticky top-0 z-50 w-full border-b border-white/10 glass-panel">
+        <header className="sticky top-0 z-50 border-b border-white/10 glass-panel">
           <div className="max-w-7xl mx-auto flex h-14 items-center justify-between px-4 sm:px-8">
-            <div className="flex items-center gap-2.5">
-              <div
-                className="flex h-8 w-8 items-center justify-center rounded-full bg-white/10 backdrop-blur border-gradient"
-                style={{ borderRadius: 9999 }}
-              >
-                <FileStack className="h-4 w-4 text-white" />
-              </div>
-              <span className="font-semibold tracking-tight text-white">BrainHub</span>
-              <span className="hidden sm:inline-block text-[11px] font-mono text-neutral-400 ml-1">/ rag</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <a
-                href="#auth"
-                className="text-sm font-medium text-neutral-900 bg-white hover:bg-neutral-100 transition-colors px-4 py-1.5 rounded-full"
-              >
-                <T k="nav.signIn" />
-              </a>
-            </div>
+            <a href="#index" className="flex items-center gap-2.5 font-semibold tracking-tight rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-300">
+              <FileStack className="h-5 w-5" aria-hidden /> BrainHub
+            </a>
+            <a href="#auth" className="text-sm font-medium text-neutral-900 bg-white hover:bg-neutral-100 px-4 py-1.5 rounded-full focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-300">
+              Sign in
+            </a>
           </div>
         </header>
-
-        {/* ─── Sticky section index (2xl+) ────────────────────────────── */}
         <SectionIndex />
 
-        {/* ─── 01 · Asymmetric hero with chat preview ─────────────────── */}
-        <section
-          id="index"
-          className="max-w-7xl mx-auto px-4 sm:px-8 pt-16 pb-20 md:pt-20 md:pb-24"
-        >
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-10 lg:gap-12 items-center">
-            {/* Left column: text */}
+        <section id="index" className="max-w-7xl mx-auto px-4 sm:px-8 pt-12 pb-16 md:pt-20 md:pb-20 scroll-mt-20">
+          <div className="grid lg:grid-cols-12 gap-10 lg:gap-12 items-center">
             <div className="lg:col-span-7">
-              <div className="flex items-center gap-3 mb-8">
-                <span className="text-[10px] font-mono uppercase tracking-widest text-blue-400">
-                  <T k="hero.tag" />
-                </span>
-                <span className="h-px flex-1 max-w-[80px] bg-white/10" />
-                <span className="text-[10px] font-mono uppercase tracking-widest text-neutral-400">
-                  <T k="hero.version" />
-                </span>
-              </div>
-
-              <h1 className="text-5xl sm:text-6xl md:text-7xl font-semibold tracking-tighter leading-[0.95] text-white mb-7">
-                <T k="hero.title1" />
-                <br />
-                <T k="hero.title2" />
-                <br />
-                <span className="gradient-text"><T k="hero.title3" /></span>
+              <p className="text-sm text-blue-200 mb-5">A knowledge workspace with answers you can check</p>
+              <h1 className="text-4xl sm:text-5xl md:text-6xl font-semibold tracking-tighter leading-[1.05] max-w-2xl">
+                Ask across your files.<br className="hidden sm:block" /> See the sources behind the answer.
               </h1>
-
-              <p className="text-base sm:text-lg text-neutral-400 leading-relaxed max-w-xl mb-7">
-                <T k="hero.subtitle" />
+              <p className="mt-6 text-base sm:text-lg text-neutral-300 leading-relaxed max-w-xl">
+                Search documents, images, recordings and web pages in one place. BrainHub brings the relevant passages into the answer and helps you review conflicting information and document dates.
               </p>
-
-              <div className="flex flex-wrap items-center gap-x-2.5 gap-y-2 mb-8">
-                {MODALITIES.map((m, i) => (
-                  <span key={m.name} className="inline-flex items-center gap-1.5 text-xs text-neutral-300">
-                    <m.icon className="h-3.5 w-3.5 text-blue-300" strokeWidth={1.6} />
-                    <span>{m.name}</span>
-                    {i < MODALITIES.length - 1 && (
-                      <span className="text-neutral-700 ml-1">·</span>
-                    )}
+              <div className="mt-6 mb-7 flex flex-wrap gap-x-4 gap-y-2">
+                {SOURCES.map(({ icon: Icon, name }) => (
+                  <span key={name} className="inline-flex items-center gap-1.5 text-xs text-neutral-300">
+                    <Icon className="h-3.5 w-3.5 text-blue-300" aria-hidden />{name}
                   </span>
                 ))}
               </div>
-
-              <div className="flex flex-wrap items-center gap-3">
-                <a href="#auth" className={cn(buttonVariants({ size: 'lg' }), 'rounded-full px-7 gap-2')}>
-                  <T k="hero.cta.open" /> <ArrowRight className="h-4 w-4" />
-                </a>
-                <a
-                  href="#different"
-                  className={cn(buttonVariants({ size: 'lg', variant: 'outline' }), 'rounded-full px-7 gap-2')}
-                >
-                  <T k="hero.cta.read" /> <ArrowDown className="h-4 w-4" />
-                </a>
-              </div>
+              <GuestEntry />
+              <a href="#different" className="inline-flex items-center gap-2 mt-5 text-sm text-neutral-300 underline underline-offset-4 decoration-white/25 hover:text-white">
+                Explore the capabilities <ArrowDown className="h-3.5 w-3.5" aria-hidden />
+              </a>
             </div>
-
-            {/* Right column: an example answer, with what the chat really shows.
-                O par e o do acervo de demonstracao (backend/scripts/gerar_acervo_demo.py):
-                as duas versoes da Politica Comercial, que divergem no frete gratis.
-                E o que o convidado encontra ao perguntar. */}
-            <div className="lg:col-span-5 lg:pl-4">
-              <div
-                className="relative rounded-3xl bg-white/[0.04] ring-1 ring-white/10 border-gradient backdrop-blur p-5 sm:p-6 fade-slide-in"
-                style={{ borderRadius: 24 }}
-              >
-                <div className="flex items-center justify-between text-[10px] font-mono text-neutral-400 mb-5">
-                  <div className="flex items-center gap-1.5">
-                    <span className="h-2 w-2 rounded-full bg-blue-400/70" />
-                    <span className="uppercase tracking-widest">example answer</span>
-                  </div>
-                  <span>thread / 8a3f</span>
-                </div>
-
-                <div className="flex justify-end mb-4">
-                  <div className="max-w-[85%] flex items-start gap-2.5 flex-row-reverse">
-                    <div className="h-7 w-7 rounded-full bg-white shrink-0 flex items-center justify-center">
-                      <User className="h-3.5 w-3.5 text-neutral-900" />
-                    </div>
-                    <div className="rounded-2xl rounded-tr-sm bg-white text-neutral-900 px-3.5 py-2 text-sm">
-                      From what order value is national shipping free?
-                    </div>
-                  </div>
-                </div>
-
-                <div className="flex items-start gap-2.5 mb-3">
-                  <div className="h-7 w-7 rounded-full bg-white/5 ring-1 ring-white/10 shrink-0 flex items-center justify-center">
-                    <Bot className="h-3.5 w-3.5 text-blue-300" />
-                  </div>
-                  <div className="flex-1 min-w-0 max-w-[88%]">
-                    <div className="rounded-2xl rounded-tl-sm bg-white/5 ring-1 ring-white/10 px-3.5 py-2.5 text-sm text-neutral-100 leading-relaxed">
-                      <span className="text-blue-300">Above 150 reais</span> under version 2 of the
-                      commercial policy (p. 1). Version 1 said 120 reais, and older support tickets still
-                      quote that number.
-                    </div>
-
-                    <div className="mt-2.5 rounded-xl border border-amber-400/30 bg-amber-400/[0.07] px-3 py-2 text-[11px]">
-                      <p className="flex items-center gap-1.5 font-semibold text-amber-200">
-                        <AlertTriangle className="h-3 w-3" aria-hidden /> Your sources disagree
-                      </p>
-                      <p className="mt-1 text-neutral-300">
-                        <span className="text-emerald-200">Política Comercial da Aurora, versão 2</span> has the
-                        most recent document date.
-                      </p>
-                    </div>
-
-                    <div className="flex flex-wrap gap-1.5 mt-2.5">
-                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-blue-400/15 border border-blue-400/30 text-[10px] text-blue-200">
-                        <FileText className="h-3 w-3" />
-                        <span className="max-w-[200px] truncate">Política Comercial, versão 2</span>
-                        <span className="text-blue-300/80 font-mono">p.1</span>
-                      </span>
-                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-blue-400/15 border border-blue-400/30 text-[10px] text-blue-200">
-                        <FileText className="h-3 w-3" />
-                        <span className="max-w-[200px] truncate">Política Comercial, versão 1</span>
-                        <span className="text-blue-300/80 font-mono">p.1</span>
-                      </span>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="mt-5 pt-3 border-t border-white/5 flex items-center justify-between gap-3 text-[10px] font-mono text-neutral-400">
-                  <span>5 retrieved → 2 kept</span>
-                  <span className="inline-flex items-center gap-1 text-blue-300">
-                    <Route className="h-3 w-3" aria-hidden /> trail saved
-                  </span>
-                </div>
-              </div>
+            <div className="lg:col-span-5">
+              <SampleAnswer />
             </div>
           </div>
         </section>
 
-        {/* ─── Stat band ───────────────────────────────────────────────── */}
-        <section className="border-y border-white/10 glass-panel">
+        <section aria-labelledby="demo-guide" className="border-y border-white/10 bg-white/[0.02]">
           <div className="max-w-7xl mx-auto px-4 sm:px-8 py-10 sm:py-12">
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-6 md:gap-0 md:divide-x md:divide-white/10">
-              {STATS.map((s, i) => (
-                <div key={s.label} className={i === 0 ? '' : 'md:pl-10'}>
-                  <p className="text-4xl sm:text-5xl font-semibold tracking-tighter text-white">
-                    {s.value}
-                  </p>
-                  <p className="mt-2 text-[10px] font-mono uppercase tracking-widest text-neutral-400">
-                    {s.label}
-                  </p>
-                </div>
-              ))}
-            </div>
+            <h2 id="demo-guide" className="text-xl font-semibold tracking-tight">Three things to try in the sample library</h2>
+            <p className="mt-2 text-sm text-neutral-400 max-w-2xl">The fictional library includes two versions of a shipping policy and support records that refer to them.</p>
+            <ol className="mt-7 grid md:grid-cols-3 gap-7 md:gap-10">
+              <li><h3 className="font-medium text-blue-200">Ask about the policy</h3><p className="mt-2 text-sm text-neutral-300 leading-relaxed">“From what order value is national shipping free?” Compare the answer with the two cited policy versions.</p></li>
+              <li><h3 className="font-medium text-blue-200">Look back in time</h3><p className="mt-2 text-sm text-neutral-300 leading-relaxed">Set “Answer as of” to March 31, 2025, then ask the same question. The later policy should be excluded from the search.</p></li>
+              <li><h3 className="font-medium text-blue-200">Inspect the evidence</h3><p className="mt-2 text-sm text-neutral-300 leading-relaxed">Open a citation and “Why these answers?” to review the source passages and the path used to select them.</p></li>
+            </ol>
+            <p className="mt-7 text-xs text-neutral-400 leading-relaxed max-w-3xl">The demo is read-only and uses fictional documents. Guest access is temporary; chat history is scheduled for deletion after the session expires. Use an account to upload your own sources.</p>
           </div>
         </section>
 
-        {/* ─── 02 · What comes after the citation ─────────────────────── */}
-        <section id="different" className="max-w-7xl mx-auto px-4 sm:px-8 py-20 sm:py-24">
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-10 mb-12">
-            <div className="lg:col-span-4">
-              <span className="text-[10px] font-mono uppercase tracking-widest text-blue-400">
-                02 / Beyond citations
-              </span>
-              <h2 className="mt-3 text-3xl sm:text-4xl font-semibold tracking-tighter text-white">
-                Cited is table stakes.
-                <br />
-                <span className="text-neutral-500">Here is what&apos;s next.</span>
-              </h2>
-            </div>
-            <div className="lg:col-span-8 lg:pt-10">
-              <p className="text-neutral-400 text-base leading-relaxed max-w-2xl">
-                A citation says where a sentence came from. It does not say whether another
-                document says the opposite, whether the answer would have been different last
-                year, or what was left out. These three do, and the chat shows each one next to the
-                answer it belongs to.
-              </p>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {DIFFERENTIATORS.map((d, i) => (
-              <article
-                key={d.title}
-                className="flex flex-col rounded-2xl bg-white/[0.03] ring-1 ring-white/10 p-5 sm:p-6"
-              >
-                <div className="flex items-center gap-3 mb-4">
-                  <span className="inline-flex items-center justify-center h-8 w-8 rounded-lg bg-white/5 ring-1 ring-white/10 text-blue-300">
-                    <d.icon className="h-4 w-4" strokeWidth={1.8} />
-                  </span>
-                  <span className="text-[10px] font-mono uppercase tracking-widest text-neutral-400">
-                    {d.label}
-                  </span>
-                </div>
-                <h3 className="text-lg font-semibold text-white tracking-tight">{d.title}</h3>
-                <p className="mt-2 mb-5 text-sm text-neutral-400 leading-relaxed">{d.desc}</p>
-                <div className="mt-auto pt-4 border-t border-white/5">
-                  <p className="mb-2 text-[9px] font-mono uppercase tracking-widest text-neutral-400">
-                    example, as the chat shows it
-                  </p>
-                  {i === 0 && <AmostraDivergencia />}
-                  {i === 1 && <AmostraRecorte />}
-                  {i === 2 && <AmostraTrilha />}
-                </div>
+        <section id="different" className="max-w-7xl mx-auto px-4 sm:px-8 py-16 sm:py-20 scroll-mt-16">
+          <h2 className="text-3xl sm:text-4xl font-semibold tracking-tight max-w-2xl">Review the evidence behind a decision.</h2>
+          <p className="mt-4 max-w-2xl text-neutral-400 leading-relaxed">Finding a passage is one part of the task. Understanding its context, date and relationship to other sources helps you decide how to use the answer.</p>
+          <div className="mt-10 grid md:grid-cols-3 gap-6">
+            {CAPABILITIES.map(({ icon: Icon, title, description }) => (
+              <article key={title} className="border-t border-white/15 pt-6">
+                <Icon className="h-5 w-5 text-blue-300 mb-4" aria-hidden />
+                <h3 className="text-lg font-semibold tracking-tight">{title}</h3>
+                <p className="mt-3 text-sm text-neutral-400 leading-relaxed">{description}</p>
               </article>
             ))}
           </div>
         </section>
 
-        {/* ─── 03 · Pipeline as vertical timeline ──────────────────────── */}
-        <section
-          id="pipeline"
-          className="border-t border-white/10"
-        >
-          <div className="max-w-7xl mx-auto px-4 sm:px-8 py-20 sm:py-24">
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-10 mb-12">
-              <div className="lg:col-span-4">
-                <span className="text-[10px] font-mono uppercase tracking-widest text-blue-400">
-                  03 / Pipeline
-                </span>
-                <h2 className="mt-3 text-3xl sm:text-4xl font-semibold tracking-tighter text-white">
-                  Five stages.
-                  <br />
-                  <span className="text-neutral-500">No shortcuts.</span>
-                </h2>
-              </div>
-              <div className="lg:col-span-8 lg:pt-10">
-                <p className="text-neutral-400 text-base leading-relaxed max-w-2xl">
-                  Every question follows the same path. When nothing clears the relevance bar, the
-                  question is rewritten and searched once more. If that still fails, the model is told
-                  the passages may not answer it, and the answer is marked low confidence.
-                </p>
-              </div>
-            </div>
-
-            <ol className="relative">
-              <span
-                className="absolute left-[1.5rem] sm:left-[3.25rem] top-0 bottom-0 w-px bg-white/10"
-                aria-hidden
-              />
-
-              {PIPELINE.map((step, i) => (
-                <li
-                  key={step.title}
-                  className="relative grid grid-cols-1 sm:grid-cols-12 gap-4 sm:gap-8 py-7 hairline-top first:border-t-0"
-                >
-                  <div className="sm:col-span-3 flex items-center gap-4">
-                    <span className="relative z-10 flex h-12 w-12 sm:h-[3.25rem] sm:w-[3.25rem] items-center justify-center rounded-full bg-neutral-950 ring-1 ring-white/15 text-blue-300">
-                      <step.icon className="h-4 w-4" strokeWidth={1.8} />
-                    </span>
-                    <span className="text-3xl sm:text-4xl font-semibold tracking-tighter text-white sm:hidden">
-                      {`0${i + 1}`}
-                    </span>
-                    <span className="hidden sm:block text-3xl font-semibold tracking-tighter text-white/80">
-                      {`0${i + 1}`}
-                    </span>
-                  </div>
-
-                  <div className="sm:col-span-6">
-                    <h3 className="text-lg font-semibold text-white tracking-tight">{step.title}</h3>
-                    <p className="mt-1.5 text-sm text-neutral-400 leading-relaxed">{step.desc}</p>
-                  </div>
-
-                  <div className="sm:col-span-3 flex sm:justify-end items-start sm:pt-1 min-w-0">
-                    <span className="trace-chip max-w-full !whitespace-normal !rounded-xl sm:text-right">{step.trace}</span>
-                  </div>
+        <section id="pipeline" className="border-t border-white/10 scroll-mt-16">
+          <div className="max-w-7xl mx-auto px-4 sm:px-8 py-16 sm:py-20">
+            <h2 className="text-3xl sm:text-4xl font-semibold tracking-tight">How a question becomes an answer.</h2>
+            <p className="mt-4 max-w-2xl text-neutral-400 leading-relaxed">A retrieval workflow prepares and selects evidence before the language model writes its response.</p>
+            <ol className="mt-9">
+              {PIPELINE.map(({ icon: Icon, title, description, reason }, index) => (
+                <li key={title} className="grid sm:grid-cols-12 gap-4 sm:gap-8 border-t border-white/10 py-7 first:border-t-0">
+                  <div className="sm:col-span-1 flex items-center gap-3 text-blue-200"><span className="text-sm">{index + 1}</span><Icon className="h-5 w-5" aria-hidden /></div>
+                  <div className="sm:col-span-7"><h3 className="text-lg font-semibold">{title}</h3><p className="mt-2 text-sm text-neutral-400 leading-relaxed">{description}</p></div>
+                  <p className="sm:col-span-4 text-sm text-blue-100/80 leading-relaxed sm:pt-1">{reason}</p>
                 </li>
               ))}
             </ol>
           </div>
         </section>
 
-        {/* ─── 04 · Editorial features (zigzag, no cards) ──────────────── */}
-        <section
-          id="features"
-          className="border-t border-white/10"
-        >
-          <div className="max-w-7xl mx-auto px-4 sm:px-8 py-20 sm:py-24">
-            <div className="flex items-end justify-between mb-12 gap-6">
-              <div>
-                <span className="text-[10px] font-mono uppercase tracking-widest text-blue-400">
-                  04 / Engineering
-                </span>
-                <h2 className="mt-3 text-3xl sm:text-4xl font-semibold tracking-tighter text-white">
-                  Built where the demos stop.
-                </h2>
-              </div>
-              <p className="hidden md:block text-xs text-neutral-400 font-mono uppercase tracking-widest">
-                six choices that matter
-              </p>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2">
-              {FEATURES.map((f, i) => {
-                const isLeft = i % 2 === 0
-                return (
-                  <article
-                    key={f.title}
-                    className={`relative py-8 sm:py-10 px-2 sm:px-8 ${
-                      isLeft ? 'md:pr-12' : 'md:pl-12 md:border-l md:border-white/10'
-                    } ${i >= 2 ? 'border-t border-white/10' : 'md:border-t-0 border-t border-white/10 first:border-t-0'} ${
-                      i === 1 ? 'md:border-t-0' : ''
-                    }`}
-                  >
-                    <div className="flex items-center gap-3 mb-4">
-                      <span className="inline-flex items-center justify-center h-8 w-8 rounded-lg bg-white/5 ring-1 ring-white/10 text-blue-300">
-                        <f.icon className="h-4 w-4" strokeWidth={1.8} />
-                      </span>
-                      <span className="text-[10px] font-mono uppercase tracking-widest text-neutral-400">
-                        {f.label}
-                      </span>
-                    </div>
-                    <h3 className="text-xl font-semibold text-white tracking-tight mb-2">{f.title}</h3>
-                    <p className="text-sm text-neutral-400 leading-relaxed max-w-md">{f.desc}</p>
-                  </article>
-                )
-              })}
-            </div>
-          </div>
-        </section>
-
-        {/* ─── 05 · Stack marquee ──────────────────────────────────────── */}
-        <section
-          id="stack"
-          className="border-t border-white/10 glass-panel py-12 sm:py-14 overflow-hidden"
-        >
-          <div className="max-w-7xl mx-auto px-4 sm:px-8 mb-6">
-            <div className="flex items-baseline gap-3">
-              <span className="text-[10px] font-mono uppercase tracking-widest text-blue-400">
-                05 / Stack
-              </span>
-              <span className="h-px flex-1 bg-white/10" />
-              <span className="text-[10px] font-mono uppercase tracking-widest text-neutral-400">
-                no fluff
-              </span>
-            </div>
-          </div>
-
-          <div className="marquee-mask">
-            <div className="marquee-track">
-              {[...STACK, ...STACK].map((tech, i) => (
-                <span
-                  key={`${tech}-${i}`}
-                  className="flex items-center gap-6 px-6 text-2xl sm:text-3xl font-semibold tracking-tighter text-white/70 whitespace-nowrap"
-                  aria-hidden={i >= STACK.length ? true : undefined}
-                >
-                  {tech}
-                  <span className="text-blue-400/40 text-base">●</span>
-                </span>
+        <section id="features" className="border-t border-white/10 scroll-mt-16">
+          <div className="max-w-7xl mx-auto px-4 sm:px-8 py-16 sm:py-20">
+            <h2 className="text-3xl sm:text-4xl font-semibold tracking-tight">Built around everyday constraints.</h2>
+            <div className="mt-10 grid md:grid-cols-2 gap-x-12 gap-y-8">
+              {SAFEGUARDS.map(({ icon: Icon, title, description }) => (
+                <article key={title} className="border-t border-white/10 pt-6">
+                  <Icon className="h-5 w-5 text-blue-300 mb-4" aria-hidden />
+                  <h3 className="text-xl font-semibold tracking-tight">{title}</h3>
+                  <p className="mt-3 text-sm text-neutral-400 leading-relaxed max-w-xl">{description}</p>
+                </article>
               ))}
             </div>
           </div>
         </section>
 
-        {/* ─── Auth (CTA + form, asymmetric split) ────────────────────── */}
-        <section id="auth" className="border-t border-white/10">
-          <div className="max-w-6xl mx-auto px-4 sm:px-8 py-20 sm:py-24">
-            <div className="grid grid-cols-1 md:grid-cols-12 gap-10 lg:gap-14 items-start">
-              {/* Left: editorial CTA copy */}
-              <div className="md:col-span-7 md:pt-6">
-                <span className="text-[10px] font-mono uppercase tracking-widest text-blue-400">
-                  Get started
-                </span>
-                <h2 className="mt-3 text-4xl sm:text-5xl md:text-6xl font-semibold tracking-tighter leading-[1.0] text-white">
-                  Stop grepping
-                  <br />
-                  your own files.
-                </h2>
-                <p className="mt-5 text-neutral-400 text-base max-w-lg leading-relaxed">
-                  Drop what you have into one workspace and ask. Every answer shows the passages
-                  it came from, and the path it took to find them.
-                </p>
+        <section id="stack" className="border-t border-white/10 bg-white/[0.02] scroll-mt-16">
+          <div className="max-w-7xl mx-auto px-4 sm:px-8 py-12 sm:py-16">
+            <h2 className="text-2xl sm:text-3xl font-semibold tracking-tight">Architecture and the reasons behind it.</h2>
+            <dl className="mt-8 grid sm:grid-cols-2 gap-x-12 gap-y-7">
+              {ARCHITECTURE.map(({ title, description }) => <div key={title}><dt className="font-medium text-blue-100">{title}</dt><dd className="mt-2 text-sm text-neutral-400 leading-relaxed">{description}</dd></div>)}
+            </dl>
+          </div>
+        </section>
 
-                {/* terminal flourish */}
-                <div className="mt-12 flex items-center gap-3 text-[11px] font-mono text-neutral-400">
-                  <span className="text-blue-300">$</span>
-                  <span>brainhub</span>
-                  <span className="text-neutral-700">init</span>
-                  <span className="text-neutral-700">--workspace</span>
-                  <span className="text-blue-300">my-workspace</span>
-                  <span className="ml-1 inline-block w-2 h-3.5 bg-blue-300/80 animate-pulse" />
-                </div>
-              </div>
-
-              {/* Right: auth form */}
-              <div className="md:col-span-5">
-                <AuthForm />
-              </div>
+        <section id="auth" className="border-t border-white/10 scroll-mt-20">
+          <div className="max-w-6xl mx-auto px-4 sm:px-8 py-16 sm:py-20 grid md:grid-cols-12 gap-10 lg:gap-14 items-start">
+            <div className="md:col-span-7 md:pt-6">
+              <h2 className="text-3xl sm:text-4xl font-semibold tracking-tight">Build your own knowledge workspace.</h2>
+              <p className="mt-5 text-neutral-400 leading-relaxed max-w-lg">Sign in or create an account to upload sources, import web pages and keep your conversations in a workspace scoped to your account.</p>
+              <a href="#index" className="mt-6 inline-block text-sm text-blue-200 underline underline-offset-4">Explore the sample library without an account</a>
             </div>
+            <div className="md:col-span-5"><AuthForm /></div>
           </div>
         </section>
       </main>
@@ -571,78 +225,23 @@ export default function Landing() {
   )
 }
 
-// Amostras estaticas do que o chat mostra: mesma cor e forma dos componentes
-// reais (ChatMessage, ChatInput, DecisionTrail), com os documentos do acervo de
-// demonstracao: Politica Comercial v1 (emitida em 2023-03-01, frete gratis
-// acima de 120 reais) e v2 (2025-11-01, acima de 150).
-
-function AmostraDivergencia() {
+function SampleAnswer() {
   return (
-    <div className="rounded-xl border border-amber-400/30 bg-amber-400/[0.07] px-3 py-2.5 text-[11px]">
-      <p className="flex items-center gap-1.5 font-semibold text-amber-200">
-        <AlertTriangle className="h-3 w-3" aria-hidden /> Your sources disagree
-      </p>
-      <p className="mt-1 text-neutral-300">Free shipping: above 120 reais in version 1, above 150 reais in version 2.</p>
-      <div className="mt-2 flex flex-wrap gap-1.5">
-        <span className="rounded-full bg-white/5 px-2 py-0.5 text-neutral-300 ring-1 ring-white/10">
-          Política Comercial, versão 1
-        </span>
-        <span className="rounded-full bg-emerald-400/10 px-2 py-0.5 text-emerald-200 ring-1 ring-emerald-400/30">
-          Política Comercial, versão 2 · most recent dated source
-        </span>
+    <figure className="rounded-3xl bg-white/[0.04] ring-1 ring-white/10 p-5 sm:p-6">
+      <figcaption className="text-xs text-neutral-400 mb-5">Example answer from the fictional demo library</figcaption>
+      <p className="ml-6 rounded-2xl rounded-tr-sm bg-white text-neutral-900 px-4 py-3 text-sm leading-relaxed">From what order value is national shipping free?</p>
+      <div className="mt-5 rounded-2xl rounded-tl-sm bg-white/5 ring-1 ring-white/10 px-4 py-3 text-sm text-neutral-200 leading-relaxed">
+        Version 2 of the commercial policy says above R$150. Version 1 says R$120, and older support tickets still quote that amount. Review the policy documents before deciding which applies.
       </div>
-    </div>
-  )
-}
-
-function AmostraRecorte() {
-  return (
-    <div className="space-y-2 text-[11px]">
-      <div className="inline-flex items-center gap-2 rounded-full bg-blue-400/10 py-1 pl-3 pr-1.5 ring-1 ring-blue-400/40">
-        <CalendarClock className="h-3.5 w-3.5 text-blue-300" aria-hidden />
-        <span className="text-neutral-300">Answer as of</span>
-        <span className="font-mono text-white">2025-03-31</span>
-        <span className="flex h-5 w-5 items-center justify-center rounded-full text-neutral-400">
-          <X className="h-3 w-3" aria-hidden />
-        </span>
+      <div className="mt-4 rounded-xl border border-amber-400/25 bg-amber-400/[0.06] p-3 text-xs leading-relaxed">
+        <p className="flex items-center gap-2 font-medium text-amber-200"><AlertTriangle className="h-4 w-4 shrink-0" aria-hidden /> The sources give different thresholds</p>
+        <p className="mt-2 text-neutral-300">Version 2 has the more recent document date. That date alone does not determine which policy applies.</p>
       </div>
-      <ul className="space-y-1 font-mono text-[10px]">
-        <li className="flex items-center justify-between gap-2 text-neutral-300">
-          <span className="truncate">Política Comercial, versão 1</span>
-          <span className="text-emerald-300">dated 2023-03-01 · in</span>
-        </li>
-        <li className="flex items-center justify-between gap-2 text-neutral-400">
-          <span className="truncate line-through decoration-neutral-600">Política Comercial, versão 2</span>
-          <span>dated 2025-11-01 · out</span>
-        </li>
+      <ul className="mt-4 space-y-2 text-xs text-blue-200" aria-label="Example source references">
+        <li className="flex items-center gap-2"><FileText className="h-3.5 w-3.5 shrink-0" aria-hidden />Política Comercial, versão 2 · page 1</li>
+        <li className="flex items-center gap-2"><FileText className="h-3.5 w-3.5 shrink-0" aria-hidden />Política Comercial, versão 1 · page 1</li>
       </ul>
-    </div>
-  )
-}
-
-function AmostraTrilha() {
-  return (
-    <div className="space-y-2 text-[11px]">
-      <p className="text-neutral-400">
-        3 retrieved → <span className="text-neutral-200">2 kept</span>
-        <span className="ml-2 rounded bg-white/5 px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-neutral-300">
-          reranked
-        </span>
-      </p>
-      <ul className="divide-y divide-white/5 rounded-md font-mono text-[10px] ring-1 ring-white/5">
-        <li className="flex items-center justify-between gap-2 px-2 py-1 text-neutral-300">
-          <span className="truncate">Política Comercial, versão 2 p.1</span>
-          <span>0.91 · <span className="text-emerald-300">kept</span></span>
-        </li>
-        <li className="flex items-center justify-between gap-2 px-2 py-1 text-neutral-300">
-          <span className="truncate">Política Comercial, versão 1 p.1</span>
-          <span>0.84 · <span className="text-emerald-300">kept</span></span>
-        </li>
-        <li className="flex items-center justify-between gap-2 px-2 py-1 text-neutral-400">
-          <span className="truncate">Chamado 2006 p.1</span>
-          <span>0.31 · dropped</span>
-        </li>
-      </ul>
-    </div>
+      <p className="mt-5 pt-4 border-t border-white/10 text-xs text-neutral-400 leading-relaxed">Illustrative preview. Open the demo to ask your own question and inspect the original sources.</p>
+    </figure>
   )
 }

@@ -155,10 +155,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   )
 
   const loginAsGuest = useCallback(async () => {
-    const res = await fetch(`${API_URL}/auth/guest`, { method: 'POST' })
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 20_000)
+    let res: Response
+    try {
+      res = await fetch(`${API_URL}/auth/guest`, { method: 'POST', signal: controller.signal })
+    } finally {
+      clearTimeout(timeout)
+    }
 
-    // 503 `guest_disabled`: modo desligado ou acervo ausente. 404: backend sem
-    // a rota. Nos dois casos quem chama esconde o botao e fica o cadastro.
+    // 503: modo desligado ou acervo ausente. 404: backend sem a rota.
+    // A entrada da demo apresenta a indisponibilidade e o acesso por conta.
     if (res.status === 503 || res.status === 404) {
       throw erroDeConvidado(
         'The sample library is not available right now. Create an account to try BrainHub.',
